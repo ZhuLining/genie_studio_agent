@@ -103,14 +103,14 @@ deactivate
 ## 3. 配置环境变量
 
 ```bash
-sudo install -d -m 755 /etc/genie_studio_agent
+sudo install -d -m 755 /etc/gsa-taskflow-executor
 sudo install -m 640 -o root -g gsa \
   deploy/gsa-taskflow-executor.env.example \
-  /etc/genie_studio_agent/gsa-taskflow-executor.env
+  /etc/gsa-taskflow-executor/gsa-taskflow-executor.env
 sudo install -m 640 -o root -g gsa \
   skills.example.yaml \
-  /etc/genie_studio_agent/skills.yaml
-sudo vim /etc/genie_studio_agent/gsa-taskflow-executor.env
+  /etc/gsa-taskflow-executor/skills.yaml
+sudo vim /etc/gsa-taskflow-executor/gsa-taskflow-executor.env
 ```
 
 至少确认：
@@ -119,7 +119,7 @@ sudo vim /etc/genie_studio_agent/gsa-taskflow-executor.env
 MQTT_BROKER_URL=mqtt://<broker-host>:1883
 EXECUTOR_AID=<client-subscribed-aid>
 EXECUTOR_MODE=mock
-SKILL_REGISTRY_FILE=/etc/genie_studio_agent/skills.yaml
+SKILL_REGISTRY_FILE=/etc/gsa-taskflow-executor/skills.yaml
 ```
 
 `EXECUTOR_AID` 必须和客户端订阅的 `taskflow/{aid}/status` 一致。
