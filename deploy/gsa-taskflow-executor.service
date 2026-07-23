@@ -9,7 +9,7 @@ User=gsa
 Group=gsa
 WorkingDirectory=/opt/gsa_taskflow_executor
 Environment=PYTHONUNBUFFERED=1
-EnvironmentFile=/etc/gsa-taskflow-executor/gsa-taskflow-executor.env
+EnvironmentFile=/etc/genie_studio_agent/gsa-taskflow-executor.env
 ExecStart=/opt/gsa_taskflow_executor/.venv/bin/gsa-taskflow-executor --listen
 Restart=on-failure
 RestartSec=3
