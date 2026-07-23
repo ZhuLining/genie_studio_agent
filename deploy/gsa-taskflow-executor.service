@@ -1,0 +1,24 @@
+[Unit]
+Description=GSA Taskflow Executor
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=gsa
+Group=gsa
+WorkingDirectory=/opt/gsa_taskflow_executor
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/etc/gsa-taskflow-executor/gsa-taskflow-executor.env
+ExecStart=/opt/gsa_taskflow_executor/.venv/bin/gsa-taskflow-executor --listen
+Restart=on-failure
+RestartSec=3
+LogsDirectory=gsa-taskflow-executor
+ReadWritePaths=/var/log/gsa-taskflow-executor
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target
