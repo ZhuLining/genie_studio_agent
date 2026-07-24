@@ -6,6 +6,7 @@ from pathlib import Path
 
 from . import __version__
 from .config import ConfigError, ExecutorSettings
+from .gdk_control_probe import ALLOWED_ACTIONS, run_gdk_control_probe
 from .gdk_readonly import run_gdk_readonly_probe
 from .mqtt_gateway import MqttGateway, MqttGatewayError, TaskflowMessage
 from .runtime_logging import JsonlEventWriter, RuntimeEvent, configure_stdout_logging
@@ -52,6 +53,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run a one-shot read-only agibot_gdk probe and exit without robot control.",
     )
     parser.add_argument(
+        "--gdk-control-probe",
+        choices=ALLOWED_ACTIONS,
+        help=(
+            "Run a manually gated agibot_gdk control probe action and exit. "
+            "Requires ENABLE_GDK_CONTROL=1 and a matching CONFIRM_GDK_CONTROL token."
+        ),
+    )
+    parser.add_argument(
         "--version",
         action="version",
         version=f"%(prog)s {__version__}",
@@ -90,6 +99,20 @@ def main(argv: list[str] | None = None) -> int:
                 event_type="gdk_readonly_probe",
                 level="info" if result.get("available") is True else "warning",
                 message="GDK read-only probe completed",
+                payload={"probe": result},
+            )
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.gdk_control_probe:
+        writer = JsonlEventWriter.from_settings(settings)
+        result = run_gdk_control_probe(args.gdk_control_probe)
+        writer.write(
+            RuntimeEvent(
+                event_type="gdk_control_probe",
+                level="info" if result.get("executed") is True else "warning",
+                message="GDK manual control probe completed",
                 payload={"probe": result},
             )
         )

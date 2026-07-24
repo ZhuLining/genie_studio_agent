@@ -20,7 +20,7 @@ def run_gdk_readonly_probe(
         return unavailable_result("import_agibot_gdk", error)
 
     try:
-        robot_factory = getattr(agibot_gdk, "Robot")
+        robot_factory = agibot_gdk.Robot
     except AttributeError as error:
         return unavailable_result("get_robot_factory", error)
 

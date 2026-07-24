@@ -82,6 +82,42 @@ raw
 本地没有 `agibot_gdk` 时命令会正常退出，并输出 `available: false` 与错误原因。
 该探针不接入 MQTT taskflow 主链路，不调用运动控制，不改变 `motion_plan_skill` mock 行为。
 
+在 G2 真机环境运行一次手动 GDK 控制探针：
+
+```bash
+ENABLE_GDK_CONTROL=1 \
+CONFIRM_GDK_CONTROL=HOLD_CURRENT_DUAL_ARM \
+gsa-taskflow-executor --env-file .env.example --gdk-control-probe hold_current
+```
+
+当前只开放两个白名单动作：
+
+```text
+hold_current          双臂 14 维当前位置保持
+nudge_right_j7_0p005  右臂 J7 +0.005 rad 后回原位
+```
+
+`nudge_right_j7_0p005` 需要使用对应确认 token：
+
+```bash
+ENABLE_GDK_CONTROL=1 \
+CONFIRM_GDK_CONTROL=NUDGE_RIGHT_J7_0P005 \
+gsa-taskflow-executor --env-file .env.example --gdk-control-probe nudge_right_j7_0p005
+```
+
+控制探针会显式调用 `agibot_gdk.gdk_init()` / `gdk_release()`，并在动作前后做只读预检、
+关节限位校验和位置差值复核。实测有效控制调用形态：
+
+```text
+robot.move_arm_joint(positions14, velocities14, 2)
+positions14 = 左臂 7 关节 + 右臂 7 关节
+velocities14 = 14 维速度
+control_group = 2
+```
+
+该控制探针仍不接入 MQTT taskflow 主链路，不开放 `adapter: gdk`。未设置双环境变量确认时，
+命令会在导入 `agibot_gdk` 前拒绝执行，并写入 `gdk_control_probe` JSONL 事件。
+
 监听 `taskflow/taskflow_yaml`：
 
 ```bash
