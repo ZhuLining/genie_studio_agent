@@ -9,6 +9,7 @@ from .config import ConfigError, ExecutorSettings
 from .gdk_control_probe import ALLOWED_ACTIONS, run_gdk_control_probe
 from .gdk_readonly import run_gdk_readonly_probe
 from .mqtt_gateway import MqttGateway, MqttGatewayError, TaskflowMessage
+from .robot_state_mqtt import handle_current_pose_request
 from .runtime_logging import JsonlEventWriter, RuntimeEvent, configure_stdout_logging
 from .scheduler import SkillRuntimeNodeRunner, TaskflowScheduleError, TaskflowScheduler
 from .skill_registry import SkillRegistry, SkillRegistryError
@@ -250,9 +251,23 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
 
+        def handle_robot_state_message(message: TaskflowMessage) -> None:
+            handle_current_pose_request(
+                message,
+                settings=settings,
+                publish_response=lambda topic, payload: gateway.publish_json(
+                    topic,
+                    payload,
+                    event_type="robot_current_pose_response_mqtt_published",
+                    message="current pose response published",
+                ),
+                event_writer=writer,
+            )
+
         gateway = MqttGateway(
             settings=settings,
             on_taskflow_message=handle_taskflow_message,
+            on_robot_state_message=handle_robot_state_message,
             logger=logger,
             event_writer=writer,
         )

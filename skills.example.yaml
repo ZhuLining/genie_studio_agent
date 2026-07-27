@@ -1,10 +1,5 @@
 skills:
   motion_plan_skill:
-    adapter: mock
-    mock_type: motion_plan
-    description: Phase-1 mock motion planning skill. It validates ABS_JOINT params only.
-
-  qr_detect_skill:
-    adapter: mock
-    mock_type: generic
-    description: Placeholder mock algorithm skill for future Python script adapter.
+    adapter: gdk
+    implementation: motion_plan
+    description: Guarded GDK ABS_JOINT motion skill for the MVP taskflow.

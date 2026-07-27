@@ -1,5 +1,6 @@
 import pytest
 
+import gsa_taskflow_executor.skill_runtime as skill_runtime
 from fixtures import VALID_RIGHT_ARM_YAML
 from gsa_taskflow_executor.scheduler import (
     NodeExecutionEvent,
@@ -11,7 +12,12 @@ from gsa_taskflow_executor.taskflow_parser import parse_taskflow_yaml
 from gsa_taskflow_executor.variable_store import VariableStore
 
 
-def test_dry_run_scheduler_walks_linear_taskflow() -> None:
+def test_gdk_scheduler_walks_linear_taskflow(monkeypatch) -> None:
+    monkeypatch.setattr(
+        skill_runtime,
+        "run_gdk_motion_plan_abs_joint",
+        lambda _motion_params: {"available": True, "executed": True},
+    )
     taskflow = parse_taskflow_yaml(VALID_RIGHT_ARM_YAML)
 
     result = TaskflowScheduler(taskflow).run()
@@ -21,7 +27,7 @@ def test_dry_run_scheduler_walks_linear_taskflow() -> None:
     assert result.visited_node_ids == ("开始", "位姿调整-位控", "结束")
     assert result.summary()["step_count"] == 3
     assert result.variables["位姿调整-位控"]["detail"]["status"] == "success"
-    assert result.variables["位姿调整-位控"]["detail"]["mode"] == "dry-run"
+    assert result.variables["位姿调整-位控"]["detail"]["mode"] == "gdk"
 
 
 def test_scheduler_stops_on_node_error() -> None:
@@ -39,7 +45,12 @@ def test_scheduler_stops_on_node_error() -> None:
     assert result.visited_node_ids == ("开始", "位姿调整-位控")
 
 
-def test_scheduler_resolves_variable_references_before_worker() -> None:
+def test_scheduler_resolves_variable_references_before_worker(monkeypatch) -> None:
+    monkeypatch.setattr(
+        skill_runtime,
+        "run_gdk_motion_plan_abs_joint",
+        lambda _motion_params: {"available": True, "executed": True},
+    )
     yaml_payload = VALID_RIGHT_ARM_YAML.replace(
         """        action_data:
           - 0.282
@@ -78,7 +89,12 @@ def test_scheduler_resolves_variable_references_before_worker() -> None:
     ]
 
 
-def test_scheduler_emits_node_execution_events() -> None:
+def test_scheduler_emits_node_execution_events(monkeypatch) -> None:
+    monkeypatch.setattr(
+        skill_runtime,
+        "run_gdk_motion_plan_abs_joint",
+        lambda _motion_params: {"available": True, "executed": True},
+    )
     taskflow = parse_taskflow_yaml(VALID_RIGHT_ARM_YAML)
     events: list[NodeExecutionEvent] = []
 
@@ -98,7 +114,12 @@ def test_scheduler_emits_node_execution_events() -> None:
     assert "位姿调整-位控" in events[3].variables
 
 
-def test_scheduler_rejects_cycle() -> None:
+def test_scheduler_rejects_cycle(monkeypatch) -> None:
+    monkeypatch.setattr(
+        skill_runtime,
+        "run_gdk_motion_plan_abs_joint",
+        lambda _motion_params: {"available": True, "executed": True},
+    )
     yaml_payload = VALID_RIGHT_ARM_YAML.replace(
         """  - from: 位姿调整-位控
     outcome: success

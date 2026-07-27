@@ -13,6 +13,7 @@ from .config import ExecutorSettings
 from .runtime_logging import JsonlEventWriter, RuntimeEvent, configure_stdout_logging
 
 TaskflowMessageHandler = Callable[["TaskflowMessage"], None]
+RobotStateMessageHandler = Callable[["TaskflowMessage"], None]
 
 
 class MqttGatewayError(RuntimeError):
@@ -37,12 +38,14 @@ class MqttGateway:
         self,
         settings: ExecutorSettings,
         on_taskflow_message: TaskflowMessageHandler,
+        on_robot_state_message: RobotStateMessageHandler | None = None,
         logger: logging.Logger | None = None,
         event_writer: JsonlEventWriter | None = None,
         mqtt_module: Any | None = None,
     ) -> None:
         self.settings = settings
         self.on_taskflow_message = on_taskflow_message
+        self.on_robot_state_message = on_robot_state_message
         self.logger = logger or configure_stdout_logging()
         self.event_writer = event_writer
         self._mqtt_module = mqtt_module
@@ -50,10 +53,6 @@ class MqttGateway:
 
     def connect(self) -> None:
         broker = urlparse(self.settings.mqtt_broker_url)
-        if broker.scheme == "mock":
-            raise MqttGatewayError(
-                "mock broker 不支持真实 MQTT 监听，请配置 mqtt://host:port"
-            )
 
         mqtt = self._mqtt_module or import_paho_mqtt()
         client = create_client(mqtt, self.settings, broker.scheme)
@@ -97,9 +96,10 @@ class MqttGateway:
     def run_forever(self) -> None:
         self.connect()
         self.logger.info(
-            "listening taskflow YAML on %s, status topic %s",
+            "listening taskflow YAML on %s, status topic %s, current pose request topic %s",
             self.settings.taskflow_input_topic,
             self.settings.status_topic,
+            self.settings.robot_current_pose_request_topic,
         )
         try:
             while True:
@@ -122,6 +122,28 @@ class MqttGateway:
                 event_type="mqtt_status_published",
                 message="status payload published",
                 topic=self.settings.status_topic,
+                payload={"payload": payload},
+            )
+        )
+
+    def publish_json(
+        self,
+        topic: str,
+        payload: Mapping[str, Any],
+        *,
+        event_type: str = "mqtt_json_published",
+        message: str = "JSON payload published",
+    ) -> None:
+        if self._client is None:
+            raise MqttGatewayError("MQTT 尚未连接，不能发布消息")
+
+        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        self._client.publish(topic, body, qos=0)
+        self.record_event(
+            RuntimeEvent(
+                event_type=event_type,
+                message=message,
+                topic=topic,
                 payload={"payload": payload},
             )
         )
@@ -163,6 +185,47 @@ class MqttGateway:
             )
             raise
 
+    def handle_robot_state_message(self, topic: str, payload: bytes) -> None:
+        received = TaskflowMessage(
+            topic=topic,
+            payload=payload.decode("utf-8"),
+            received_at=datetime.now(timezone.utc).isoformat(),
+        )
+        self.logger.info(
+            "received robot state request topic=%s bytes=%s",
+            received.topic,
+            received.payload_bytes,
+        )
+        self.record_event(
+            RuntimeEvent(
+                event_type="robot_state_request_received",
+                message="robot state request received",
+                topic=received.topic,
+                payload={
+                    "payload_bytes": received.payload_bytes,
+                    "payload_preview": received.payload[:1000],
+                },
+            )
+        )
+
+        if self.on_robot_state_message is None:
+            self.logger.warning("robot state request handler is not configured")
+            return
+
+        try:
+            self.on_robot_state_message(received)
+        except Exception as error:
+            self.logger.exception("robot state request handler failed")
+            self.record_event(
+                RuntimeEvent(
+                    event_type="robot_state_request_handler_error",
+                    level="error",
+                    message=str(error),
+                    topic=received.topic,
+                )
+            )
+            raise
+
     def record_event(self, event: RuntimeEvent) -> None:
         if self.event_writer is not None:
             self.event_writer.write(event)
@@ -178,6 +241,12 @@ class MqttGateway:
         if is_success_reason_code(reason_code):
             self.logger.info("MQTT connected, subscribing %s", self.settings.taskflow_input_topic)
             client.subscribe(self.settings.taskflow_input_topic, qos=0)
+            if self.on_robot_state_message is not None:
+                self.logger.info(
+                    "MQTT connected, subscribing %s",
+                    self.settings.robot_current_pose_request_topic,
+                )
+                client.subscribe(self.settings.robot_current_pose_request_topic, qos=0)
             self.record_event(
                 RuntimeEvent(
                     event_type="mqtt_connected",
@@ -233,6 +302,12 @@ class MqttGateway:
         )
 
     def _on_message(self, _client: Any, _userdata: Any, message: Any) -> None:
+        if (
+            self.on_robot_state_message is not None
+            and message.topic == self.settings.robot_current_pose_request_topic
+        ):
+            self.handle_robot_state_message(message.topic, message.payload)
+            return
         self.handle_message(message.topic, message.payload)
 
 

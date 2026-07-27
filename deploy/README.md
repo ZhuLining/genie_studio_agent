@@ -1,6 +1,7 @@
 # Ubuntu 22.04 部署说明
 
-本部署文件用于第一阶段 mock executor，不调用 GDK，不控制机器人。
+本部署文件用于正式 MVP executor：客户端下发 Taskflow YAML，executor 调用已验证的
+GDK `ABS_JOINT` 接口。上线前应先运行只读探针和手动控制探针，确认现场环境安全。
 
 ## 1. 系统准备
 
@@ -118,14 +119,30 @@ sudo vim /etc/gsa-taskflow-executor/gsa-taskflow-executor.env
 ```text
 MQTT_BROKER_URL=mqtt://<broker-host>:1883
 EXECUTOR_AID=<client-subscribed-aid>
-EXECUTOR_MODE=mock
+EXECUTOR_MODE=gdk
 SKILL_REGISTRY_FILE=/etc/gsa-taskflow-executor/skills.yaml
+ENABLE_GDK_CONTROL=1
+CONFIRM_GDK_CONTROL=TASKFLOW_ABS_JOINT
 ```
 
 `EXECUTOR_AID` 必须和客户端订阅的 `taskflow/{aid}/status` 一致。
 
-第一阶段 Skill Registry 只允许 `adapter: mock`。如果配置成 `gdk` 或
-`python_script`，服务会拒绝启动，避免误触真实机器人能力。
+Skill Registry 只允许 MVP 的 `motion_plan_skill` + `adapter: gdk`。如果配置成
+其他 adapter 或非 MVP skill，服务会拒绝启动。未设置 `ENABLE_GDK_CONTROL=1` 与
+`CONFIRM_GDK_CONTROL=TASKFLOW_ABS_JOINT` 时，taskflow 会在导入 GDK 前拒绝执行控制。
+
+正式执行前建议先做只读与手动控制验证：
+
+```bash
+sudo -u gsa .venv/bin/gsa-taskflow-executor \
+  --env-file /etc/gsa-taskflow-executor/gsa-taskflow-executor.env \
+  --gdk-readonly-probe
+
+sudo -u gsa ENABLE_GDK_CONTROL=1 CONFIRM_GDK_CONTROL=HOLD_CURRENT_DUAL_ARM \
+  .venv/bin/gsa-taskflow-executor \
+  --env-file /etc/gsa-taskflow-executor/gsa-taskflow-executor.env \
+  --gdk-control-probe hold_current
+```
 
 ## 4. 安装 systemd 服务
 

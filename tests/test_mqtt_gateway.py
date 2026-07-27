@@ -24,12 +24,16 @@ class FakeClient:
     def __init__(self) -> None:
         self.published: list[tuple[str, str, int]] = []
         self.publish_results: list[FakePublishResult] = []
+        self.subscribed: list[tuple[str, int]] = []
 
     def publish(self, topic: str, payload: str, qos: int = 0) -> FakePublishResult:
         self.published.append((topic, payload, qos))
         result = FakePublishResult()
         self.publish_results.append(result)
         return result
+
+    def subscribe(self, topic: str, qos: int = 0) -> None:
+        self.subscribed.append((topic, qos))
 
 
 def test_handle_message_calls_handler_and_writes_jsonl(tmp_path) -> None:
@@ -75,6 +79,56 @@ def test_publish_status_requires_connection() -> None:
 
     with pytest.raises(MqttGatewayError):
         gateway.publish_status({"task_state": "running"})
+
+
+def test_publish_json_uses_given_topic() -> None:
+    client = FakeClient()
+    gateway = MqttGateway(
+        settings=ExecutorSettings(),
+        on_taskflow_message=lambda _message: None,
+    )
+    gateway._client = client
+
+    gateway.publish_json("robot/state/get_current_pose/response", {"ok": True})
+
+    [(topic, payload, qos)] = client.published
+    assert topic == "robot/state/get_current_pose/response"
+    assert json.loads(payload) == {"ok": True}
+    assert qos == 0
+
+
+def test_robot_state_message_uses_independent_handler() -> None:
+    received_taskflow: list[str] = []
+    received_robot_state: list[str] = []
+    gateway = MqttGateway(
+        settings=ExecutorSettings(),
+        on_taskflow_message=lambda message: received_taskflow.append(message.payload),
+        on_robot_state_message=lambda message: received_robot_state.append(message.payload),
+    )
+
+    gateway.handle_robot_state_message(
+        "robot/state/get_current_pose/request",
+        b'{"requestId":"req-1"}',
+    )
+
+    assert received_taskflow == []
+    assert received_robot_state == ['{"requestId":"req-1"}']
+
+
+def test_on_connect_subscribes_robot_state_topic_when_handler_configured() -> None:
+    client = FakeClient()
+    gateway = MqttGateway(
+        settings=ExecutorSettings(),
+        on_taskflow_message=lambda _message: None,
+        on_robot_state_message=lambda _message: None,
+    )
+
+    gateway._on_connect(client, None, None, 0)
+
+    assert client.subscribed == [
+        ("taskflow/taskflow_yaml", 0),
+        ("robot/state/get_current_pose/request", 0),
+    ]
 
 
 @pytest.mark.parametrize(

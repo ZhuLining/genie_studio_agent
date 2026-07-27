@@ -1,3 +1,4 @@
+import gsa_taskflow_executor.skill_runtime as skill_runtime
 from fixtures import VALID_RIGHT_ARM_YAML
 from gsa_taskflow_executor.config import ExecutorSettings
 from gsa_taskflow_executor.scheduler import NodeRunResult, TaskflowScheduler
@@ -9,7 +10,7 @@ def test_status_reporter_publishes_execution_started_payload() -> None:
     payloads: list[dict[str, object]] = []
     taskflow = parse_taskflow_yaml(VALID_RIGHT_ARM_YAML)
     reporter = TaskflowStatusReporter(
-        settings=ExecutorSettings(executor_aid="aid-1", executor_mode="mock"),
+        settings=ExecutorSettings(executor_aid="aid-1"),
         publish_status=payloads.append,
     )
 
@@ -19,14 +20,19 @@ def test_status_reporter_publishes_execution_started_payload() -> None:
     assert payloads[0]["app_execution_id"] == taskflow.app_execution_id
     assert payloads[0]["task_state"] == "RUNNING"
     assert payloads[0]["status"] == "RUNNING"
-    assert payloads[0]["executor_mode"] == "mock"
+    assert payloads[0]["executor_mode"] == "gdk"
 
 
-def test_status_reporter_publishes_node_running_and_over_payloads() -> None:
+def test_status_reporter_publishes_node_running_and_over_payloads(monkeypatch) -> None:
+    monkeypatch.setattr(
+        skill_runtime,
+        "run_gdk_motion_plan_abs_joint",
+        lambda _motion_params: {"available": True, "executed": True},
+    )
     payloads: list[dict[str, object]] = []
     taskflow = parse_taskflow_yaml(VALID_RIGHT_ARM_YAML)
     reporter = TaskflowStatusReporter(
-        settings=ExecutorSettings(executor_aid="aid-1", executor_mode="mock"),
+        settings=ExecutorSettings(executor_aid="aid-1"),
         publish_status=payloads.append,
     )
 
@@ -68,7 +74,7 @@ def test_status_reporter_publishes_node_error_payload() -> None:
 
     def runner(node, _variable_store):
         if node.node_id == "位姿调整-位控":
-            return NodeRunResult(outcome="error", detail={"error": "mock failure"})
+            return NodeRunResult(outcome="error", detail={"error": "gdk failure"})
         return NodeRunResult(outcome="success")
 
     result = TaskflowScheduler(
@@ -81,7 +87,7 @@ def test_status_reporter_publishes_node_error_payload() -> None:
     error_payload = payloads[3]["sub_task"]
     assert error_payload["node_id"] == "位姿调整-位控"
     assert error_payload["state"] == "ERROR"
-    assert error_payload["error_msg"] == "mock failure"
+    assert error_payload["error_msg"] == "gdk failure"
     assert payloads[-1]["task_state"] == "ERROR"
 
 
@@ -101,7 +107,7 @@ def test_status_reporter_publishes_parse_error_payload_without_app_execution_id(
             "status": "ERROR",
             "timestamp": payloads[0]["timestamp"],
             "timestamp_ms": payloads[0]["timestamp_ms"],
-            "executor_mode": "mock",
+            "executor_mode": "gdk",
             "error_msg": "YAML 解析失败",
             "error": "YAML 解析失败",
         }

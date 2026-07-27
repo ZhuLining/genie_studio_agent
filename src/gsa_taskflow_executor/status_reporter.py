@@ -14,7 +14,7 @@ StatusPublisher = Callable[[Mapping[str, Any]], None]
 
 
 class TaskflowStatusReporter:
-    """Publish mock executor status payloads compatible with the GSA client."""
+    """Publish executor status payloads compatible with the GSA client."""
 
     def __init__(
         self,

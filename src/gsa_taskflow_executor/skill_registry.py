@@ -11,8 +11,8 @@ import yaml
 from .config import ExecutorSettings
 from .taskflow_parser import TaskflowDefinition, TaskflowParseError, parse_motion_plan_params
 
-SkillAdapter = Literal["mock"]
-MockSkillType = Literal["generic", "motion_plan"]
+SkillAdapter = Literal["gdk"]
+SkillImplementation = Literal["motion_plan"]
 YamlMapping = Mapping[str, Any]
 
 
@@ -24,7 +24,7 @@ class SkillRegistryError(ValueError):
 class SkillDefinition:
     name: str
     adapter: SkillAdapter
-    mock_type: MockSkillType = "generic"
+    implementation: SkillImplementation = "motion_plan"
     description: str = ""
     raw: YamlMapping | None = None
 
@@ -32,7 +32,7 @@ class SkillDefinition:
         return {
             "name": self.name,
             "adapter": self.adapter,
-            "mock_type": self.mock_type,
+            "implementation": self.implementation,
             "description": self.description,
         }
 
@@ -48,9 +48,9 @@ class SkillRegistry:
             skills={
                 "motion_plan_skill": SkillDefinition(
                     name="motion_plan_skill",
-                    adapter="mock",
-                    mock_type="motion_plan",
-                    description="Phase-1 mock motion planning skill.",
+                    adapter="gdk",
+                    implementation="motion_plan",
+                    description="GDK motion planning skill.",
                 )
             }
         )
@@ -104,7 +104,7 @@ class SkillRegistry:
             if node.skill_name is None:
                 raise SkillRegistryError(f"worker 节点缺少 skill_name: {node.node_id}")
             skill = self.require(node.skill_name)
-            if skill.mock_type == "motion_plan":
+            if skill.implementation == "motion_plan":
                 try:
                     parse_motion_plan_params(
                         node.params_template,
@@ -125,25 +125,25 @@ def parse_skill_definition(name: str, raw_config: Any) -> SkillDefinition:
     path = f"skills.{name}"
     config = expect_mapping(raw_config, path)
     adapter_value = read_required_string(config, "adapter", path)
-    if adapter_value != "mock":
-        raise SkillRegistryError(
-            f"{path}.adapter 第一阶段只支持 mock，不支持 {adapter_value}"
-        )
+    if adapter_value != "gdk":
+        raise SkillRegistryError(f"{path}.adapter 只支持 gdk，不支持 {adapter_value}")
 
-    mock_type_value = read_optional_string(
+    implementation_value = read_optional_string(
         config,
-        ("mock_type", "mock", "implementation"),
-        fallback="generic",
+        ("implementation",),
+        fallback="motion_plan",
     )
-    if mock_type_value not in {"generic", "motion_plan"}:
+    if implementation_value != "motion_plan":
         raise SkillRegistryError(
-            f"{path}.mock_type 第一阶段只支持 generic 或 motion_plan，当前为 {mock_type_value}"
+            f"{path}.implementation 只支持 motion_plan，当前为 {implementation_value}"
         )
+    if name != "motion_plan_skill":
+        raise SkillRegistryError("MVP 当前只支持 motion_plan_skill")
 
     return SkillDefinition(
         name=name,
-        adapter="mock",
-        mock_type=cast(MockSkillType, mock_type_value),
+        adapter=cast(SkillAdapter, adapter_value),
+        implementation=cast(SkillImplementation, implementation_value),
         description=read_optional_string(config, ("description",), fallback=""),
         raw=deepcopy(dict(config)),
     )

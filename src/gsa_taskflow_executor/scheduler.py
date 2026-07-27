@@ -74,12 +74,12 @@ NodeExecutionEventHandler = Callable[[NodeExecutionEvent], None]
 
 
 class SkillRuntimeNodeRunner:
-    """Node runner backed by the first-phase skill runtime."""
+    """Node runner backed by the GDK skill runtime."""
 
     def __init__(
         self,
         app_execution_id: str,
-        mode: str = "dry-run",
+        mode: str = "gdk",
         runtime: SkillRuntime | None = None,
     ) -> None:
         self.app_execution_id = app_execution_id
@@ -104,13 +104,6 @@ class SkillRuntimeNodeRunner:
             detail=result.detail,
             outputs=result.outputs,
         )
-
-
-class DryRunNodeRunner(SkillRuntimeNodeRunner):
-    """Backward-compatible alias for tests or callers using the old runner name."""
-
-    def __init__(self) -> None:
-        super().__init__(app_execution_id="dry-run", mode="dry-run")
 
 
 class TaskflowScheduler:

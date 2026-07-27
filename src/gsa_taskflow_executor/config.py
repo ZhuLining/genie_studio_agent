@@ -16,14 +16,16 @@ EnvMapping = Mapping[str, str]
 
 @dataclass(frozen=True)
 class ExecutorSettings:
-    """Runtime settings for the dry-run executor scaffold."""
+    """Runtime settings for the GDK taskflow executor."""
 
     mqtt_broker_url: str = "mqtt://127.0.0.1:1883"
     mqtt_client_id: str = "gsa-taskflow-executor-dev"
     taskflow_input_topic: str = "taskflow/taskflow_yaml"
     taskflow_status_topic_template: str = "taskflow/{aid}/status"
+    robot_current_pose_request_topic: str = "robot/state/get_current_pose/request"
+    robot_current_pose_response_topic: str = "robot/state/get_current_pose/response"
     executor_aid: str = "gsa-dev"
-    executor_mode: str = "mock"
+    executor_mode: str = "gdk"
     executor_log_dir: str = "logs"
     skill_registry_file: str = ""
 
@@ -47,6 +49,14 @@ class ExecutorSettings:
             taskflow_status_topic_template=source.get(
                 "TASKFLOW_STATUS_TOPIC_TEMPLATE",
                 cls.taskflow_status_topic_template,
+            ).strip(),
+            robot_current_pose_request_topic=source.get(
+                "ROBOT_CURRENT_POSE_REQUEST_TOPIC",
+                cls.robot_current_pose_request_topic,
+            ).strip(),
+            robot_current_pose_response_topic=source.get(
+                "ROBOT_CURRENT_POSE_RESPONSE_TOPIC",
+                cls.robot_current_pose_response_topic,
             ).strip(),
             executor_aid=source.get("EXECUTOR_AID", cls.executor_aid).strip(),
             executor_mode=source.get("EXECUTOR_MODE", cls.executor_mode).strip(),
@@ -80,21 +90,29 @@ class ExecutorSettings:
         require_non_empty("MQTT_CLIENT_ID", self.mqtt_client_id)
         require_non_empty("TASKFLOW_INPUT_TOPIC", self.taskflow_input_topic)
         require_non_empty("TASKFLOW_STATUS_TOPIC_TEMPLATE", self.taskflow_status_topic_template)
+        require_non_empty(
+            "ROBOT_CURRENT_POSE_REQUEST_TOPIC",
+            self.robot_current_pose_request_topic,
+        )
+        require_non_empty(
+            "ROBOT_CURRENT_POSE_RESPONSE_TOPIC",
+            self.robot_current_pose_response_topic,
+        )
         require_non_empty("EXECUTOR_AID", self.executor_aid)
         require_non_empty("EXECUTOR_MODE", self.executor_mode)
         require_non_empty("EXECUTOR_LOG_DIR", self.executor_log_dir)
 
         broker = urlparse(self.mqtt_broker_url)
-        if broker.scheme not in {"mqtt", "mqtts", "ws", "wss", "mock"}:
+        if broker.scheme not in {"mqtt", "mqtts", "ws", "wss"}:
             raise ConfigError(
-                "MQTT_BROKER_URL 只支持 mqtt、mqtts、ws、wss 或 mock scheme"
+                "MQTT_BROKER_URL 只支持 mqtt、mqtts、ws 或 wss scheme"
             )
-        if broker.scheme != "mock" and not broker.hostname:
+        if not broker.hostname:
             raise ConfigError("MQTT_BROKER_URL 必须包含 broker host")
         if "{aid}" not in self.taskflow_status_topic_template:
             raise ConfigError("TASKFLOW_STATUS_TOPIC_TEMPLATE 必须包含 {aid}")
-        if self.executor_mode not in {"mock", "dry-run"}:
-            raise ConfigError("EXECUTOR_MODE 第一阶段只支持 mock 或 dry-run")
+        if self.executor_mode != "gdk":
+            raise ConfigError("EXECUTOR_MODE 只支持 gdk")
 
     def to_dict(self) -> dict[str, str]:
         data = asdict(self)

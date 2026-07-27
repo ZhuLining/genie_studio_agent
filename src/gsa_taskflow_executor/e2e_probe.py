@@ -39,7 +39,7 @@ class E2EProbeConfig:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="gsa-taskflow-e2e",
-        description="Publish sample taskflow YAML and wait for mock executor status callbacks.",
+        description="Publish sample taskflow YAML and wait for executor status callbacks.",
     )
     parser.add_argument(
         "--broker-url",
@@ -108,8 +108,6 @@ def config_from_args(args: argparse.Namespace) -> E2EProbeConfig:
 def run_probe(config: E2EProbeConfig) -> int:
     payload = prepare_yaml_payload(config.yaml_file, config.app_execution_id)
     broker = urlparse(config.broker_url)
-    if broker.scheme == "mock":
-        raise ValueError("E2E 联调必须连接真实 MQTT broker，例如 mqtt://127.0.0.1:1883")
     if broker.scheme not in {"mqtt", "mqtts", "ws", "wss"}:
         raise ValueError(f"不支持的 broker scheme: {broker.scheme}")
     if not broker.hostname:

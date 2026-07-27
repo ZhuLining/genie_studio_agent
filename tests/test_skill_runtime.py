@@ -1,5 +1,6 @@
 import pytest
 
+import gsa_taskflow_executor.skill_runtime as skill_runtime
 from fixtures import VALID_RIGHT_ARM_YAML
 from gsa_taskflow_executor.skill_registry import SkillRegistry
 from gsa_taskflow_executor.skill_runtime import (
@@ -31,7 +32,7 @@ def test_assign_skill_resolves_assignments() -> None:
         SkillExecutionContext(
             app_execution_id=taskflow.app_execution_id,
             variable_store=store,
-            mode="mock",
+            mode="gdk",
         ),
     )
 
@@ -39,24 +40,30 @@ def test_assign_skill_resolves_assignments() -> None:
     assert result.outputs == {"assignments": {"value": 7}}
 
 
-def test_motion_plan_skill_mock_outputs_structured_motion_result() -> None:
+def test_motion_plan_skill_gdk_outputs_structured_motion_result(monkeypatch) -> None:
     taskflow = parse_taskflow_yaml(VALID_RIGHT_ARM_YAML)
     node = taskflow.worker_nodes[0]
     runtime = SkillRuntime()
+
+    monkeypatch.setattr(
+        skill_runtime,
+        "run_gdk_motion_plan_abs_joint",
+        lambda _motion_params: {"available": True, "executed": True},
+    )
 
     result = runtime.run(
         node,
         SkillExecutionContext(
             app_execution_id=taskflow.app_execution_id,
             variable_store=VariableStore(),
-            mode="mock",
+            mode="gdk",
         ),
     )
 
     assert result.outcome == "success"
     assert result.outputs is not None
     assert result.outputs["app_execution_id"] == taskflow.app_execution_id
-    assert result.outputs["mode"] == "mock"
+    assert result.outputs["mode"] == "gdk"
     assert result.outputs["primary_body_part"] == "right_arm"
     assert result.outputs["primary_control_type"] == "ABS_JOINT"
     assert result.outputs["speed"] == 0.5
@@ -72,7 +79,7 @@ def test_motion_plan_skill_mock_outputs_structured_motion_result() -> None:
     ]
 
 
-def test_motion_plan_skill_mock_resolves_variable_reference() -> None:
+def test_motion_plan_skill_gdk_resolves_variable_reference(monkeypatch) -> None:
     yaml_payload = VALID_RIGHT_ARM_YAML.replace(
         """        action_data:
           - 0.282
@@ -97,13 +104,18 @@ def test_motion_plan_skill_mock_resolves_variable_reference() -> None:
         }
     )
     runtime = SkillRuntime()
+    monkeypatch.setattr(
+        skill_runtime,
+        "run_gdk_motion_plan_abs_joint",
+        lambda _motion_params: {"available": True, "executed": True},
+    )
 
     result = runtime.run(
         taskflow.worker_nodes[0],
         SkillExecutionContext(
             app_execution_id=taskflow.app_execution_id,
             variable_store=store,
-            mode="mock",
+            mode="gdk",
         ),
     )
 
@@ -119,16 +131,28 @@ def test_motion_plan_skill_mock_resolves_variable_reference() -> None:
     ]
 
 
-def test_motion_plan_skill_can_use_registry_alias() -> None:
-    yaml_payload = VALID_RIGHT_ARM_YAML.replace("motion_plan_skill", "custom_motion")
-    taskflow = parse_taskflow_yaml(yaml_payload)
+def test_motion_plan_skill_gdk_adapter_calls_gdk_runtime(monkeypatch) -> None:
+    taskflow = parse_taskflow_yaml(VALID_RIGHT_ARM_YAML)
+    node = taskflow.worker_nodes[0]
+    calls: list[object] = []
+
+    def fake_gdk_runtime(motion_params: object) -> dict[str, object]:
+        calls.append(motion_params)
+        return {
+            "available": True,
+            "executed": True,
+            "backend": "agibot_gdk.Robot",
+            "action": "taskflow_abs_joint",
+        }
+
+    monkeypatch.setattr(skill_runtime, "run_gdk_motion_plan_abs_joint", fake_gdk_runtime)
     runtime = SkillRuntime(
         registry=SkillRegistry.from_mapping(
             {
                 "skills": {
-                    "custom_motion": {
-                        "adapter": "mock",
-                        "mock_type": "motion_plan",
+                    "motion_plan_skill": {
+                        "adapter": "gdk",
+                        "implementation": "motion_plan",
                     }
                 }
             }
@@ -136,28 +160,29 @@ def test_motion_plan_skill_can_use_registry_alias() -> None:
     )
 
     result = runtime.run(
-        taskflow.worker_nodes[0],
+        node,
         SkillExecutionContext(
             app_execution_id=taskflow.app_execution_id,
             variable_store=VariableStore(),
-            mode="mock",
+            mode="gdk",
         ),
     )
 
+    assert len(calls) == 1
+    assert result.outcome == "success"
+    assert result.detail is not None
+    assert result.detail["adapter"] == "gdk"
     assert result.outputs is not None
-    assert result.outputs["skill_name"] == "custom_motion"
-    assert result.outputs["final_joint"] == [
-        0.282,
-        -1.039,
-        -0.304,
-        -1.751,
-        -0.621,
-        -0.169,
-        1.122,
-    ]
+    assert result.outputs["mode"] == "gdk"
+    assert result.outputs["gdk_result"] == {
+        "available": True,
+        "executed": True,
+        "backend": "agibot_gdk.Robot",
+        "action": "taskflow_abs_joint",
+    }
 
 
-def test_generic_mock_skill_returns_resolved_params() -> None:
+def test_non_mvp_worker_skill_is_rejected() -> None:
     node = TaskflowNode(
         node_id="二维码定位",
         node_type="worker",
@@ -168,34 +193,16 @@ def test_generic_mock_skill_returns_resolved_params() -> None:
         output_var="二维码定位",
         output_contract={},
     )
-    runtime = SkillRuntime(
-        registry=SkillRegistry.from_mapping(
-            {
-                "skills": {
-                    "qr_detect_skill": {
-                        "adapter": "mock",
-                        "mock_type": "generic",
-                    }
-                }
-            }
+    runtime = SkillRuntime()
+
+    with pytest.raises(SkillRuntimeError, match="未注册 skill_name"):
+        runtime.run(
+            node,
+            SkillExecutionContext(
+                app_execution_id="run-1",
+                variable_store=VariableStore(),
+            ),
         )
-    )
-
-    result = runtime.run(
-        node,
-        SkillExecutionContext(
-            app_execution_id="run-1",
-            variable_store=VariableStore(),
-            mode="mock",
-        ),
-    )
-
-    assert result.outputs == {
-        "app_execution_id": "run-1",
-        "skill_name": "qr_detect_skill",
-        "mode": "mock",
-        "resolved_params_template": {"camera_id": "wrist", "marker_size": 0.04},
-    }
 
 
 def test_unsupported_worker_skill_raises_runtime_error() -> None:

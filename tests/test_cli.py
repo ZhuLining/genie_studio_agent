@@ -16,7 +16,7 @@ def test_gdk_readonly_probe_cli_prints_json_and_writes_event(
     env_file.write_text(
         "\n".join(
             [
-                "MQTT_BROKER_URL=mock://local",
+                "MQTT_BROKER_URL=mqtt://127.0.0.1:1883",
                 "EXECUTOR_LOG_DIR=" + str(log_dir),
             ]
         ),
@@ -61,7 +61,7 @@ def test_gdk_control_probe_cli_prints_json_and_writes_event(
     env_file.write_text(
         "\n".join(
             [
-                "MQTT_BROKER_URL=mock://local",
+                "MQTT_BROKER_URL=mqtt://127.0.0.1:1883",
                 "EXECUTOR_LOG_DIR=" + str(log_dir),
             ]
         ),

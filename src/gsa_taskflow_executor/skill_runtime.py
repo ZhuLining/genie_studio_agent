@@ -5,6 +5,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
+from .gdk_motion_runtime import run_gdk_motion_plan_abs_joint
 from .skill_registry import SkillDefinition, SkillRegistry, SkillRegistryError
 from .taskflow_parser import (
     MotionPlanParams,
@@ -25,7 +26,7 @@ class SkillRuntimeError(RuntimeError):
 class SkillExecutionContext:
     app_execution_id: str
     variable_store: VariableStore
-    mode: str = "mock"
+    mode: str = "gdk"
 
 
 @dataclass(frozen=True)
@@ -59,7 +60,7 @@ class AssignSkill:
         )
 
 
-class MotionPlanSkillMock:
+class MotionPlanSkillGdk:
     def run(self, node: TaskflowNode, context: SkillExecutionContext) -> SkillResult:
         resolved_params = context.variable_store.resolve_value(node.params_template)
         if not isinstance(resolved_params, Mapping):
@@ -70,6 +71,11 @@ class MotionPlanSkillMock:
         except TaskflowParseError as error:
             raise SkillRuntimeError(str(error)) from error
 
+        gdk_result = run_gdk_motion_plan_abs_joint(motion_params)
+        if gdk_result.get("executed") is not True:
+            error_msg = gdk_result.get("error_msg")
+            raise SkillRuntimeError(str(error_msg or "GDK ABS_JOINT 执行失败"))
+
         outputs = build_motion_plan_outputs(
             app_execution_id=context.app_execution_id,
             skill_name=node.skill_name,
@@ -77,35 +83,15 @@ class MotionPlanSkillMock:
             params_template=resolved_params,
             motion_params=motion_params,
         )
+        outputs["gdk_result"] = deepcopy(gdk_result)
         return SkillResult(
             outcome="success",
             detail={
                 "skill_name": node.skill_name,
                 "mode": context.mode,
+                "adapter": "gdk",
                 "params_template": deepcopy(dict(resolved_params)),
-            },
-            outputs=outputs,
-        )
-
-
-class GenericMockSkill:
-    def run(self, node: TaskflowNode, context: SkillExecutionContext) -> SkillResult:
-        resolved_params = context.variable_store.resolve_value(node.params_template)
-        if not isinstance(resolved_params, Mapping):
-            raise SkillRuntimeError(f"{node.node_id}.params_template 解析后不是对象")
-
-        outputs: dict[str, object] = {
-            "app_execution_id": context.app_execution_id,
-            "skill_name": node.skill_name,
-            "mode": context.mode,
-            "resolved_params_template": deepcopy(dict(resolved_params)),
-        }
-        return SkillResult(
-            outcome="success",
-            detail={
-                "skill_name": node.skill_name,
-                "mode": context.mode,
-                "params_template": deepcopy(dict(resolved_params)),
+                "gdk_result": deepcopy(gdk_result),
             },
             outputs=outputs,
         )
@@ -115,9 +101,8 @@ class SkillRuntime:
     def __init__(self, registry: SkillRegistry | None = None) -> None:
         self.registry = registry or SkillRegistry.default()
         self.assign_skill = AssignSkill()
-        self.mock_skills: dict[str, Skill] = {
-            "generic": GenericMockSkill(),
-            "motion_plan": MotionPlanSkillMock(),
+        self.gdk_skills: dict[str, Skill] = {
+            "motion_plan": MotionPlanSkillGdk(),
         }
 
     def run(self, node: TaskflowNode, context: SkillExecutionContext) -> SkillResult:
@@ -130,19 +115,20 @@ class SkillRuntime:
 
         try:
             skill_definition = self.registry.require(node.skill_name)
-            skill = self.resolve_mock_skill(skill_definition)
+            skill = self.resolve_skill(skill_definition)
             return skill.run(node, context)
         except (SkillRegistryError, VariableStoreError) as error:
             raise SkillRuntimeError(str(error)) from error
 
-    def resolve_mock_skill(self, skill_definition: SkillDefinition) -> Skill:
-        if skill_definition.adapter != "mock":
-            raise SkillRuntimeError(
-                f"{skill_definition.name}.adapter 第一阶段只支持 mock，不调用 GDK"
-            )
-        skill = self.mock_skills.get(skill_definition.mock_type)
+    def resolve_skill(self, skill_definition: SkillDefinition) -> Skill:
+        if skill_definition.adapter == "gdk":
+            return self.resolve_gdk_skill(skill_definition)
+        raise SkillRuntimeError(f"不支持的 skill adapter: {skill_definition.adapter}")
+
+    def resolve_gdk_skill(self, skill_definition: SkillDefinition) -> Skill:
+        skill = self.gdk_skills.get(skill_definition.implementation)
         if skill is None:
-            raise SkillRuntimeError(f"不支持的 mock skill 类型: {skill_definition.mock_type}")
+            raise SkillRuntimeError(f"不支持的 GDK skill 类型: {skill_definition.implementation}")
         return skill
 
 
