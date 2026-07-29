@@ -31,13 +31,15 @@ RIGHT_ARM_JOINTS = [
 DUAL_ARM_JOINTS = LEFT_ARM_JOINTS + RIGHT_ARM_JOINTS
 CONTROL_GROUP_DUAL_ARM = 2
 DEFAULT_VELOCITY = 0.02
-NUDGE_RIGHT_J7_DELTA_RAD = 0.005
+NUDGE_J7_DELTA_RAD = 0.005
 
 ACTION_HOLD_CURRENT = "hold_current"
+ACTION_NUDGE_LEFT_J7 = "nudge_left_j7_0p005"
 ACTION_NUDGE_RIGHT_J7 = "nudge_right_j7_0p005"
 
 ACTION_CONFIRMATION_TOKENS = {
     ACTION_HOLD_CURRENT: "HOLD_CURRENT_DUAL_ARM",
+    ACTION_NUDGE_LEFT_J7: "NUDGE_LEFT_J7_0P005",
     ACTION_NUDGE_RIGHT_J7: "NUDGE_RIGHT_J7_0P005",
 }
 
@@ -148,42 +150,80 @@ def execute_action(
             velocities=velocities,
         )
 
-    if action == ACTION_NUDGE_RIGHT_J7:
-        target = list(origin.positions)
-        target[-1] += NUDGE_RIGHT_J7_DELTA_RAD
-        assert_positions_within_limits(robot.get_joint_limits(), target)
-
-        nudge_return = robot.move_arm_joint(target, velocities, CONTROL_GROUP_DUAL_ARM)
-        sleep(settle_seconds)
-        mid = collect_dual_arm_snapshot(robot)
-
-        return_return = robot.move_arm_joint(
-            list(origin.positions),
-            velocities,
-            CONTROL_GROUP_DUAL_ARM,
-        )
-        sleep(settle_seconds)
-        after = collect_dual_arm_snapshot(robot)
-
-        result = success_result(
+    if action == ACTION_NUDGE_LEFT_J7:
+        return execute_j7_nudge_action(
             action=action,
+            robot=robot,
             origin=origin,
-            target_positions=target,
-            after=after,
-            move_returns={
-                "nudge": to_jsonable(nudge_return),
-                "return_to_origin": to_jsonable(return_return),
-            },
             velocities=velocities,
+            joint_index=len(LEFT_ARM_JOINTS) - 1,
+            joint_name=LEFT_ARM_JOINTS[-1],
+            diff_key="mid_left_j7_diff",
+            sleep=sleep,
+            settle_seconds=settle_seconds,
         )
-        result["nudge_joint_name"] = RIGHT_ARM_JOINTS[-1]
-        result["nudge_delta_rad"] = NUDGE_RIGHT_J7_DELTA_RAD
-        result["mid_positions"] = mid.positions
-        result["mid_diffs"] = position_diffs(mid.positions, origin.positions)
-        result["mid_right_j7_diff"] = mid.positions[-1] - origin.positions[-1]
-        return result
+
+    if action == ACTION_NUDGE_RIGHT_J7:
+        return execute_j7_nudge_action(
+            action=action,
+            robot=robot,
+            origin=origin,
+            velocities=velocities,
+            joint_index=len(DUAL_ARM_JOINTS) - 1,
+            joint_name=RIGHT_ARM_JOINTS[-1],
+            diff_key="mid_right_j7_diff",
+            sleep=sleep,
+            settle_seconds=settle_seconds,
+        )
 
     raise ValueError(f"unsupported action after validation: {action}")
+
+
+def execute_j7_nudge_action(
+    *,
+    action: str,
+    robot: Any,
+    origin: JointSnapshot,
+    velocities: list[float],
+    joint_index: int,
+    joint_name: str,
+    diff_key: str,
+    sleep: Callable[[float], None],
+    settle_seconds: float,
+) -> dict[str, object]:
+    target = list(origin.positions)
+    target[joint_index] += NUDGE_J7_DELTA_RAD
+    assert_positions_within_limits(robot.get_joint_limits(), target)
+
+    nudge_return = robot.move_arm_joint(target, velocities, CONTROL_GROUP_DUAL_ARM)
+    sleep(settle_seconds)
+    mid = collect_dual_arm_snapshot(robot)
+
+    return_return = robot.move_arm_joint(
+        list(origin.positions),
+        velocities,
+        CONTROL_GROUP_DUAL_ARM,
+    )
+    sleep(settle_seconds)
+    after = collect_dual_arm_snapshot(robot)
+
+    result = success_result(
+        action=action,
+        origin=origin,
+        target_positions=target,
+        after=after,
+        move_returns={
+            "nudge": to_jsonable(nudge_return),
+            "return_to_origin": to_jsonable(return_return),
+        },
+        velocities=velocities,
+    )
+    result["nudge_joint_name"] = joint_name
+    result["nudge_delta_rad"] = NUDGE_J7_DELTA_RAD
+    result["mid_positions"] = mid.positions
+    result["mid_diffs"] = position_diffs(mid.positions, origin.positions)
+    result[diff_key] = mid.positions[joint_index] - origin.positions[joint_index]
+    return result
 
 
 def collect_dual_arm_snapshot(robot: Any) -> JointSnapshot:

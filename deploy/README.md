@@ -142,6 +142,11 @@ sudo -u gsa ENABLE_GDK_CONTROL=1 CONFIRM_GDK_CONTROL=HOLD_CURRENT_DUAL_ARM \
   .venv/bin/gsa-taskflow-executor \
   --env-file /etc/gsa-taskflow-executor/gsa-taskflow-executor.env \
   --gdk-control-probe hold_current
+
+sudo -u gsa ENABLE_GDK_CONTROL=1 CONFIRM_GDK_CONTROL=NUDGE_LEFT_J7_0P005 \
+  .venv/bin/gsa-taskflow-executor \
+  --env-file /etc/gsa-taskflow-executor/gsa-taskflow-executor.env \
+  --gdk-control-probe nudge_left_j7_0p005
 ```
 
 ## 4. 安装 systemd 服务

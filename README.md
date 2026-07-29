@@ -96,11 +96,20 @@ CONFIRM_GDK_CONTROL=HOLD_CURRENT_DUAL_ARM \
 gsa-taskflow-executor --env-file .env.example --gdk-control-probe hold_current
 ```
 
-当前只开放两个白名单动作：
+当前只开放三个白名单动作：
 
 ```text
 hold_current          双臂 14 维当前位置保持
+nudge_left_j7_0p005   左臂 J7 +0.005 rad 后回原位
 nudge_right_j7_0p005  右臂 J7 +0.005 rad 后回原位
+```
+
+`nudge_left_j7_0p005` 需要使用对应确认 token：
+
+```bash
+ENABLE_GDK_CONTROL=1 \
+CONFIRM_GDK_CONTROL=NUDGE_LEFT_J7_0P005 \
+gsa-taskflow-executor --env-file .env.example --gdk-control-probe nudge_left_j7_0p005
 ```
 
 `nudge_right_j7_0p005` 需要使用对应确认 token：

@@ -6,6 +6,7 @@ import pytest
 
 from gsa_taskflow_executor.gdk_control_probe import (
     ACTION_HOLD_CURRENT,
+    ACTION_NUDGE_LEFT_J7,
     ACTION_NUDGE_RIGHT_J7,
     CONTROL_GROUP_DUAL_ARM,
     DUAL_ARM_JOINTS,
@@ -142,6 +143,29 @@ def test_gdk_control_probe_hold_current_uses_14_positions_and_control_group_2() 
     ]
     assert FakeAgibotGdk.init_called == 1
     assert FakeAgibotGdk.release_called == 1
+
+
+def test_gdk_control_probe_nudge_left_j7_returns_to_origin() -> None:
+    FakeAgibotGdk.reset()
+
+    result = run_gdk_control_probe(
+        ACTION_NUDGE_LEFT_J7,
+        environ={
+            "ENABLE_GDK_CONTROL": "1",
+            "CONFIRM_GDK_CONTROL": "NUDGE_LEFT_J7_0P005",
+        },
+        import_module=lambda _name: FakeAgibotGdk,
+        sleep=lambda _seconds: None,
+        settle_seconds=0,
+    )
+
+    assert result["executed"] is True
+    assert result["nudge_joint_name"] == "idx27_arm_l_joint7"
+    assert result["mid_left_j7_diff"] == pytest.approx(0.005)
+    assert result["max_abs_diff"] == 0.0
+    assert len(FakeAgibotGdk.robot.move_calls) == 2
+    assert FakeAgibotGdk.robot.move_calls[0][0][6] == pytest.approx(0.065)
+    assert FakeAgibotGdk.robot.move_calls[1][0][6] == 0.06
 
 
 def test_gdk_control_probe_nudge_right_j7_returns_to_origin() -> None:
