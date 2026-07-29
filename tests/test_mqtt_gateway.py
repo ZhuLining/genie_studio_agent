@@ -44,13 +44,13 @@ def test_handle_message_calls_handler_and_writes_jsonl(tmp_path) -> None:
         event_writer=JsonlEventWriter(tmp_path),
     )
 
-    gateway.handle_message("taskflow/taskflow_yaml", b"start_node: \xe5\xbc\x80\xe5\xa7\x8b\n")
+    gateway.handle_message("gsa/self/taskflow_yaml", b"start_node: \xe5\xbc\x80\xe5\xa7\x8b\n")
 
     assert received_payloads == ["start_node: 开始\n"]
     [event_file] = list(tmp_path.glob("*.jsonl"))
     event = json.loads(event_file.read_text(encoding="utf-8").splitlines()[0])
     assert event["event_type"] == "taskflow_yaml_received"
-    assert event["topic"] == "taskflow/taskflow_yaml"
+    assert event["topic"] == "gsa/self/taskflow_yaml"
 
 
 def test_publish_status_uses_status_topic(tmp_path) -> None:
@@ -65,7 +65,7 @@ def test_publish_status_uses_status_topic(tmp_path) -> None:
     gateway.publish_status({"task_state": "running"})
 
     [(topic, payload, qos)] = client.published
-    assert topic == "taskflow/aid-1/status"
+    assert topic == "gsa/self/aid-1/status"
     assert json.loads(payload) == {"task_state": "running"}
     assert qos == 0
     assert client.publish_results[0].waited is False
@@ -89,10 +89,10 @@ def test_publish_json_uses_given_topic() -> None:
     )
     gateway._client = client
 
-    gateway.publish_json("robot/state/get_current_pose/response", {"ok": True})
+    gateway.publish_json("gsa/self/robot/state/get_current_pose/response", {"ok": True})
 
     [(topic, payload, qos)] = client.published
-    assert topic == "robot/state/get_current_pose/response"
+    assert topic == "gsa/self/robot/state/get_current_pose/response"
     assert json.loads(payload) == {"ok": True}
     assert qos == 0
 
@@ -107,7 +107,7 @@ def test_robot_state_message_uses_independent_handler() -> None:
     )
 
     gateway.handle_robot_state_message(
-        "robot/state/get_current_pose/request",
+        "gsa/self/robot/state/get_current_pose/request",
         b'{"requestId":"req-1"}',
     )
 
@@ -126,8 +126,8 @@ def test_on_connect_subscribes_robot_state_topic_when_handler_configured() -> No
     gateway._on_connect(client, None, None, 0)
 
     assert client.subscribed == [
-        ("taskflow/taskflow_yaml", 0),
-        ("robot/state/get_current_pose/request", 0),
+        ("gsa/self/taskflow_yaml", 0),
+        ("gsa/self/robot/state/get_current_pose/request", 0),
     ]
 
 

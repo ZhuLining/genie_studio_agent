@@ -50,7 +50,7 @@ def test_terminal_execution_payload_requires_terminal_node_and_matching_executio
 def test_format_status_line_prints_node_state() -> None:
     line = format_status_line(
         2,
-        "taskflow/gsa-dev/status",
+        "gsa/self/gsa-dev/status",
         {
             "task_state": "OVER",
             "sub_task": {
@@ -60,4 +60,4 @@ def test_format_status_line_prints_node_state() -> None:
         },
     )
 
-    assert line == "[02] taskflow/gsa-dev/status task_state=OVER node=位姿调整-位控 state=OVER"
+    assert line == "[02] gsa/self/gsa-dev/status task_state=OVER node=位姿调整-位控 state=OVER"

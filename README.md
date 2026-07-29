@@ -3,10 +3,10 @@
 自研 GSA Taskflow Executor。当前 MVP 作为正式 GDK 执行器接入自研 GSA 客户端：
 
 ```text
-自研客户端 -> publish taskflow/taskflow_yaml
+自研客户端 -> publish gsa/self/taskflow_yaml
 -> gsa_taskflow_executor 接收 YAML
 -> 解析 / 校验 / Skill Runtime 执行
--> publish taskflow/{aid}/status
+-> publish gsa/self/{aid}/status
 -> 客户端更新节点状态和日志
 ```
 
@@ -15,8 +15,8 @@ GDK `ABS_JOINT` 接口。未设置 `ENABLE_GDK_CONTROL=1` 与
 `CONFIRM_GDK_CONTROL=TASKFLOW_ABS_JOINT` 时，会在导入 GDK 前拒绝执行控制。
 
 `--listen` 还会提供一个独立的只读机器人状态查询入口：订阅
-`robot/state/get_current_pose/request`，调用 GDK 只读接口获取当前关节状态，并发布到
-`robot/state/get_current_pose/response`。该入口不进入 Taskflow YAML parser、DAG scheduler 或节点状态回传。
+`gsa/self/robot/state/get_current_pose/request`，调用 GDK 只读接口获取当前关节状态，并发布到
+`gsa/self/robot/state/get_current_pose/response`。该入口不进入 Taskflow YAML parser、DAG scheduler 或节点状态回传。
 
 ## 部署目标
 
@@ -143,7 +143,7 @@ waist               robot.move_waist_joint(positions5, velocities5)
 左右臂会合并为 14 维数组，单臂控制时另一臂填当前值；腰部使用 5 维数组。GDK velocity
 先固定为已验证的 `0.02`，不会把客户端 `speed` 比例值直接当作关节速度。
 
-监听 `taskflow/taskflow_yaml`：
+监听 `gsa/self/taskflow_yaml`：
 
 ```bash
 gsa-taskflow-executor --env-file .env.example --listen
@@ -156,8 +156,8 @@ gsa-taskflow-executor --env-file .env.example --listen
 同时，监听模式还会订阅只读当前位姿请求：
 
 ```text
-request  topic: robot/state/get_current_pose/request
-response topic: robot/state/get_current_pose/response
+request  topic: gsa/self/robot/state/get_current_pose/request
+response topic: gsa/self/robot/state/get_current_pose/response
 ```
 
 请求 payload：
@@ -166,7 +166,7 @@ response topic: robot/state/get_current_pose/response
 {
   "type": "get_current_pose",
   "requestId": "uuid",
-  "replyTopic": "robot/state/get_current_pose/response"
+  "replyTopic": "gsa/self/robot/state/get_current_pose/response"
 }
 ```
 
@@ -253,7 +253,7 @@ RUNNING -> ERROR
 状态统一发布到：
 
 ```text
-taskflow/{aid}/status
+gsa/self/{aid}/status
 ```
 
 单个节点回传 payload 示例：
@@ -296,8 +296,8 @@ bash scripts/check.sh
 联调范围：
 
 ```text
-本机/现场 MQTT broker -> executor 订阅 taskflow/taskflow_yaml
--> GDK 执行 -> executor 发布 taskflow/{aid}/status
+本机/现场 MQTT broker -> executor 订阅 gsa/self/taskflow_yaml
+-> GDK 执行 -> executor 发布 gsa/self/{aid}/status
 -> probe 收到 RUNNING / OVER / ERROR 状态
 ```
 
@@ -314,7 +314,7 @@ gsa-taskflow-executor --env-file .env.local --listen
 ```bash
 python -m gsa_taskflow_executor.e2e_probe \
   --broker-url mqtt://127.0.0.1:1883 \
-  --status-topic taskflow/gsa-dev/status
+  --status-topic gsa/self/gsa-dev/status
 ```
 
 也可以使用脚本入口：
@@ -322,15 +322,15 @@ python -m gsa_taskflow_executor.e2e_probe \
 ```bash
 python scripts/e2e_local_mqtt.py \
   --broker-url mqtt://127.0.0.1:1883 \
-  --status-topic taskflow/gsa-dev/status
+  --status-topic gsa/self/gsa-dev/status
 ```
 
 预期会看到 8 条左右状态：
 
 ```text
-[01] taskflow/gsa-dev/status task_state=RUNNING node=- state=-
-[02] taskflow/gsa-dev/status task_state=RUNNING node=开始 state=RUNNING
-[03] taskflow/gsa-dev/status task_state=OVER node=开始 state=OVER
+[01] gsa/self/gsa-dev/status task_state=RUNNING node=- state=-
+[02] gsa/self/gsa-dev/status task_state=RUNNING node=开始 state=RUNNING
+[03] gsa/self/gsa-dev/status task_state=OVER node=开始 state=OVER
 ...
 received 8 status payloads
 ```
@@ -370,8 +370,8 @@ deploy/README.md
 ```text
 MQTT_BROKER_URL=mqtt://127.0.0.1:1883
 MQTT_CLIENT_ID=gsa-taskflow-executor-dev
-TASKFLOW_INPUT_TOPIC=taskflow/taskflow_yaml
-TASKFLOW_STATUS_TOPIC_TEMPLATE=taskflow/{aid}/status
+TASKFLOW_INPUT_TOPIC=gsa/self/taskflow_yaml
+TASKFLOW_STATUS_TOPIC_TEMPLATE=gsa/self/{aid}/status
 EXECUTOR_AID=gsa-dev
 EXECUTOR_MODE=gdk
 EXECUTOR_LOG_DIR=logs
@@ -412,8 +412,8 @@ logs/executions/YYYYMMDD.jsonl  可复盘的结构化运行事件
 7. stdout 日志
 8. JSONL 运行事件写入
 9. MQTT Gateway
-10. 订阅 taskflow/taskflow_yaml
-11. 发布 taskflow/{aid}/status 的基础方法
+10. 订阅 gsa/self/taskflow_yaml
+11. 发布 gsa/self/{aid}/status 的基础方法
 12. Taskflow YAML Parser
 13. motion_plan_skill + ABS_JOINT 参数校验
 14. DAG Scheduler GDK runtime
@@ -426,7 +426,7 @@ logs/executions/YYYYMMDD.jsonl  可复盘的结构化运行事件
 21. assign skill
 22. motion_plan_skill GDK skill
 23. worker 参数进入 runtime 后二次校验
-24. taskflow/{aid}/status 状态回传
+24. gsa/self/{aid}/status 状态回传
 25. 节点 RUNNING / OVER / ERROR 生命周期事件
 26. 节点 outputs / detail / variables 快照回传
 27. 端到端 MQTT smoke probe

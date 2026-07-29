@@ -125,7 +125,7 @@ ENABLE_GDK_CONTROL=1
 CONFIRM_GDK_CONTROL=TASKFLOW_ABS_JOINT
 ```
 
-`EXECUTOR_AID` 必须和客户端订阅的 `taskflow/{aid}/status` 一致。
+`EXECUTOR_AID` 必须和客户端订阅的 `gsa/self/{aid}/status` 一致。
 
 Skill Registry 只允许 MVP 的 `motion_plan_skill` + `adapter: gdk`。如果配置成
 其他 adapter 或非 MVP skill，服务会拒绝启动。未设置 `ENABLE_GDK_CONTROL=1` 与
@@ -162,21 +162,21 @@ journalctl -u gsa-taskflow-executor -f
 
 ## 5. 端到端 smoke
 
-在部署机器上发布样例 YAML，并等待 `taskflow/{aid}/status` 回传：
+在部署机器上发布样例 YAML，并等待 `gsa/self/{aid}/status` 回传：
 
 ```bash
 cd /opt/gsa_taskflow_executor
 sudo -u gsa .venv/bin/python -m gsa_taskflow_executor.e2e_probe \
   --broker-url mqtt://127.0.0.1:1883 \
-  --status-topic taskflow/gsa-dev/status
+  --status-topic gsa/self/gsa-dev/status
 ```
 
 看到类似输出即代表 broker、executor、status topic 三段链路已通：
 
 ```text
-[01] taskflow/gsa-dev/status task_state=RUNNING node=- state=-
-[02] taskflow/gsa-dev/status task_state=RUNNING node=开始 state=RUNNING
-[03] taskflow/gsa-dev/status task_state=OVER node=开始 state=OVER
+[01] gsa/self/gsa-dev/status task_state=RUNNING node=- state=-
+[02] gsa/self/gsa-dev/status task_state=RUNNING node=开始 state=RUNNING
+[03] gsa/self/gsa-dev/status task_state=OVER node=开始 state=OVER
 ...
 received 8 status payloads
 ```

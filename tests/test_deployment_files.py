@@ -23,10 +23,16 @@ def test_deploy_env_template_uses_gdk_mode() -> None:
         encoding="utf-8"
     )
 
-    assert "TASKFLOW_INPUT_TOPIC=taskflow/taskflow_yaml" in env_file
-    assert "TASKFLOW_STATUS_TOPIC_TEMPLATE=taskflow/{aid}/status" in env_file
-    assert "ROBOT_CURRENT_POSE_REQUEST_TOPIC=robot/state/get_current_pose/request" in env_file
-    assert "ROBOT_CURRENT_POSE_RESPONSE_TOPIC=robot/state/get_current_pose/response" in env_file
+    assert "TASKFLOW_INPUT_TOPIC=gsa/self/taskflow_yaml" in env_file
+    assert "TASKFLOW_STATUS_TOPIC_TEMPLATE=gsa/self/{aid}/status" in env_file
+    assert (
+        "ROBOT_CURRENT_POSE_REQUEST_TOPIC=gsa/self/robot/state/get_current_pose/request"
+        in env_file
+    )
+    assert (
+        "ROBOT_CURRENT_POSE_RESPONSE_TOPIC=gsa/self/robot/state/get_current_pose/response"
+        in env_file
+    )
     assert "EXECUTOR_MODE=gdk" in env_file
     assert "# ENABLE_GDK_CONTROL=1" in env_file
     assert "# CONFIRM_GDK_CONTROL=TASKFLOW_ABS_JOINT" in env_file

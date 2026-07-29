@@ -6,9 +6,15 @@ from gsa_taskflow_executor.config import ConfigError, ExecutorSettings, read_env
 def test_default_status_topic() -> None:
     settings = ExecutorSettings()
 
-    assert settings.status_topic == "taskflow/gsa-dev/status"
-    assert settings.robot_current_pose_request_topic == "robot/state/get_current_pose/request"
-    assert settings.robot_current_pose_response_topic == "robot/state/get_current_pose/response"
+    assert settings.status_topic == "gsa/self/gsa-dev/status"
+    assert (
+        settings.robot_current_pose_request_topic
+        == "gsa/self/robot/state/get_current_pose/request"
+    )
+    assert (
+        settings.robot_current_pose_response_topic
+        == "gsa/self/robot/state/get_current_pose/response"
+    )
 
 
 def test_env_overrides(monkeypatch) -> None:
@@ -20,7 +26,7 @@ def test_env_overrides(monkeypatch) -> None:
     settings = ExecutorSettings.from_env()
 
     assert settings.mqtt_broker_url == "mqtt://172.17.11.65:1883"
-    assert settings.status_topic == "taskflow/robot-aid/status"
+    assert settings.status_topic == "gsa/self/robot-aid/status"
     assert settings.robot_current_pose_request_topic == "robot/custom/request"
     assert settings.robot_current_pose_response_topic == "robot/custom/response"
 
@@ -44,7 +50,7 @@ def test_env_file_loading(tmp_path) -> None:
     assert settings.mqtt_broker_url == "mqtt://10.0.0.2:1883"
     assert settings.executor_mode == "gdk"
     assert settings.skill_registry_file == "skills.example.yaml"
-    assert settings.status_topic == "taskflow/field-aid/status"
+    assert settings.status_topic == "gsa/self/field-aid/status"
 
 
 def test_executor_mode_allows_gdk() -> None:
@@ -67,7 +73,7 @@ def test_process_env_overrides_env_file(tmp_path, monkeypatch) -> None:
 
     settings = ExecutorSettings.from_env(env_file=env_file)
 
-    assert settings.status_topic == "taskflow/process-aid/status"
+    assert settings.status_topic == "gsa/self/process-aid/status"
 
 
 def test_invalid_status_topic_template() -> None:

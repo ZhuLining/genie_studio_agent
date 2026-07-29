@@ -11,7 +11,7 @@ from gsa_taskflow_executor.robot_state_mqtt import (
 
 def make_message(payload: str) -> TaskflowMessage:
     return TaskflowMessage(
-        topic="robot/state/get_current_pose/request",
+        topic="gsa/self/robot/state/get_current_pose/request",
         payload=payload,
         received_at="2026-07-27T00:00:00+00:00",
     )
@@ -26,7 +26,7 @@ def test_parse_current_pose_request_accepts_camel_case_and_reply_topic() -> None
                 "replyTopic": "robot/custom/response",
             }
         ),
-        default_reply_topic="robot/state/get_current_pose/response",
+        default_reply_topic="gsa/self/robot/state/get_current_pose/response",
     )
 
     assert request.request_id == "req-1"
@@ -49,7 +49,7 @@ def test_handle_current_pose_request_publishes_success_response() -> None:
     )
 
     [(topic, payload)] = published
-    assert topic == "robot/state/get_current_pose/response"
+    assert topic == "gsa/self/robot/state/get_current_pose/response"
     assert payload["type"] == "get_current_pose"
     assert payload["requestId"] == "req-1"
     assert payload["ok"] is True
@@ -68,7 +68,7 @@ def test_handle_current_pose_request_publishes_invalid_request_error() -> None:
     )
 
     [(topic, payload)] = published
-    assert topic == "robot/state/get_current_pose/response"
+    assert topic == "gsa/self/robot/state/get_current_pose/response"
     assert payload["ok"] is False
     assert payload["requestId"] == ""
     assert payload["error"]["code"] == "INVALID_REQUEST"

@@ -21,8 +21,8 @@ from .mqtt_gateway import (
 )
 
 DEFAULT_TIMEOUT_SEC = 10.0
-DEFAULT_INPUT_TOPIC = "taskflow/taskflow_yaml"
-DEFAULT_STATUS_TOPIC = "taskflow/gsa-dev/status"
+DEFAULT_INPUT_TOPIC = "gsa/self/taskflow_yaml"
+DEFAULT_STATUS_TOPIC = "gsa/self/gsa-dev/status"
 
 
 @dataclass(frozen=True)
