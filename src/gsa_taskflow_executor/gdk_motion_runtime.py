@@ -4,11 +4,11 @@ import importlib
 import os
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
+from math import isfinite
 from typing import Any
 
 from .gdk_control_probe import (
     CONTROL_GROUP_DUAL_ARM,
-    DEFAULT_VELOCITY,
     DUAL_ARM_JOINTS,
     LEFT_ARM_JOINTS,
     JointSnapshot,
@@ -25,7 +25,12 @@ from .gdk_control_probe import (
     validate_whole_body_status,
 )
 from .gdk_readonly import GDK_BACKEND, GDK_MODULE_NAME, to_jsonable
-from .taskflow_parser import MotionPlanParams, MotionPlanTarget
+from .taskflow_parser import (
+    MOTION_SPEED_MAX,
+    MOTION_SPEED_MIN,
+    MotionPlanParams,
+    MotionPlanTarget,
+)
 
 ACTION_TASKFLOW_ABS_JOINT = "taskflow_abs_joint"
 TASKFLOW_ABS_JOINT_CONFIRMATION = "TASKFLOW_ABS_JOINT"
@@ -55,6 +60,10 @@ def run_gdk_motion_plan_abs_joint(
     gate_result = check_taskflow_abs_joint_safety_gate(env)
     if gate_result is not None:
         return gate_result
+
+    velocity_validation_result = validate_motion_velocity(motion_params.speed)
+    if velocity_validation_result is not None:
+        return velocity_validation_result
 
     validation_result = validate_abs_joint_targets(motion_params.targets)
     if validation_result is not None:
@@ -109,11 +118,18 @@ def execute_abs_joint_targets(robot: Any, motion_params: MotionPlanParams) -> di
         for body_part in ("left_arm", "right_arm")
         if body_part in targets_by_part
     }
+    velocity = float(motion_params.speed)
     if arm_targets:
-        executed_groups.append(execute_arm_abs_joint_targets(robot, arm_targets))
+        executed_groups.append(execute_arm_abs_joint_targets(robot, arm_targets, velocity))
 
     if "waist" in targets_by_part:
-        executed_groups.append(execute_waist_abs_joint_target(robot, targets_by_part["waist"]))
+        executed_groups.append(
+            execute_waist_abs_joint_target(
+                robot,
+                targets_by_part["waist"],
+                velocity,
+            )
+        )
 
     return {
         "available": True,
@@ -122,9 +138,13 @@ def execute_abs_joint_targets(robot: Any, motion_params: MotionPlanParams) -> di
         "action": ACTION_TASKFLOW_ABS_JOINT,
         "collected_at": utc_now_iso(),
         "speed": motion_params.speed,
+        "requested_speed": motion_params.speed,
+        "requested_speed_unit": "gdk_velocity",
         "timeout": motion_params.timeout,
-        "gdk_velocity": DEFAULT_VELOCITY,
-        "velocity_source": "verified_default",
+        "effective_gdk_velocity": velocity,
+        "gdk_velocity": velocity,
+        "velocity_source": "taskflow_speed",
+        "speed_mapping_applied": True,
         "groups": executed_groups,
         "safety_gate": {
             "enabled": True,
@@ -137,6 +157,7 @@ def execute_abs_joint_targets(robot: Any, motion_params: MotionPlanParams) -> di
 def execute_arm_abs_joint_targets(
     robot: Any,
     targets_by_part: Mapping[str, Sequence[float]],
+    velocity: float,
 ) -> dict[str, object]:
     origin = collect_dual_arm_snapshot(robot)
     target_positions = list(origin.positions)
@@ -155,7 +176,7 @@ def execute_arm_abs_joint_targets(
         raise TypeError("robot.get_joint_limits() did not return a mapping")
     assert_positions_within_limits(limits, target_positions)
 
-    velocities = [DEFAULT_VELOCITY] * len(DUAL_ARM_JOINTS)
+    velocities = [velocity] * len(DUAL_ARM_JOINTS)
     move_return = robot.move_arm_joint(target_positions, velocities, CONTROL_GROUP_DUAL_ARM)
     if not is_zero_error(move_return):
         raise RuntimeError(f"move_arm_joint returned {move_return!r}")
@@ -170,6 +191,8 @@ def execute_arm_abs_joint_targets(
         "positions_len": len(target_positions),
         "velocities_len": len(velocities),
         "velocities": velocities,
+        "effective_gdk_velocity": velocity,
+        "velocity_source": "taskflow_speed",
         "origin_positions": origin.positions,
         "target_positions": target_positions,
         "after_positions": after.positions,
@@ -182,6 +205,7 @@ def execute_arm_abs_joint_targets(
 def execute_waist_abs_joint_target(
     robot: Any,
     target_positions: Sequence[float],
+    velocity: float,
 ) -> dict[str, object]:
     origin = collect_waist_snapshot(robot)
     target = [float(value) for value in target_positions]
@@ -190,7 +214,7 @@ def execute_waist_abs_joint_target(
         raise TypeError("robot.get_joint_limits() did not return a mapping")
     assert_waist_positions_within_limits(limits, target)
 
-    velocities = [DEFAULT_VELOCITY] * len(WAIST_JOINTS)
+    velocities = [velocity] * len(WAIST_JOINTS)
     move_return = robot.move_waist_joint(target, velocities)
     if not is_zero_error(move_return):
         raise RuntimeError(f"move_waist_joint returned {move_return!r}")
@@ -204,6 +228,8 @@ def execute_waist_abs_joint_target(
         "positions_len": len(target),
         "velocities_len": len(velocities),
         "velocities": velocities,
+        "effective_gdk_velocity": velocity,
+        "velocity_source": "taskflow_speed",
         "origin_positions": origin.positions,
         "target_positions": target,
         "after_positions": after.positions,
@@ -284,6 +310,17 @@ def validate_abs_joint_targets(
                 message=str(error),
                 extra={"target": deepcopy(target.__dict__)},
             )
+    return None
+
+
+def validate_motion_velocity(speed: float) -> dict[str, object] | None:
+    if not isfinite(speed) or speed < MOTION_SPEED_MIN or speed > MOTION_SPEED_MAX:
+        return refused_result(
+            stage="validate_params",
+            message=(
+                f"speed must be between {MOTION_SPEED_MIN} and {MOTION_SPEED_MAX}"
+            ),
+        )
     return None
 
 

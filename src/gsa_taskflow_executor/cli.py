@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 from . import __version__
-from .config import ConfigError, ExecutorSettings
+from .config import ConfigError, ExecutorSettings, build_env_source
 from .gdk_control_probe import ALLOWED_ACTIONS, run_gdk_control_probe
 from .gdk_readonly import run_gdk_readonly_probe
 from .mqtt_gateway import MqttGateway, MqttGatewayError, TaskflowMessage
@@ -75,7 +75,8 @@ def main(argv: list[str] | None = None) -> int:
     logger = configure_stdout_logging()
 
     try:
-        settings = ExecutorSettings.from_env(env_file=args.env_file)
+        runtime_env = build_env_source(env_file=args.env_file)
+        settings = ExecutorSettings.from_env(env=runtime_env)
     except ConfigError as error:
         parser.error(str(error))
 
@@ -108,7 +109,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.gdk_control_probe:
         writer = JsonlEventWriter.from_settings(settings)
-        result = run_gdk_control_probe(args.gdk_control_probe)
+        result = run_gdk_control_probe(args.gdk_control_probe, environ=runtime_env)
         writer.write(
             RuntimeEvent(
                 event_type="gdk_control_probe",
@@ -202,7 +203,10 @@ def main(argv: list[str] | None = None) -> int:
                     node_runner=SkillRuntimeNodeRunner(
                         app_execution_id=taskflow.app_execution_id,
                         mode=settings.executor_mode,
-                        runtime=SkillRuntime(registry=skill_registry),
+                        runtime=SkillRuntime(
+                            registry=skill_registry,
+                            environ=runtime_env,
+                        ),
                     ),
                     node_event_handler=reporter.publish_node_event,
                 ).run()

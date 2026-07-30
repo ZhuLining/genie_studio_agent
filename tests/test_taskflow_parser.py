@@ -23,7 +23,7 @@ def test_parse_motion_plan_params() -> None:
     worker = taskflow.worker_nodes[0]
     params = parse_motion_plan_params(worker.params_template, "params_template")
 
-    assert params.speed == 0.5
+    assert params.speed == 0.05
     assert params.timeout == 50
     assert params.targets[0].body_part == "right_arm"
     assert params.targets[0].control_type == "ABS_JOINT"
@@ -84,6 +84,16 @@ def test_reject_wrong_joint_count() -> None:
 
     with pytest.raises(TaskflowParseError, match="长度必须是 7"):
         parse_taskflow_yaml(yaml_payload)
+
+
+def test_reject_motion_speed_outside_gdk_velocity_range() -> None:
+    with pytest.raises(TaskflowParseError, match="必须在 0.001 到 0.1 之间"):
+        parse_taskflow_yaml(VALID_RIGHT_ARM_YAML.replace("speed: 0.05", "speed: 0.5"))
+
+
+def test_reject_non_finite_motion_speed() -> None:
+    with pytest.raises(TaskflowParseError, match="必须是数字"):
+        parse_taskflow_yaml(VALID_RIGHT_ARM_YAML.replace("speed: 0.05", "speed: .nan"))
 
 
 def test_parser_allows_structural_worker_skill_name() -> None:

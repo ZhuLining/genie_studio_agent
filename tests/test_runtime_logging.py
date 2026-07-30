@@ -11,7 +11,7 @@ def test_jsonl_event_writer(tmp_path) -> None:
             message="节点进入 RUNNING",
             app_execution_id="exec-1",
             node_id="位姿调整-位控",
-            topic="taskflow/gsa-dev/status",
+            topic="gsa/self/gsa-dev/status",
             payload={"status": "running"},
         )
     )

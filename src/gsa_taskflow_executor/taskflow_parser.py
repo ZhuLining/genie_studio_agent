@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from math import isfinite
 from typing import Any
 
 import yaml
 
 YamlMapping = Mapping[str, Any]
+MOTION_SPEED_MIN = 0.001
+MOTION_SPEED_MAX = 0.1
 
 
 class TaskflowParseError(ValueError):
@@ -194,7 +197,7 @@ def validate_worker_params(skill_name: str, params: YamlMapping, path: str) -> N
 
 
 def parse_motion_plan_params(params: YamlMapping, path: str) -> MotionPlanParams:
-    speed = read_positive_number(params.get("speed"), f"{path}.speed")
+    speed = read_motion_speed(params.get("speed"), f"{path}.speed")
     timeout = read_positive_number(params.get("timeout"), f"{path}.timeout")
     targets: list[MotionPlanTarget] = []
 
@@ -281,9 +284,20 @@ def read_positive_number(value: Any, path: str) -> float:
     return number
 
 
+def read_motion_speed(value: Any, path: str) -> float:
+    number = read_positive_number(value, path)
+    if number < MOTION_SPEED_MIN or number > MOTION_SPEED_MAX:
+        raise TaskflowParseError(
+            f"{path} 必须在 {MOTION_SPEED_MIN} 到 {MOTION_SPEED_MAX} 之间"
+        )
+    return number
+
+
 def to_float(value: Any, path: str) -> float:
     if isinstance(value, bool):
         raise TaskflowParseError(f"{path} 必须是数字")
     if isinstance(value, int | float):
-        return float(value)
+        number = float(value)
+        if isfinite(number):
+            return number
     raise TaskflowParseError(f"{path} 必须是数字")

@@ -61,6 +61,9 @@ class AssignSkill:
 
 
 class MotionPlanSkillGdk:
+    def __init__(self, environ: Mapping[str, str] | None = None) -> None:
+        self.environ = environ
+
     def run(self, node: TaskflowNode, context: SkillExecutionContext) -> SkillResult:
         resolved_params = context.variable_store.resolve_value(node.params_template)
         if not isinstance(resolved_params, Mapping):
@@ -71,7 +74,13 @@ class MotionPlanSkillGdk:
         except TaskflowParseError as error:
             raise SkillRuntimeError(str(error)) from error
 
-        gdk_result = run_gdk_motion_plan_abs_joint(motion_params)
+        if self.environ is None:
+            gdk_result = run_gdk_motion_plan_abs_joint(motion_params)
+        else:
+            gdk_result = run_gdk_motion_plan_abs_joint(
+                motion_params,
+                environ=self.environ,
+            )
         if gdk_result.get("executed") is not True:
             error_msg = gdk_result.get("error_msg")
             raise SkillRuntimeError(str(error_msg or "GDK ABS_JOINT 执行失败"))
@@ -98,11 +107,15 @@ class MotionPlanSkillGdk:
 
 
 class SkillRuntime:
-    def __init__(self, registry: SkillRegistry | None = None) -> None:
+    def __init__(
+        self,
+        registry: SkillRegistry | None = None,
+        environ: Mapping[str, str] | None = None,
+    ) -> None:
         self.registry = registry or SkillRegistry.default()
         self.assign_skill = AssignSkill()
         self.gdk_skills: dict[str, Skill] = {
-            "motion_plan": MotionPlanSkillGdk(),
+            "motion_plan": MotionPlanSkillGdk(environ=environ),
         }
 
     def run(self, node: TaskflowNode, context: SkillExecutionContext) -> SkillResult:
@@ -159,6 +172,8 @@ def build_motion_plan_outputs(
         "primary_control_type": primary_target.control_type,
         "final_joint": deepcopy(primary_target.action_data),
         "speed": motion_params.speed,
+        "requested_speed": motion_params.speed,
+        "requested_speed_unit": "gdk_velocity",
         "timeout": motion_params.timeout,
         "resolved_params_template": deepcopy(dict(params_template)),
     }

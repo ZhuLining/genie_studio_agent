@@ -66,7 +66,9 @@ def test_motion_plan_skill_gdk_outputs_structured_motion_result(monkeypatch) -> 
     assert result.outputs["mode"] == "gdk"
     assert result.outputs["primary_body_part"] == "right_arm"
     assert result.outputs["primary_control_type"] == "ABS_JOINT"
-    assert result.outputs["speed"] == 0.5
+    assert result.outputs["speed"] == 0.05
+    assert result.outputs["requested_speed"] == 0.05
+    assert result.outputs["requested_speed_unit"] == "gdk_velocity"
     assert result.outputs["timeout"] == 50.0
     assert result.outputs["final_joint"] == [
         0.282,
@@ -134,10 +136,18 @@ def test_motion_plan_skill_gdk_resolves_variable_reference(monkeypatch) -> None:
 def test_motion_plan_skill_gdk_adapter_calls_gdk_runtime(monkeypatch) -> None:
     taskflow = parse_taskflow_yaml(VALID_RIGHT_ARM_YAML)
     node = taskflow.worker_nodes[0]
-    calls: list[object] = []
+    calls: list[tuple[object, dict[str, str] | None]] = []
+    runtime_env = {
+        "ENABLE_GDK_CONTROL": "1",
+        "CONFIRM_GDK_CONTROL": "TASKFLOW_ABS_JOINT",
+    }
 
-    def fake_gdk_runtime(motion_params: object) -> dict[str, object]:
-        calls.append(motion_params)
+    def fake_gdk_runtime(
+        motion_params: object,
+        *,
+        environ: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        calls.append((motion_params, environ))
         return {
             "available": True,
             "executed": True,
@@ -156,7 +166,8 @@ def test_motion_plan_skill_gdk_adapter_calls_gdk_runtime(monkeypatch) -> None:
                     }
                 }
             }
-        )
+        ),
+        environ=runtime_env,
     )
 
     result = runtime.run(
@@ -169,6 +180,7 @@ def test_motion_plan_skill_gdk_adapter_calls_gdk_runtime(monkeypatch) -> None:
     )
 
     assert len(calls) == 1
+    assert calls[0][1] == runtime_env
     assert result.outcome == "success"
     assert result.detail is not None
     assert result.detail["adapter"] == "gdk"

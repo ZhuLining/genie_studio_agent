@@ -1,6 +1,11 @@
 import pytest
 
-from gsa_taskflow_executor.config import ConfigError, ExecutorSettings, read_env_file
+from gsa_taskflow_executor.config import (
+    ConfigError,
+    ExecutorSettings,
+    build_env_source,
+    read_env_file,
+)
 
 
 def test_default_status_topic() -> None:
@@ -74,6 +79,29 @@ def test_process_env_overrides_env_file(tmp_path, monkeypatch) -> None:
     settings = ExecutorSettings.from_env(env_file=env_file)
 
     assert settings.status_topic == "gsa/self/process-aid/status"
+
+
+def test_build_env_source_keeps_env_precedence_over_env_file(tmp_path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "EXECUTOR_AID=file-aid",
+                "ENABLE_GDK_CONTROL=1",
+                "CONFIRM_GDK_CONTROL=TASKFLOW_ABS_JOINT",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    source = build_env_source(
+        env={"EXECUTOR_AID": "process-aid"},
+        env_file=env_file,
+    )
+
+    assert source["EXECUTOR_AID"] == "process-aid"
+    assert source["ENABLE_GDK_CONTROL"] == "1"
+    assert source["CONFIRM_GDK_CONTROL"] == "TASKFLOW_ABS_JOINT"
 
 
 def test_invalid_status_topic_template() -> None:

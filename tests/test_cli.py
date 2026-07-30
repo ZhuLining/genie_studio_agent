@@ -63,24 +63,26 @@ def test_gdk_control_probe_cli_prints_json_and_writes_event(
             [
                 "MQTT_BROKER_URL=mqtt://127.0.0.1:1883",
                 "EXECUTOR_LOG_DIR=" + str(log_dir),
+                "ENABLE_GDK_CONTROL=1",
+                "CONFIRM_GDK_CONTROL=HOLD_CURRENT_DUAL_ARM",
             ]
         ),
         encoding="utf-8",
     )
     probe_payload = {
-        "available": False,
-        "executed": False,
+        "available": True,
+        "executed": True,
         "backend": "agibot_gdk.Robot",
         "action": "hold_current",
-        "error_stage": "safety_gate",
-        "error_type": "GdkControlProbeRefused",
-        "error_msg": "ENABLE_GDK_CONTROL must be 1",
     }
-    monkeypatch.setattr(
-        cli,
-        "run_gdk_control_probe",
-        lambda action: {**probe_payload, "action": action},
-    )
+    captured_env: dict[str, str] = {}
+
+    def fake_control_probe(action, *, environ=None):
+        assert environ is not None
+        captured_env.update(environ)
+        return {**probe_payload, "action": action}
+
+    monkeypatch.setattr(cli, "run_gdk_control_probe", fake_control_probe)
 
     exit_code = cli.main(
         ["--env-file", str(env_file), "--gdk-control-probe", "hold_current"]
@@ -89,10 +91,12 @@ def test_gdk_control_probe_cli_prints_json_and_writes_event(
     assert exit_code == 0
     printed = json.loads(capsys.readouterr().out)
     assert printed == probe_payload
+    assert captured_env["ENABLE_GDK_CONTROL"] == "1"
+    assert captured_env["CONFIRM_GDK_CONTROL"] == "HOLD_CURRENT_DUAL_ARM"
 
     log_files = list((log_dir / "executions").glob("*.jsonl"))
     assert len(log_files) == 1
     event = json.loads(log_files[0].read_text(encoding="utf-8").splitlines()[0])
     assert event["event_type"] == "gdk_control_probe"
-    assert event["level"] == "warning"
+    assert event["level"] == "info"
     assert event["payload"] == {"probe": probe_payload}

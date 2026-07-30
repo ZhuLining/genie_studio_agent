@@ -4,7 +4,6 @@ from typing import Any
 
 from gsa_taskflow_executor.gdk_control_probe import (
     CONTROL_GROUP_DUAL_ARM,
-    DEFAULT_VELOCITY,
     DUAL_ARM_JOINTS,
 )
 from gsa_taskflow_executor.gdk_motion_runtime import (
@@ -131,7 +130,7 @@ def test_gdk_motion_runtime_refuses_before_importing_without_safety_gate() -> No
                     action_data=[0.1] * 7,
                 ),
             ),
-            speed=0.5,
+            speed=0.05,
             timeout=50.0,
         ),
         environ={},
@@ -143,10 +142,39 @@ def test_gdk_motion_runtime_refuses_before_importing_without_safety_gate() -> No
     assert result["error_msg"] == "ENABLE_GDK_CONTROL must be 1"
 
 
+def test_gdk_motion_runtime_refuses_speed_outside_safe_range() -> None:
+    def forbidden_import(_name: str) -> Any:
+        raise AssertionError("GDK must not be imported with invalid speed")
+
+    result = run_gdk_motion_plan_abs_joint(
+        MotionPlanParams(
+            targets=(
+                MotionPlanTarget(
+                    body_part="right_arm",
+                    control_type="ABS_JOINT",
+                    action_data=[0.1] * 7,
+                ),
+            ),
+            speed=0.5,
+            timeout=50.0,
+        ),
+        environ={
+            "ENABLE_GDK_CONTROL": "1",
+            "CONFIRM_GDK_CONTROL": TASKFLOW_ABS_JOINT_CONFIRMATION,
+        },
+        import_module=forbidden_import,
+    )
+
+    assert result["executed"] is False
+    assert result["error_stage"] == "validate_params"
+    assert result["error_msg"] == "speed must be between 0.001 and 0.1"
+
+
 def test_gdk_motion_runtime_executes_right_arm_and_waist_abs_joint() -> None:
     FakeAgibotGdk.reset()
     right_target = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
     waist_target = [0.01, 0.02, 0.03, 0.04, 0.05]
+    expected_velocity = 0.05
 
     result = run_gdk_motion_plan_abs_joint(
         MotionPlanParams(
@@ -162,7 +190,7 @@ def test_gdk_motion_runtime_executes_right_arm_and_waist_abs_joint() -> None:
                     action_data=waist_target,
                 ),
             ),
-            speed=0.5,
+            speed=expected_velocity,
             timeout=50.0,
         ),
         environ={
@@ -173,22 +201,32 @@ def test_gdk_motion_runtime_executes_right_arm_and_waist_abs_joint() -> None:
     )
 
     assert result["executed"] is True
-    assert result["gdk_velocity"] == DEFAULT_VELOCITY
+    assert result["speed"] == expected_velocity
+    assert result["requested_speed"] == expected_velocity
+    assert result["requested_speed_unit"] == "gdk_velocity"
+    assert result["speed_mapping_applied"] is True
+    assert result["effective_gdk_velocity"] == expected_velocity
+    assert result["gdk_velocity"] == expected_velocity
+    assert result["velocity_source"] == "taskflow_speed"
     assert FakeAgibotGdk.init_called == 1
     assert FakeAgibotGdk.release_called == 1
     assert FakeAgibotGdk.robot.arm_move_calls == [
         (
             [index * 0.01 for index in range(7)] + right_target,
-            [DEFAULT_VELOCITY] * len(DUAL_ARM_JOINTS),
+            [expected_velocity] * len(DUAL_ARM_JOINTS),
             CONTROL_GROUP_DUAL_ARM,
         )
     ]
     assert FakeAgibotGdk.robot.waist_move_calls == [
-        (waist_target, [DEFAULT_VELOCITY] * len(WAIST_JOINTS))
+        (waist_target, [expected_velocity] * len(WAIST_JOINTS))
     ]
 
     groups = result["groups"]
     assert isinstance(groups, list)
     assert groups[0]["method"] == "move_arm_joint"
     assert groups[0]["requested_body_parts"] == ["right_arm"]
+    assert groups[0]["effective_gdk_velocity"] == expected_velocity
+    assert groups[0]["velocity_source"] == "taskflow_speed"
     assert groups[1]["method"] == "move_waist_joint"
+    assert groups[1]["effective_gdk_velocity"] == expected_velocity
+    assert groups[1]["velocity_source"] == "taskflow_speed"

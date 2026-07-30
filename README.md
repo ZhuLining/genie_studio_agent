@@ -149,8 +149,9 @@ left_arm/right_arm  robot.move_arm_joint(positions14, velocities14, 2)
 waist               robot.move_waist_joint(positions5, velocities5)
 ```
 
-左右臂会合并为 14 维数组，单臂控制时另一臂填当前值；腰部使用 5 维数组。GDK velocity
-先固定为已验证的 `0.02`，不会把客户端 `speed` 比例值直接当作关节速度。
+左右臂会合并为 14 维数组，单臂控制时另一臂填当前值；腰部使用 5 维数组。Taskflow
+`speed` 作为 GDK `velocities` 使用，允许范围为 `0.001~0.1`，新建节点默认 `0.05`。
+手动控制探针仍使用已验证默认 `0.02`。
 
 监听 `gsa/self/taskflow_yaml`：
 

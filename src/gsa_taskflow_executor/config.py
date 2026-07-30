@@ -35,9 +35,7 @@ class ExecutorSettings:
         env: EnvMapping | None = None,
         env_file: str | Path | None = None,
     ) -> ExecutorSettings:
-        source = dict(environ if env is None else env)
-        if env_file is not None:
-            source = {**read_env_file(Path(env_file)), **source}
+        source = build_env_source(env=env, env_file=env_file)
 
         settings = cls(
             mqtt_broker_url=source.get("MQTT_BROKER_URL", cls.mqtt_broker_url).strip(),
@@ -149,6 +147,16 @@ def read_env_file(path: Path) -> dict[str, str]:
         values[key] = strip_env_value(value.strip())
 
     return values
+
+
+def build_env_source(
+    env: EnvMapping | None = None,
+    env_file: str | Path | None = None,
+) -> dict[str, str]:
+    source = dict(environ if env is None else env)
+    if env_file is not None:
+        source = {**read_env_file(Path(env_file)), **source}
+    return source
 
 
 def strip_env_value(value: str) -> str:
