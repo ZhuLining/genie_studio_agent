@@ -2,14 +2,14 @@ import json
 
 import pytest
 
-from gsa_taskflow_executor.config import ExecutorSettings
-from gsa_taskflow_executor.mqtt_gateway import (
+from gsa_taskflow_executor.mqtt.gateway import (
     MqttGateway,
     MqttGatewayError,
     default_port_for_scheme,
     is_success_reason_code,
 )
-from gsa_taskflow_executor.runtime_logging import JsonlEventWriter
+from gsa_taskflow_executor.runtime.config import ExecutorSettings
+from gsa_taskflow_executor.runtime.event_log import JsonlEventWriter
 
 
 class FakePublishResult:

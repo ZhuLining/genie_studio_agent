@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from gsa_taskflow_executor.e2e_probe import (
+from gsa_taskflow_executor.mqtt.e2e_probe import (
     format_status_line,
     is_terminal_execution_payload,
     prepare_yaml_payload,

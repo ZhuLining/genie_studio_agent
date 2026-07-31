@@ -4,15 +4,15 @@ import importlib
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
-from .gdk_control_probe import (
+from .control_probe import (
     LEFT_ARM_JOINTS,
     RIGHT_ARM_JOINTS,
     is_zero_error,
     read_joint_position,
     utc_now_iso,
 )
-from .gdk_motion_runtime import WAIST_JOINTS
-from .gdk_readonly import GDK_BACKEND, GDK_MODULE_NAME, to_jsonable
+from .motion_runtime import WAIST_JOINTS
+from .readonly import GDK_BACKEND, GDK_MODULE_NAME, to_jsonable
 
 
 def run_gdk_current_pose_snapshot(

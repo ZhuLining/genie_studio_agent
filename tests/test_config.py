@@ -1,6 +1,6 @@
 import pytest
 
-from gsa_taskflow_executor.config import (
+from gsa_taskflow_executor.runtime.config import (
     ConfigError,
     ExecutorSettings,
     build_env_source,

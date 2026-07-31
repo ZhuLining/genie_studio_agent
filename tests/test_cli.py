@@ -6,6 +6,39 @@ from pathlib import Path
 from gsa_taskflow_executor import cli
 
 
+def test_print_config_includes_env_file_safety_gate_and_speed_limits(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "MQTT_BROKER_URL=mqtt://127.0.0.1:1883",
+                "ENABLE_GDK_CONTROL=1",
+                "CONFIRM_GDK_CONTROL=TASKFLOW_ABS_JOINT",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    exit_code = cli.main(["--env-file", str(env_file), "--print-config"])
+
+    assert exit_code == 0
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["mqtt_broker_url"] == "mqtt://127.0.0.1:1883"
+    assert printed["taskflow_gdk_safety_gate"] == {
+        "enabled": True,
+        "confirmed": True,
+        "expected_confirmation": "TASKFLOW_ABS_JOINT",
+    }
+    assert printed["motion_speed_limits"] == {
+        "unit": "gdk_velocity",
+        "min": 0.001,
+        "max": 0.1,
+    }
+
+
 def test_gdk_readonly_probe_cli_prints_json_and_writes_event(
     tmp_path: Path,
     capsys,

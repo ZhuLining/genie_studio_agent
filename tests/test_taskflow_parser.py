@@ -1,9 +1,10 @@
 import pytest
 
-from fixtures import VALID_RIGHT_ARM_YAML
-from gsa_taskflow_executor.taskflow_parser import (
+from fixtures import VALID_RIGHT_ARM_YAML, VALID_SCRIPT_AND_MOTION_YAML
+from gsa_taskflow_executor.taskflow.parser import (
     TaskflowParseError,
     parse_motion_plan_params,
+    parse_script_params,
     parse_taskflow_yaml,
 )
 
@@ -55,6 +56,26 @@ def test_variable_reference_action_data_is_allowed() -> None:
     params = parse_motion_plan_params(taskflow.worker_nodes[0].params_template, "params_template")
 
     assert params.targets[0].action_data == "$.variables.二维码定位.detail.action_data.抓取点A"
+
+
+def test_parse_script_skill_params() -> None:
+    taskflow = parse_taskflow_yaml(VALID_SCRIPT_AND_MOTION_YAML)
+    worker = taskflow.worker_nodes[0]
+    params = parse_script_params(worker.params_template, "params_template")
+
+    assert worker.skill_name == "script_skill"
+    assert params.script_id == "gdk_hold_current_dual_arm"
+    assert params.timeout == 20
+
+
+def test_reject_script_id_outside_whitelist() -> None:
+    with pytest.raises(TaskflowParseError, match="script_id 未在白名单中"):
+        parse_taskflow_yaml(
+            VALID_SCRIPT_AND_MOTION_YAML.replace(
+                "gdk_hold_current_dual_arm",
+                "run_any_python",
+            )
+        )
 
 
 def test_reject_missing_start_node() -> None:

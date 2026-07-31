@@ -18,7 +18,7 @@ nodes:
           - -0.621
           - -0.169
           - 1.122
-      speed: 0.5
+      speed: 0.05
       timeout: 50
     capture_state_detail: true
     output_var: 位姿调整-位控

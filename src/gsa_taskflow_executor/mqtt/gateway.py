@@ -9,8 +9,12 @@ from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
 
-from .config import ExecutorSettings
-from .runtime_logging import JsonlEventWriter, RuntimeEvent, configure_stdout_logging
+from gsa_taskflow_executor.runtime.config import ExecutorSettings
+from gsa_taskflow_executor.runtime.event_log import (
+    JsonlEventWriter,
+    RuntimeEvent,
+    configure_stdout_logging,
+)
 
 TaskflowMessageHandler = Callable[["TaskflowMessage"], None]
 RobotStateMessageHandler = Callable[["TaskflowMessage"], None]

@@ -89,8 +89,22 @@ sudo -u gsa .venv/bin/python -m pip install \
 安装完成后先做本地验证：
 
 ```bash
-sudo -u gsa .venv/bin/python -m gsa_taskflow_executor.cli --print-config
-sudo -u gsa .venv/bin/gsa-taskflow-executor --print-config
+sudo -u gsa .venv/bin/python -m gsa_taskflow_executor.cli \
+  --env-file /etc/gsa-taskflow-executor/gsa-taskflow-executor.env \
+  --print-config
+sudo -u gsa .venv/bin/gsa-taskflow-executor \
+  --env-file /etc/gsa-taskflow-executor/gsa-taskflow-executor.env \
+  --print-config
+```
+
+`--print-config` 会显示 `taskflow_gdk_safety_gate`。正式 Taskflow 控制前必须确认：
+
+```json
+"taskflow_gdk_safety_gate": {
+  "enabled": true,
+  "confirmed": true,
+  "expected_confirmation": "TASKFLOW_ABS_JOINT"
+}
 ```
 
 交互调试时可以手动激活 venv，但这不是 systemd 或部署命令的必要步骤：
@@ -127,11 +141,13 @@ CONFIRM_GDK_CONTROL=TASKFLOW_ABS_JOINT
 
 `EXECUTOR_AID` 必须和客户端订阅的 `gsa/self/{aid}/status` 一致。
 
-Skill Registry 只允许 MVP 的 `motion_plan_skill` + `adapter: gdk`。如果配置成
-其他 adapter 或非 MVP skill，服务会拒绝启动。未设置 `ENABLE_GDK_CONTROL=1` 与
-`CONFIRM_GDK_CONTROL=TASKFLOW_ABS_JOINT` 时，taskflow 会在导入 GDK 前拒绝执行控制。
+Skill Registry 只允许 MVP 的 `motion_plan_skill` + `adapter: gdk`，以及用于验证调度扩展的
+受控 `script_skill` + `adapter: gdk`。如果配置成其他 adapter 或非 MVP skill，服务会拒绝启动。
+未设置 `ENABLE_GDK_CONTROL=1` 与 `CONFIRM_GDK_CONTROL=TASKFLOW_ABS_JOINT` 时，
+taskflow 会在导入 GDK 前拒绝执行控制。
 
-正式执行前建议先做只读与手动控制验证：
+正式执行前建议先做只读与手动控制验证。完整现场闭环见
+`docs/mvp_field_validation.md`：
 
 ```bash
 sudo -u gsa .venv/bin/gsa-taskflow-executor \
@@ -171,7 +187,7 @@ journalctl -u gsa-taskflow-executor -f
 
 ```bash
 cd /opt/gsa_taskflow_executor
-sudo -u gsa .venv/bin/python -m gsa_taskflow_executor.e2e_probe \
+sudo -u gsa .venv/bin/python -m gsa_taskflow_executor.mqtt.e2e_probe \
   --broker-url mqtt://127.0.0.1:1883 \
   --status-topic gsa/self/gsa-dev/status
 ```

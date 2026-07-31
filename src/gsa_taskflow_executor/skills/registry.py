@@ -8,11 +8,16 @@ from typing import Any, Literal, cast
 
 import yaml
 
-from .config import ExecutorSettings
-from .taskflow_parser import TaskflowDefinition, TaskflowParseError, parse_motion_plan_params
+from gsa_taskflow_executor.runtime.config import ExecutorSettings
+from gsa_taskflow_executor.taskflow.parser import (
+    TaskflowDefinition,
+    TaskflowParseError,
+    parse_motion_plan_params,
+    parse_script_params,
+)
 
 SkillAdapter = Literal["gdk"]
-SkillImplementation = Literal["motion_plan"]
+SkillImplementation = Literal["motion_plan", "script"]
 YamlMapping = Mapping[str, Any]
 
 
@@ -51,7 +56,13 @@ class SkillRegistry:
                     adapter="gdk",
                     implementation="motion_plan",
                     description="GDK motion planning skill.",
-                )
+                ),
+                "script_skill": SkillDefinition(
+                    name="script_skill",
+                    adapter="gdk",
+                    implementation="script",
+                    description="GDK whitelisted script skill.",
+                ),
             }
         )
 
@@ -112,6 +123,14 @@ class SkillRegistry:
                     )
                 except TaskflowParseError as error:
                     raise SkillRegistryError(str(error)) from error
+            if skill.implementation == "script":
+                try:
+                    parse_script_params(
+                        node.params_template,
+                        f"nodes[{node.node_id}].params_template",
+                    )
+                except TaskflowParseError as error:
+                    raise SkillRegistryError(str(error)) from error
 
     def summary(self) -> dict[str, object]:
         return {
@@ -128,17 +147,23 @@ def parse_skill_definition(name: str, raw_config: Any) -> SkillDefinition:
     if adapter_value != "gdk":
         raise SkillRegistryError(f"{path}.adapter 只支持 gdk，不支持 {adapter_value}")
 
+    allowed_implementations = {
+        "motion_plan_skill": "motion_plan",
+        "script_skill": "script",
+    }
+    expected_implementation = allowed_implementations.get(name)
+    if expected_implementation is None:
+        raise SkillRegistryError("MVP 当前只支持 motion_plan_skill 和 script_skill")
     implementation_value = read_optional_string(
         config,
         ("implementation",),
-        fallback="motion_plan",
+        fallback=expected_implementation,
     )
-    if implementation_value != "motion_plan":
+    if implementation_value != expected_implementation:
         raise SkillRegistryError(
-            f"{path}.implementation 只支持 motion_plan，当前为 {implementation_value}"
+            f"{path}.implementation 只支持 {expected_implementation}，"
+            f"当前为 {implementation_value}"
         )
-    if name != "motion_plan_skill":
-        raise SkillRegistryError("MVP 当前只支持 motion_plan_skill")
 
     return SkillDefinition(
         name=name,

@@ -1,15 +1,15 @@
 import pytest
 
-import gsa_taskflow_executor.skill_runtime as skill_runtime
-from fixtures import VALID_RIGHT_ARM_YAML
-from gsa_taskflow_executor.skill_registry import SkillRegistry
-from gsa_taskflow_executor.skill_runtime import (
+import gsa_taskflow_executor.skills.runtime as skill_runtime
+from fixtures import VALID_RIGHT_ARM_YAML, VALID_SCRIPT_AND_MOTION_YAML
+from gsa_taskflow_executor.skills.registry import SkillRegistry
+from gsa_taskflow_executor.skills.runtime import (
     SkillExecutionContext,
     SkillRuntime,
     SkillRuntimeError,
 )
-from gsa_taskflow_executor.taskflow_parser import TaskflowNode, parse_taskflow_yaml
-from gsa_taskflow_executor.variable_store import VariableStore
+from gsa_taskflow_executor.taskflow.parser import TaskflowNode, parse_taskflow_yaml
+from gsa_taskflow_executor.taskflow.variables import VariableStore
 
 
 def test_assign_skill_resolves_assignments() -> None:
@@ -191,6 +191,58 @@ def test_motion_plan_skill_gdk_adapter_calls_gdk_runtime(monkeypatch) -> None:
         "executed": True,
         "backend": "agibot_gdk.Robot",
         "action": "taskflow_abs_joint",
+    }
+
+
+def test_script_skill_gdk_adapter_calls_whitelisted_script_runtime(monkeypatch) -> None:
+    taskflow = parse_taskflow_yaml(VALID_SCRIPT_AND_MOTION_YAML)
+    node = taskflow.worker_nodes[0]
+    calls: list[tuple[object, dict[str, str] | None]] = []
+    runtime_env = {
+        "ENABLE_GDK_CONTROL": "1",
+        "CONFIRM_GDK_CONTROL": "TASKFLOW_ABS_JOINT",
+    }
+
+    def fake_script_runtime(
+        script_params: object,
+        *,
+        environ: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        calls.append((script_params, environ))
+        return {
+            "available": True,
+            "executed": True,
+            "backend": "gdk_script",
+            "script_id": "gdk_hold_current_dual_arm",
+            "script_action": "hold_current",
+        }
+
+    monkeypatch.setattr(skill_runtime, "run_gdk_script", fake_script_runtime)
+    runtime = SkillRuntime(environ=runtime_env)
+
+    result = runtime.run(
+        node,
+        SkillExecutionContext(
+            app_execution_id=taskflow.app_execution_id,
+            variable_store=VariableStore(),
+            mode="gdk",
+        ),
+    )
+
+    assert len(calls) == 1
+    assert calls[0][1] == runtime_env
+    assert result.outcome == "success"
+    assert result.detail is not None
+    assert result.detail["adapter"] == "gdk"
+    assert result.outputs is not None
+    assert result.outputs["script_id"] == "gdk_hold_current_dual_arm"
+    assert result.outputs["timeout"] == 20.0
+    assert result.outputs["script_result"] == {
+        "available": True,
+        "executed": True,
+        "backend": "gdk_script",
+        "script_id": "gdk_hold_current_dual_arm",
+        "script_action": "hold_current",
     }
 
 

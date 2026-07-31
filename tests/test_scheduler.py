@@ -1,15 +1,15 @@
 import pytest
 
-import gsa_taskflow_executor.skill_runtime as skill_runtime
-from fixtures import VALID_RIGHT_ARM_YAML
-from gsa_taskflow_executor.scheduler import (
+import gsa_taskflow_executor.skills.runtime as skill_runtime
+from fixtures import VALID_RIGHT_ARM_YAML, VALID_SCRIPT_AND_MOTION_YAML
+from gsa_taskflow_executor.taskflow.parser import parse_taskflow_yaml
+from gsa_taskflow_executor.taskflow.scheduler import (
     NodeExecutionEvent,
     NodeRunResult,
     TaskflowScheduleError,
     TaskflowScheduler,
 )
-from gsa_taskflow_executor.taskflow_parser import parse_taskflow_yaml
-from gsa_taskflow_executor.variable_store import VariableStore
+from gsa_taskflow_executor.taskflow.variables import VariableStore
 
 
 def test_gdk_scheduler_walks_linear_taskflow(monkeypatch) -> None:
@@ -28,6 +28,36 @@ def test_gdk_scheduler_walks_linear_taskflow(monkeypatch) -> None:
     assert result.summary()["step_count"] == 3
     assert result.variables["位姿调整-位控"]["detail"]["status"] == "success"
     assert result.variables["位姿调整-位控"]["detail"]["mode"] == "gdk"
+
+
+def test_gdk_scheduler_walks_mixed_script_and_motion_taskflow(monkeypatch) -> None:
+    monkeypatch.setattr(
+        skill_runtime,
+        "run_gdk_script",
+        lambda _script_params: {
+            "available": True,
+            "executed": True,
+            "script_id": "gdk_hold_current_dual_arm",
+        },
+    )
+    monkeypatch.setattr(
+        skill_runtime,
+        "run_gdk_motion_plan_abs_joint",
+        lambda _motion_params: {"available": True, "executed": True},
+    )
+    taskflow = parse_taskflow_yaml(VALID_SCRIPT_AND_MOTION_YAML)
+
+    result = TaskflowScheduler(taskflow).run()
+
+    assert result.outcome == "success"
+    assert result.terminal_node_id == "结束"
+    assert result.visited_node_ids == ("开始", "脚本控制", "位姿调整-位控", "结束")
+    assert result.summary()["step_count"] == 4
+    assert result.variables["脚本控制"]["detail"]["status"] == "success"
+    assert result.variables["脚本控制"]["detail"]["outputs"]["script_id"] == (
+        "gdk_hold_current_dual_arm"
+    )
+    assert result.variables["位姿调整-位控"]["detail"]["status"] == "success"
 
 
 def test_scheduler_stops_on_node_error() -> None:

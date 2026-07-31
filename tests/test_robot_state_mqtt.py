@@ -1,12 +1,12 @@
 import json
 
-from gsa_taskflow_executor.config import ExecutorSettings
-from gsa_taskflow_executor.mqtt_gateway import TaskflowMessage
-from gsa_taskflow_executor.robot_state_mqtt import (
+from gsa_taskflow_executor.mqtt.gateway import TaskflowMessage
+from gsa_taskflow_executor.mqtt.robot_state import (
     build_current_pose_response,
     handle_current_pose_request,
     parse_current_pose_request,
 )
+from gsa_taskflow_executor.runtime.config import ExecutorSettings
 
 
 def make_message(payload: str) -> TaskflowMessage:

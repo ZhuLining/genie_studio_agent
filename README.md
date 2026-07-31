@@ -11,7 +11,8 @@
 ```
 
 工作流执行不再使用 mock/dry-run：`motion_plan_skill` 会在安全门确认后调用已验证的
-GDK `ABS_JOINT` 接口。未设置 `ENABLE_GDK_CONTROL=1` 与
+GDK `ABS_JOINT` 接口；`script_skill` 只允许以子进程执行 executor 内置白名单 GDK 探针脚本模块，
+用于验证同一条工作流中混合不同 worker 实现。未设置 `ENABLE_GDK_CONTROL=1` 与
 `CONFIRM_GDK_CONTROL=TASKFLOW_ABS_JOINT` 时，会在导入 GDK 前拒绝执行控制。
 
 `--listen` 还会提供一个独立的只读机器人状态查询入口：订阅
@@ -25,6 +26,18 @@ OS: Ubuntu 22.04 LTS
 Python: 3.10+
 Process manager: systemd
 Runtime mode: gdk
+```
+
+## 源码结构
+
+```text
+src/gsa_taskflow_executor/
+  cli.py             命令行入口，串联配置、MQTT、parser、scheduler、runtime
+  runtime/           配置读取、stdout/JSONL 事件日志
+  taskflow/          YAML parser、DAG scheduler、变量存储
+  skills/            Skill Registry 与 worker skill runtime
+  gdk/               GDK 只读探针、控制探针、ABS_JOINT runtime、固定脚本模块
+  mqtt/              MQTT gateway、状态回传、当前位姿请求、端到端 probe
 ```
 
 ## 本地开发
@@ -142,7 +155,7 @@ EXECUTOR_MODE=gdk \
 gsa-taskflow-executor --env-file .env.example --listen
 ```
 
-该模式只支持已经实测的 `motion_plan_skill` + `ABS_JOINT`：
+该模式的正式运动控制只支持已经实测的 `motion_plan_skill` + `ABS_JOINT`：
 
 ```text
 left_arm/right_arm  robot.move_arm_joint(positions14, velocities14, 2)
@@ -160,8 +173,8 @@ gsa-taskflow-executor --env-file .env.example --listen
 ```
 
 监听模式会订阅 YAML、解析 Taskflow、按 DAG 顺序进入 Skill Runtime。`EXECUTOR_MODE`
-只支持 `gdk`，registry 只允许 `motion_plan_skill` + `adapter: gdk`；安全门确认通过后，
-才会导入 GDK 并执行已验证的绝对关节角控制。
+只支持 `gdk`，registry 只允许 `motion_plan_skill` 和受控 `script_skill` 的 GDK adapter；
+安全门确认通过后，才会导入 GDK 并执行已验证的绝对关节角控制，或启动固定白名单脚本模块。
 
 同时，监听模式还会订阅只读当前位姿请求：
 
@@ -205,6 +218,18 @@ skill runtime schedule outcome=success terminal=结束 steps=3 path=开始 -> �
 ```
 
 该调度器负责节点顺序、transition 选择和变量写入。真实技能调用由 Skill Runtime 封装。
+可选的多 worker 实现验证链路：
+
+```text
+开始 -> 脚本控制 -> 位姿调整-位控 -> 结束
+```
+
+可直接发布示例 YAML 验证：
+
+```bash
+mosquitto_pub -h 127.0.0.1 -p 1883 -t gsa/self/taskflow_yaml \
+  -f examples/script_and_motion.yaml
+```
 
 当前已接入 VariableStore。GDK 调度过程中会维护运行时变量空间：
 
@@ -232,6 +257,7 @@ $.variables.二维码定位.detail.action_data.抓取点A
 ```text
 assign              解析 assignments，写入节点 detail.outputs.assignments
 motion_plan_skill   gdk  受保护调用 GDK ABS_JOINT，输出 gdk_result
+script_skill        gdk  受保护执行白名单 GDK 探针脚本模块，输出 script_result
 ```
 
 当前已接入配置化 Skill Registry。默认内置配置等价于：
@@ -241,6 +267,9 @@ skills:
   motion_plan_skill:
     adapter: gdk
     implementation: motion_plan
+  script_skill:
+    adapter: gdk
+    implementation: script
 ```
 
 也可以通过环境变量指定配置文件：
@@ -250,7 +279,7 @@ SKILL_REGISTRY_FILE=skills.example.yaml
 ```
 
 registry 当前只支持 `adapter: gdk`。`gdk` 当前只允许 `motion_plan_skill`
-的 `ABS_JOINT`，并要求 `ENABLE_GDK_CONTROL=1` 与
+的 `ABS_JOINT` 和 `script_skill` 的白名单脚本 ID，并要求 `ENABLE_GDK_CONTROL=1` 与
 `CONFIRM_GDK_CONTROL=TASKFLOW_ABS_JOINT`；`python_script`、`http` 等 adapter 暂不启用。
 
 当前已接入状态回传。每个节点会按生命周期发布：
@@ -322,7 +351,7 @@ gsa-taskflow-executor --env-file .env.local --listen
 终端 2 发布样例 YAML 并等待状态回传：
 
 ```bash
-python -m gsa_taskflow_executor.e2e_probe \
+python -m gsa_taskflow_executor.mqtt.e2e_probe \
   --broker-url mqtt://127.0.0.1:1883 \
   --status-topic gsa/self/gsa-dev/status
 ```
@@ -435,18 +464,19 @@ logs/executions/YYYYMMDD.jsonl  可复盘的结构化运行事件
 20. Skill Runtime
 21. assign skill
 22. motion_plan_skill GDK skill
-23. worker 参数进入 runtime 后二次校验
-24. gsa/self/{aid}/status 状态回传
-25. 节点 RUNNING / OVER / ERROR 生命周期事件
-26. 节点 outputs / detail / variables 快照回传
-27. 端到端 MQTT smoke probe
-28. 样例 Taskflow YAML
-29. Ubuntu 22.04 systemd 部署文件
-30. 配置化 Skill Registry
-31. skills.example.yaml
-32. GDK adapter 白名单
-33. GDK 只读 CLI 探针
-34. get_joint_states 摘要与 JSONL 事件记录
+23. script_skill GDK 白名单脚本 skill
+24. worker 参数进入 runtime 后二次校验
+25. gsa/self/{aid}/status 状态回传
+26. 节点 RUNNING / OVER / ERROR 生命周期事件
+27. 节点 outputs / detail / variables 快照回传
+28. 端到端 MQTT smoke probe
+29. 样例 Taskflow YAML
+30. Ubuntu 22.04 systemd 部署文件
+31. 配置化 Skill Registry
+32. skills.example.yaml
+33. GDK adapter 白名单
+34. GDK 只读 CLI 探针
+35. get_joint_states 摘要与 JSONL 事件记录
 ```
 
 下一步：

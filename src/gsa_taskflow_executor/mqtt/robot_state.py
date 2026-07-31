@@ -5,10 +5,10 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from .config import ExecutorSettings
-from .gdk_current_pose import run_gdk_current_pose_snapshot
-from .mqtt_gateway import TaskflowMessage
-from .runtime_logging import JsonlEventWriter, RuntimeEvent
+from gsa_taskflow_executor.gdk.current_pose import run_gdk_current_pose_snapshot
+from gsa_taskflow_executor.mqtt.gateway import TaskflowMessage
+from gsa_taskflow_executor.runtime.config import ExecutorSettings
+from gsa_taskflow_executor.runtime.event_log import JsonlEventWriter, RuntimeEvent
 
 CURRENT_POSE_REQUEST_TYPE = "get_current_pose"
 

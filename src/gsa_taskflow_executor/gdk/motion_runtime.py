@@ -7,7 +7,14 @@ from copy import deepcopy
 from math import isfinite
 from typing import Any
 
-from .gdk_control_probe import (
+from gsa_taskflow_executor.taskflow.parser import (
+    MOTION_SPEED_MAX,
+    MOTION_SPEED_MIN,
+    MotionPlanParams,
+    MotionPlanTarget,
+)
+
+from .control_probe import (
     CONTROL_GROUP_DUAL_ARM,
     DUAL_ARM_JOINTS,
     LEFT_ARM_JOINTS,
@@ -24,13 +31,7 @@ from .gdk_control_probe import (
     validate_motion_status,
     validate_whole_body_status,
 )
-from .gdk_readonly import GDK_BACKEND, GDK_MODULE_NAME, to_jsonable
-from .taskflow_parser import (
-    MOTION_SPEED_MAX,
-    MOTION_SPEED_MIN,
-    MotionPlanParams,
-    MotionPlanTarget,
-)
+from .readonly import GDK_BACKEND, GDK_MODULE_NAME, to_jsonable
 
 ACTION_TASKFLOW_ABS_JOINT = "taskflow_abs_joint"
 TASKFLOW_ABS_JOINT_CONFIRMATION = "TASKFLOW_ABS_JOINT"

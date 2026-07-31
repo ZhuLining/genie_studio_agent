@@ -10,6 +10,13 @@ import yaml
 YamlMapping = Mapping[str, Any]
 MOTION_SPEED_MIN = 0.001
 MOTION_SPEED_MAX = 0.1
+SCRIPT_IDS = frozenset(
+    {
+        "gdk_hold_current_dual_arm",
+        "gdk_nudge_left_j7_0p005",
+        "gdk_nudge_right_j7_0p005",
+    }
+)
 
 
 class TaskflowParseError(ValueError):
@@ -34,6 +41,12 @@ class MotionPlanTarget:
 class MotionPlanParams:
     targets: tuple[MotionPlanTarget, ...]
     speed: float
+    timeout: float
+
+
+@dataclass(frozen=True)
+class ScriptParams:
+    script_id: str
     timeout: float
 
 
@@ -194,6 +207,8 @@ def validate_definition(definition: TaskflowDefinition) -> None:
 def validate_worker_params(skill_name: str, params: YamlMapping, path: str) -> None:
     if skill_name == "motion_plan_skill":
         parse_motion_plan_params(params, f"{path}.params_template")
+    elif skill_name == "script_skill":
+        parse_script_params(params, f"{path}.params_template")
 
 
 def parse_motion_plan_params(params: YamlMapping, path: str) -> MotionPlanParams:
@@ -224,6 +239,14 @@ def parse_motion_plan_params(params: YamlMapping, path: str) -> MotionPlanParams
         raise TaskflowParseError(f"{path} 至少需要 left_arm/right_arm/waist 之一")
 
     return MotionPlanParams(targets=tuple(targets), speed=speed, timeout=timeout)
+
+
+def parse_script_params(params: YamlMapping, path: str) -> ScriptParams:
+    script_id = read_required_string(params, "script_id", path)
+    if script_id not in SCRIPT_IDS:
+        raise TaskflowParseError(f"{path}.script_id 未在白名单中: {script_id}")
+    timeout = read_positive_number(params.get("timeout"), f"{path}.timeout")
+    return ScriptParams(script_id=script_id, timeout=timeout)
 
 
 def parse_action_data(raw: Any, body_part: str, control_type: str, path: str) -> list[float] | str:

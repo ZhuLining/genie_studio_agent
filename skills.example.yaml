@@ -3,3 +3,7 @@ skills:
     adapter: gdk
     implementation: motion_plan
     description: Guarded GDK ABS_JOINT motion skill for the MVP taskflow.
+  script_skill:
+    adapter: gdk
+    implementation: script
+    description: Guarded executor-side whitelisted GDK script skill.

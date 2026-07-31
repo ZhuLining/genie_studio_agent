@@ -5,9 +5,9 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from .config import ExecutorSettings
-from .scheduler import NodeExecutionEvent, ScheduleResult
-from .taskflow_parser import TaskflowDefinition
+from gsa_taskflow_executor.runtime.config import ExecutorSettings
+from gsa_taskflow_executor.taskflow.parser import TaskflowDefinition
+from gsa_taskflow_executor.taskflow.scheduler import NodeExecutionEvent, ScheduleResult
 
 TaskflowRuntimeState = Literal["RUNNING", "OVER", "ERROR"]
 StatusPublisher = Callable[[Mapping[str, Any]], None]

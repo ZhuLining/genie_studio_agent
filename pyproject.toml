@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "gsa-taskflow-executor"
 version = "0.1.0"
-description = "Self-developed dry-run taskflow executor for GSA workflows."
+description = "Self-developed GDK taskflow executor for GSA workflows."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Proprietary" }
@@ -29,7 +29,7 @@ dev = [
 
 [project.scripts]
 gsa-taskflow-executor = "gsa_taskflow_executor.cli:main"
-gsa-taskflow-e2e = "gsa_taskflow_executor.e2e_probe:main"
+gsa-taskflow-e2e = "gsa_taskflow_executor.mqtt.e2e_probe:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

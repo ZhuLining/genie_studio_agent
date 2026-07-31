@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 
-from gsa_taskflow_executor.gdk_control_probe import (
+from gsa_taskflow_executor.gdk.control_probe import (
     ACTION_HOLD_CURRENT,
     ACTION_NUDGE_LEFT_J7,
     ACTION_NUDGE_RIGHT_J7,

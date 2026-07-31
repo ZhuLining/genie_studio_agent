@@ -1,9 +1,9 @@
-import gsa_taskflow_executor.skill_runtime as skill_runtime
+import gsa_taskflow_executor.skills.runtime as skill_runtime
 from fixtures import VALID_RIGHT_ARM_YAML
-from gsa_taskflow_executor.config import ExecutorSettings
-from gsa_taskflow_executor.scheduler import NodeRunResult, TaskflowScheduler
-from gsa_taskflow_executor.status_reporter import TaskflowStatusReporter
-from gsa_taskflow_executor.taskflow_parser import parse_taskflow_yaml
+from gsa_taskflow_executor.mqtt.status_reporter import TaskflowStatusReporter
+from gsa_taskflow_executor.runtime.config import ExecutorSettings
+from gsa_taskflow_executor.taskflow.parser import parse_taskflow_yaml
+from gsa_taskflow_executor.taskflow.scheduler import NodeRunResult, TaskflowScheduler
 
 
 def test_status_reporter_publishes_execution_started_payload() -> None:

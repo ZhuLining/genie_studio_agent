@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from gsa_taskflow_executor.taskflow.parser import parse_taskflow_yaml
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -43,7 +45,32 @@ def test_example_taskflow_keeps_abs_joint_gdk_yaml() -> None:
     yaml_file = (PROJECT_ROOT / "examples" / "right_arm_abs_joint.yaml").read_text(
         encoding="utf-8"
     )
+    taskflow = parse_taskflow_yaml(yaml_file)
 
     assert "skill_name: motion_plan_skill" in yaml_file
     assert "control_type: ABS_JOINT" in yaml_file
+    assert "speed: 0.05" in yaml_file
     assert "app_execution_id: sample-e2e-run" in yaml_file
+    assert taskflow.node_ids == ("开始", "位姿调整-位控", "结束")
+
+
+def test_script_and_motion_example_keeps_whitelisted_script_yaml() -> None:
+    yaml_file = (PROJECT_ROOT / "examples" / "script_and_motion.yaml").read_text(
+        encoding="utf-8"
+    )
+    taskflow = parse_taskflow_yaml(yaml_file)
+
+    assert "skill_name: script_skill" in yaml_file
+    assert "script_id: gdk_hold_current_dual_arm" in yaml_file
+    assert "skill_name: motion_plan_skill" in yaml_file
+    assert "speed: 0.05" in yaml_file
+    assert taskflow.node_ids == ("开始", "脚本控制", "位姿调整-位控", "结束")
+
+
+def test_example_skill_registry_includes_whitelisted_script_skill() -> None:
+    skills_file = (PROJECT_ROOT / "skills.example.yaml").read_text(encoding="utf-8")
+
+    assert "motion_plan_skill:" in skills_file
+    assert "implementation: motion_plan" in skills_file
+    assert "script_skill:" in skills_file
+    assert "implementation: script" in skills_file

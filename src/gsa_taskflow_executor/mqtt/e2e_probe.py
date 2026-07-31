@@ -11,14 +11,14 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from .config import ExecutorSettings
-from .mqtt_gateway import (
+from gsa_taskflow_executor.mqtt.gateway import (
     create_client,
     default_port_for_scheme,
     import_paho_mqtt,
     is_success_reason_code,
     wait_for_publish,
 )
+from gsa_taskflow_executor.runtime.config import ExecutorSettings
 
 DEFAULT_TIMEOUT_SEC = 10.0
 DEFAULT_INPUT_TOPIC = "gsa/self/taskflow_yaml"

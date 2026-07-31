@@ -1,6 +1,6 @@
 import pytest
 
-from gsa_taskflow_executor.variable_store import (
+from gsa_taskflow_executor.taskflow.variables import (
     VariableStore,
     VariableStoreError,
     collect_variable_references,

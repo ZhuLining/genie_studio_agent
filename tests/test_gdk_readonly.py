@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from gsa_taskflow_executor.gdk_readonly import run_gdk_readonly_probe
+from gsa_taskflow_executor.gdk.readonly import run_gdk_readonly_probe
 
 
 class FakeRobot:

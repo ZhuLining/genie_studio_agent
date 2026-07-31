@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from .gdk_readonly import GDK_BACKEND, GDK_MODULE_NAME, to_jsonable
+from .readonly import GDK_BACKEND, GDK_MODULE_NAME, to_jsonable
 
 LEFT_ARM_JOINTS = [
     "idx21_arm_l_joint1",

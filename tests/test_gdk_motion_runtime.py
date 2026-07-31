@@ -2,16 +2,16 @@ from __future__ import annotations
 
 from typing import Any
 
-from gsa_taskflow_executor.gdk_control_probe import (
+from gsa_taskflow_executor.gdk.control_probe import (
     CONTROL_GROUP_DUAL_ARM,
     DUAL_ARM_JOINTS,
 )
-from gsa_taskflow_executor.gdk_motion_runtime import (
+from gsa_taskflow_executor.gdk.motion_runtime import (
     TASKFLOW_ABS_JOINT_CONFIRMATION,
     WAIST_JOINTS,
     run_gdk_motion_plan_abs_joint,
 )
-from gsa_taskflow_executor.taskflow_parser import MotionPlanParams, MotionPlanTarget
+from gsa_taskflow_executor.taskflow.parser import MotionPlanParams, MotionPlanTarget
 
 
 class FakeMotionStatus:

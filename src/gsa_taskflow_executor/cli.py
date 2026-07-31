@@ -2,26 +2,34 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 from . import __version__
-from .config import ConfigError, ExecutorSettings, build_env_source
-from .gdk_control_probe import ALLOWED_ACTIONS, run_gdk_control_probe
-from .gdk_readonly import run_gdk_readonly_probe
-from .mqtt_gateway import MqttGateway, MqttGatewayError, TaskflowMessage
-from .robot_state_mqtt import handle_current_pose_request
-from .runtime_logging import JsonlEventWriter, RuntimeEvent, configure_stdout_logging
-from .scheduler import SkillRuntimeNodeRunner, TaskflowScheduleError, TaskflowScheduler
-from .skill_registry import SkillRegistry, SkillRegistryError
-from .skill_runtime import SkillRuntime
-from .status_reporter import TaskflowStatusReporter
-from .taskflow_parser import TaskflowParseError, parse_taskflow_yaml
+from .gdk.control_probe import ALLOWED_ACTIONS, run_gdk_control_probe
+from .gdk.motion_runtime import TASKFLOW_ABS_JOINT_CONFIRMATION
+from .gdk.readonly import run_gdk_readonly_probe
+from .mqtt.gateway import MqttGateway, MqttGatewayError, TaskflowMessage
+from .mqtt.robot_state import handle_current_pose_request
+from .mqtt.status_reporter import TaskflowStatusReporter
+from .runtime.config import ConfigError, ExecutorSettings, build_env_source
+from .runtime.event_log import JsonlEventWriter, RuntimeEvent, configure_stdout_logging
+from .skills.registry import SkillRegistry, SkillRegistryError
+from .skills.runtime import SkillRuntime
+from .taskflow.parser import (
+    MOTION_SPEED_MAX,
+    MOTION_SPEED_MIN,
+    TaskflowParseError,
+    parse_taskflow_yaml,
+)
+from .taskflow.scheduler import SkillRuntimeNodeRunner, TaskflowScheduleError, TaskflowScheduler
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="gsa-taskflow-executor",
-        description="Dry-run taskflow executor scaffold for self-developed GSA workflows.",
+        description="GDK taskflow executor for self-developed GSA workflows.",
     )
     parser.add_argument(
         "--print-config",
@@ -86,7 +94,13 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(str(error))
 
     if args.print_config:
-        print(json.dumps(settings.to_dict(), ensure_ascii=False, indent=2))
+        print(
+            json.dumps(
+                build_print_config_payload(settings, runtime_env),
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
         return 0
 
     if args.print_skills:
@@ -125,7 +139,7 @@ def main(argv: list[str] | None = None) -> int:
         writer = JsonlEventWriter.from_settings(settings)
         path = writer.write(
             RuntimeEvent(
-                event_type="executor_scaffold_ready",
+                event_type="executor_runtime_ready",
                 message="配置与日志系统已初始化",
                 topic=settings.taskflow_input_topic,
                 payload={"mode": settings.executor_mode, "status_topic": settings.status_topic},
@@ -281,6 +295,25 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(str(error))
         return 0
 
-    print("gsa-taskflow-executor scaffold is ready.")
+    print("gsa-taskflow-executor is ready.")
     print("Run with --print-config to inspect current settings.")
     return 0
+
+
+def build_print_config_payload(
+    settings: ExecutorSettings,
+    runtime_env: Mapping[str, str],
+) -> dict[str, Any]:
+    payload: dict[str, Any] = settings.to_dict()
+    payload["taskflow_gdk_safety_gate"] = {
+        "enabled": runtime_env.get("ENABLE_GDK_CONTROL") == "1",
+        "confirmed": runtime_env.get("CONFIRM_GDK_CONTROL")
+        == TASKFLOW_ABS_JOINT_CONFIRMATION,
+        "expected_confirmation": TASKFLOW_ABS_JOINT_CONFIRMATION,
+    }
+    payload["motion_speed_limits"] = {
+        "unit": "gdk_velocity",
+        "min": MOTION_SPEED_MIN,
+        "max": MOTION_SPEED_MAX,
+    }
+    return payload

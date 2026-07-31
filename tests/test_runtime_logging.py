@@ -1,6 +1,6 @@
 import json
 
-from gsa_taskflow_executor.runtime_logging import JsonlEventWriter, RuntimeEvent
+from gsa_taskflow_executor.runtime.event_log import JsonlEventWriter, RuntimeEvent
 
 
 def test_jsonl_event_writer(tmp_path) -> None:

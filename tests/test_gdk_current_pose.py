@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from gsa_taskflow_executor.gdk_current_pose import run_gdk_current_pose_snapshot
+from gsa_taskflow_executor.gdk.current_pose import run_gdk_current_pose_snapshot
 
 LEFT_ARM = [
     "idx21_arm_l_joint1",

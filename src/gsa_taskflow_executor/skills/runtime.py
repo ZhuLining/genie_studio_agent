@@ -5,15 +5,22 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
-from .gdk_motion_runtime import run_gdk_motion_plan_abs_joint
-from .skill_registry import SkillDefinition, SkillRegistry, SkillRegistryError
-from .taskflow_parser import (
+from gsa_taskflow_executor.gdk.motion_runtime import run_gdk_motion_plan_abs_joint
+from gsa_taskflow_executor.gdk.script_runtime import run_gdk_script
+from gsa_taskflow_executor.skills.registry import (
+    SkillDefinition,
+    SkillRegistry,
+    SkillRegistryError,
+)
+from gsa_taskflow_executor.taskflow.parser import (
     MotionPlanParams,
+    ScriptParams,
     TaskflowNode,
     TaskflowParseError,
     parse_motion_plan_params,
+    parse_script_params,
 )
-from .variable_store import VariableStore, VariableStoreError
+from gsa_taskflow_executor.taskflow.variables import VariableStore, VariableStoreError
 
 SkillOutcome = Literal["success", "error"]
 
@@ -106,6 +113,49 @@ class MotionPlanSkillGdk:
         )
 
 
+class ScriptSkillGdk:
+    def __init__(self, environ: Mapping[str, str] | None = None) -> None:
+        self.environ = environ
+
+    def run(self, node: TaskflowNode, context: SkillExecutionContext) -> SkillResult:
+        resolved_params = context.variable_store.resolve_value(node.params_template)
+        if not isinstance(resolved_params, Mapping):
+            raise SkillRuntimeError(f"{node.node_id}.params_template 解析后不是对象")
+
+        try:
+            script_params = parse_script_params(resolved_params, "params_template")
+        except TaskflowParseError as error:
+            raise SkillRuntimeError(str(error)) from error
+
+        if self.environ is None:
+            script_result = run_gdk_script(script_params)
+        else:
+            script_result = run_gdk_script(script_params, environ=self.environ)
+        if script_result.get("executed") is not True:
+            error_msg = script_result.get("error_msg")
+            raise SkillRuntimeError(str(error_msg or "GDK script 执行失败"))
+
+        outputs = build_script_outputs(
+            app_execution_id=context.app_execution_id,
+            skill_name=node.skill_name,
+            mode=context.mode,
+            params_template=resolved_params,
+            script_params=script_params,
+        )
+        outputs["script_result"] = deepcopy(script_result)
+        return SkillResult(
+            outcome="success",
+            detail={
+                "skill_name": node.skill_name,
+                "mode": context.mode,
+                "adapter": "gdk",
+                "params_template": deepcopy(dict(resolved_params)),
+                "script_result": deepcopy(script_result),
+            },
+            outputs=outputs,
+        )
+
+
 class SkillRuntime:
     def __init__(
         self,
@@ -116,6 +166,7 @@ class SkillRuntime:
         self.assign_skill = AssignSkill()
         self.gdk_skills: dict[str, Skill] = {
             "motion_plan": MotionPlanSkillGdk(environ=environ),
+            "script": ScriptSkillGdk(environ=environ),
         }
 
     def run(self, node: TaskflowNode, context: SkillExecutionContext) -> SkillResult:
@@ -175,5 +226,23 @@ def build_motion_plan_outputs(
         "requested_speed": motion_params.speed,
         "requested_speed_unit": "gdk_velocity",
         "timeout": motion_params.timeout,
+        "resolved_params_template": deepcopy(dict(params_template)),
+    }
+
+
+def build_script_outputs(
+    *,
+    app_execution_id: str,
+    skill_name: str | None,
+    mode: str,
+    params_template: Mapping[str, Any],
+    script_params: ScriptParams,
+) -> dict[str, object]:
+    return {
+        "app_execution_id": app_execution_id,
+        "skill_name": skill_name,
+        "mode": mode,
+        "script_id": script_params.script_id,
+        "timeout": script_params.timeout,
         "resolved_params_template": deepcopy(dict(params_template)),
     }
