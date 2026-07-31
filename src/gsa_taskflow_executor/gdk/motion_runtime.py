@@ -22,16 +22,20 @@ from .control_probe import (
     assert_joint_within_limit,
     assert_positions_within_limits,
     collect_dual_arm_snapshot,
-    initialize_gdk,
     is_zero_error,
     position_diffs,
     read_joint_position,
-    release_gdk,
     utc_now_iso,
     validate_motion_status,
     validate_whole_body_status,
 )
-from .readonly import GDK_BACKEND, GDK_MODULE_NAME, to_jsonable
+from .readonly import GDK_BACKEND, to_jsonable
+from .session import (
+    PROCESS_MANAGED_RELEASE_RESULT,
+    GdkSessionImportError,
+    GdkSessionInitError,
+    GdkSessionManager,
+)
 
 ACTION_TASKFLOW_ABS_JOINT = "taskflow_abs_joint"
 TASKFLOW_ABS_JOINT_CONFIRMATION = "TASKFLOW_ABS_JOINT"
@@ -49,6 +53,7 @@ def run_gdk_motion_plan_abs_joint(
     *,
     environ: Mapping[str, str] | None = None,
     import_module: Callable[[str], Any] = importlib.import_module,
+    session_manager: GdkSessionManager | None = None,
 ) -> dict[str, object]:
     """Execute verified ABS_JOINT taskflow targets through agibot_gdk.
 
@@ -70,39 +75,43 @@ def run_gdk_motion_plan_abs_joint(
     if validation_result is not None:
         return validation_result
 
-    agibot_gdk = None
-    gdk_initialized = False
-    result: dict[str, object] = {}
-
+    manager = session_manager or GdkSessionManager(import_module=import_module)
     try:
-        agibot_gdk = import_module(GDK_MODULE_NAME)
-    except Exception as error:
-        return unavailable_result("import_agibot_gdk", error)
-
-    try:
-        init_result = initialize_gdk(agibot_gdk)
-    except Exception as error:
-        return unavailable_result("gdk_init", error)
-
-    if init_result.get("called") is True and init_result.get("success") is not True:
+        lease = manager.acquire(
+            blocking=True,
+            initialize=True,
+            purpose=ACTION_TASKFLOW_ABS_JOINT,
+        )
+    except GdkSessionImportError as error:
+        return unavailable_result("import_agibot_gdk", error.error)
+    except GdkSessionInitError as error:
         return refused_result(
             stage="gdk_init",
             message="agibot_gdk.gdk_init() did not return success",
-            extra={"gdk_init": init_result},
+            extra={"gdk_init": error.init_result},
+        )
+    except Exception as error:
+        return unavailable_result("gdk_session_acquire", error)
+
+    if lease is None:
+        return refused_result(
+            stage="gdk_session_busy",
+            message="GDK session is busy",
         )
 
-    gdk_initialized = bool(init_result.get("called"))
+    with lease:
+        result: dict[str, object]
+        try:
+            if lease.agibot_gdk is None:
+                raise RuntimeError("GDK session lease missing initialized module")
+            robot = lease.agibot_gdk.Robot()
+            result = execute_abs_joint_targets(robot, motion_params)
+        except Exception as error:
+            result = unavailable_result("execute_abs_joint_targets", error)
 
-    try:
-        robot = agibot_gdk.Robot()
-        result = execute_abs_joint_targets(robot, motion_params)
-        result["gdk_init"] = init_result
-    except Exception as error:
-        result = unavailable_result("execute_abs_joint_targets", error)
-        result["gdk_init"] = init_result
-    finally:
-        if agibot_gdk is not None and gdk_initialized and result:
-            result["gdk_release"] = release_gdk(agibot_gdk)
+        result["gdk_init"] = lease.init_result
+        result["gdk_release"] = dict(PROCESS_MANAGED_RELEASE_RESULT)
+        result["gdk_session"] = lease.to_payload()
 
     return result
 

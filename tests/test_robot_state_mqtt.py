@@ -89,3 +89,21 @@ def test_build_current_pose_response_maps_unavailable_snapshot_to_error() -> Non
     assert response["requestId"] == "req-2"
     assert response["error"]["code"] == "GDK_UNAVAILABLE"
     assert response["error"]["message"] == "No module named agibot_gdk"
+
+
+def test_build_current_pose_response_maps_busy_snapshot_to_robot_busy() -> None:
+    response = build_current_pose_response(
+        request_id="req-3",
+        executor_aid="aid-1",
+        snapshot={
+            "available": False,
+            "busy": True,
+            "errorStage": "gdk_session_busy",
+            "errorMsg": "ignored busy detail",
+        },
+    )
+
+    assert response["ok"] is False
+    assert response["requestId"] == "req-3"
+    assert response["error"]["code"] == "ROBOT_BUSY"
+    assert response["error"]["message"] == "GDK 正在执行控制动作，当前位姿读取已拒绝"

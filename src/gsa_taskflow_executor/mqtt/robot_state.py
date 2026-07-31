@@ -11,6 +11,8 @@ from gsa_taskflow_executor.runtime.config import ExecutorSettings
 from gsa_taskflow_executor.runtime.event_log import JsonlEventWriter, RuntimeEvent
 
 CURRENT_POSE_REQUEST_TYPE = "get_current_pose"
+ROBOT_BUSY_ERROR_CODE = "ROBOT_BUSY"
+ROBOT_BUSY_ERROR_MESSAGE = "GDK 正在执行控制动作，当前位姿读取已拒绝"
 
 RobotStatePublisher = Callable[[str, Mapping[str, Any]], None]
 CurrentPoseCollector = Callable[[], Mapping[str, object]]
@@ -115,6 +117,15 @@ def build_current_pose_response(
             "executorAid": executor_aid,
             "data": dict(snapshot),
         }
+
+    if snapshot.get("busy") is True:
+        return error_response(
+            request_id=request_id,
+            executor_aid=executor_aid,
+            code=ROBOT_BUSY_ERROR_CODE,
+            message=ROBOT_BUSY_ERROR_MESSAGE,
+            details=dict(snapshot),
+        )
 
     return error_response(
         request_id=request_id,

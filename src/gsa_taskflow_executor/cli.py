@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import argparse
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
 from . import __version__
 from .gdk.control_probe import ALLOWED_ACTIONS, run_gdk_control_probe
+from .gdk.current_pose import run_gdk_current_pose_snapshot
 from .gdk.motion_runtime import TASKFLOW_ABS_JOINT_CONFIRMATION
 from .gdk.readonly import run_gdk_readonly_probe
+from .gdk.session import GdkSessionManager
 from .mqtt.gateway import MqttGateway, MqttGatewayError, TaskflowMessage
+from .mqtt.message_queue import MqttMessageQueueError, MqttMessageWorkerQueue
 from .mqtt.robot_state import handle_current_pose_request
 from .mqtt.status_reporter import TaskflowStatusReporter
 from .runtime.config import ConfigError, ExecutorSettings, build_env_source
@@ -24,6 +27,10 @@ from .taskflow.parser import (
     parse_taskflow_yaml,
 )
 from .taskflow.scheduler import SkillRuntimeNodeRunner, TaskflowScheduleError, TaskflowScheduler
+
+TASKFLOW_MESSAGE_QUEUE_MAXSIZE = 16
+ROBOT_STATE_MESSAGE_QUEUE_MAXSIZE = 8
+RobotStatePublisher = Callable[[str, Mapping[str, Any]], None]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -150,9 +157,16 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.listen:
         writer = JsonlEventWriter.from_settings(settings)
+        gdk_session = GdkSessionManager()
+        skill_runtime = SkillRuntime(
+            registry=skill_registry,
+            environ=runtime_env,
+            gdk_session_manager=gdk_session,
+        )
         gateway: MqttGateway
 
-        def handle_taskflow_message(message: TaskflowMessage) -> None:
+        def process_taskflow_message(message: TaskflowMessage) -> None:
+            # 这里是真正执行 Taskflow 的 worker 线程路径；不要在 paho on_message 中直接调用。
             logger.info("taskflow YAML payload:\n%s", message.payload)
             reporter = TaskflowStatusReporter(
                 settings=settings,
@@ -217,10 +231,7 @@ def main(argv: list[str] | None = None) -> int:
                     node_runner=SkillRuntimeNodeRunner(
                         app_execution_id=taskflow.app_execution_id,
                         mode=settings.executor_mode,
-                        runtime=SkillRuntime(
-                            registry=skill_registry,
-                            environ=runtime_env,
-                        ),
+                        runtime=skill_runtime,
                     ),
                     node_event_handler=reporter.publish_node_event,
                 ).run()
@@ -269,7 +280,8 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
 
-        def handle_robot_state_message(message: TaskflowMessage) -> None:
+        def process_robot_state_message(message: TaskflowMessage) -> None:
+            # 当前位姿是独立只读请求，放入单独 worker，避免被 Taskflow FIFO 队列排在长动作之后。
             handle_current_pose_request(
                 message,
                 settings=settings,
@@ -280,6 +292,87 @@ def main(argv: list[str] | None = None) -> int:
                     message="current pose response published",
                 ),
                 event_writer=writer,
+                collect_snapshot=lambda: run_gdk_current_pose_snapshot(
+                    session_manager=gdk_session,
+                ),
+            )
+
+        # taskflow_queue 保持 MVP 单任务串行；
+        # 长时间 move_* 调用只阻塞该 worker，不阻塞 MQTT 网络循环。
+        taskflow_queue = MqttMessageWorkerQueue(
+            name="taskflow-execution-worker",
+            handler=process_taskflow_message,
+            maxsize=TASKFLOW_MESSAGE_QUEUE_MAXSIZE,
+            logger=logger,
+            event_writer=writer,
+        )
+        # robot_state_queue 让 get_current_pose 请求脱离 paho 回调；
+        # 具体 GDK 访问再由 session 锁互斥。
+        robot_state_queue = MqttMessageWorkerQueue(
+            name="robot-state-worker",
+            handler=process_robot_state_message,
+            maxsize=ROBOT_STATE_MESSAGE_QUEUE_MAXSIZE,
+            logger=logger,
+            event_writer=writer,
+        )
+
+        def handle_taskflow_message(message: TaskflowMessage) -> None:
+            try:
+                # paho 回调只做入队和轻量日志，队列满时快速发布 ERROR。
+                queued_count = taskflow_queue.enqueue(message)
+            except MqttMessageQueueError as error:
+                logger.error("taskflow message queue rejected message: %s", error)
+                TaskflowStatusReporter(
+                    settings=settings,
+                    publish_status=gateway.publish_status,
+                ).publish_execution_error(message=str(error))
+                writer.write(
+                    RuntimeEvent(
+                        event_type="taskflow_execution_queue_rejected",
+                        level="error",
+                        message=str(error),
+                        topic=message.topic,
+                    )
+                )
+                return
+
+            logger.info(
+                "taskflow YAML enqueued topic=%s queued=%s",
+                message.topic,
+                queued_count,
+            )
+
+        def handle_robot_state_message(message: TaskflowMessage) -> None:
+            try:
+                # 当前位姿请求同样只入队，避免只读 GDK 查询卡住后续 MQTT 消息分发。
+                queued_count = robot_state_queue.enqueue(message)
+            except MqttMessageQueueError as error:
+                logger.error("robot state queue rejected message: %s", error)
+                publish_robot_state_queue_error(
+                    message,
+                    settings=settings,
+                    publish_response=lambda topic, payload: gateway.publish_json(
+                        topic,
+                        payload,
+                        event_type="robot_current_pose_queue_error_published",
+                        message="current pose queue error published",
+                    ),
+                    error_message=str(error),
+                )
+                writer.write(
+                    RuntimeEvent(
+                        event_type="robot_state_queue_rejected",
+                        level="error",
+                        message=str(error),
+                        topic=message.topic,
+                    )
+                )
+                return
+
+            logger.info(
+                "robot state request enqueued topic=%s queued=%s",
+                message.topic,
+                queued_count,
             )
 
         gateway = MqttGateway(
@@ -289,15 +382,70 @@ def main(argv: list[str] | None = None) -> int:
             logger=logger,
             event_writer=writer,
         )
+        taskflow_queue.start()
+        robot_state_queue.start()
         try:
             gateway.run_forever()
         except MqttGatewayError as error:
             parser.error(str(error))
+        finally:
+            taskflow_queue.stop()
+            robot_state_queue.stop()
+            shutdown_result = gdk_session.shutdown()
+            shutdown_level = "info" if shutdown_result.get("success") is True else "warning"
+            if shutdown_level == "warning":
+                logger.warning("GDK session shutdown skipped or failed: %s", shutdown_result)
+            writer.write(
+                RuntimeEvent(
+                    event_type="gdk_session_shutdown",
+                    level=shutdown_level,
+                    message="GDK process session shutdown completed",
+                    payload={"gdk_release": shutdown_result},
+                )
+            )
         return 0
 
     print("gsa-taskflow-executor is ready.")
     print("Run with --print-config to inspect current settings.")
     return 0
+
+
+def publish_robot_state_queue_error(
+    message: TaskflowMessage,
+    *,
+    settings: ExecutorSettings,
+    publish_response: RobotStatePublisher,
+    error_message: str,
+) -> None:
+    # 队列不可用时仍尽量按当前位姿 response 协议回包，客户端可以展示明确错误。
+    publish_response(
+        settings.robot_current_pose_response_topic,
+        {
+            "type": "get_current_pose",
+            "requestId": read_request_id(message.payload),
+            "ok": False,
+            "executorAid": settings.executor_aid,
+            "error": {
+                "code": "QUEUE_UNAVAILABLE",
+                "message": error_message,
+            },
+        },
+    )
+
+
+def read_request_id(payload: str) -> str:
+    try:
+        decoded = json.loads(payload)
+    except json.JSONDecodeError:
+        return ""
+
+    if not isinstance(decoded, Mapping):
+        return ""
+
+    raw = decoded.get("requestId") or decoded.get("request_id")
+    if isinstance(raw, str):
+        return raw.strip()
+    return ""
 
 
 def build_print_config_payload(

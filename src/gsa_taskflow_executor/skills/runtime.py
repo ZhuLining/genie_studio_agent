@@ -7,6 +7,7 @@ from typing import Any, Literal, Protocol
 
 from gsa_taskflow_executor.gdk.motion_runtime import run_gdk_motion_plan_abs_joint
 from gsa_taskflow_executor.gdk.script_runtime import run_gdk_script
+from gsa_taskflow_executor.gdk.session import GdkSessionManager
 from gsa_taskflow_executor.skills.registry import (
     SkillDefinition,
     SkillRegistry,
@@ -68,8 +69,13 @@ class AssignSkill:
 
 
 class MotionPlanSkillGdk:
-    def __init__(self, environ: Mapping[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        environ: Mapping[str, str] | None = None,
+        gdk_session_manager: GdkSessionManager | None = None,
+    ) -> None:
         self.environ = environ
+        self.gdk_session_manager = gdk_session_manager
 
     def run(self, node: TaskflowNode, context: SkillExecutionContext) -> SkillResult:
         resolved_params = context.variable_store.resolve_value(node.params_template)
@@ -81,13 +87,11 @@ class MotionPlanSkillGdk:
         except TaskflowParseError as error:
             raise SkillRuntimeError(str(error)) from error
 
-        if self.environ is None:
-            gdk_result = run_gdk_motion_plan_abs_joint(motion_params)
-        else:
-            gdk_result = run_gdk_motion_plan_abs_joint(
-                motion_params,
-                environ=self.environ,
-            )
+        gdk_result = run_gdk_motion_plan_abs_joint(
+            motion_params,
+            environ=self.environ,
+            session_manager=self.gdk_session_manager,
+        )
         if gdk_result.get("executed") is not True:
             error_msg = gdk_result.get("error_msg")
             raise SkillRuntimeError(str(error_msg or "GDK ABS_JOINT 执行失败"))
@@ -114,8 +118,13 @@ class MotionPlanSkillGdk:
 
 
 class ScriptSkillGdk:
-    def __init__(self, environ: Mapping[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        environ: Mapping[str, str] | None = None,
+        gdk_session_manager: GdkSessionManager | None = None,
+    ) -> None:
         self.environ = environ
+        self.gdk_session_manager = gdk_session_manager
 
     def run(self, node: TaskflowNode, context: SkillExecutionContext) -> SkillResult:
         resolved_params = context.variable_store.resolve_value(node.params_template)
@@ -127,10 +136,11 @@ class ScriptSkillGdk:
         except TaskflowParseError as error:
             raise SkillRuntimeError(str(error)) from error
 
-        if self.environ is None:
-            script_result = run_gdk_script(script_params)
-        else:
-            script_result = run_gdk_script(script_params, environ=self.environ)
+        script_result = run_gdk_script(
+            script_params,
+            environ=self.environ,
+            session_manager=self.gdk_session_manager,
+        )
         if script_result.get("executed") is not True:
             error_msg = script_result.get("error_msg")
             raise SkillRuntimeError(str(error_msg or "GDK script 执行失败"))
@@ -161,12 +171,19 @@ class SkillRuntime:
         self,
         registry: SkillRegistry | None = None,
         environ: Mapping[str, str] | None = None,
+        gdk_session_manager: GdkSessionManager | None = None,
     ) -> None:
         self.registry = registry or SkillRegistry.default()
         self.assign_skill = AssignSkill()
         self.gdk_skills: dict[str, Skill] = {
-            "motion_plan": MotionPlanSkillGdk(environ=environ),
-            "script": ScriptSkillGdk(environ=environ),
+            "motion_plan": MotionPlanSkillGdk(
+                environ=environ,
+                gdk_session_manager=gdk_session_manager,
+            ),
+            "script": ScriptSkillGdk(
+                environ=environ,
+                gdk_session_manager=gdk_session_manager,
+            ),
         }
 
     def run(self, node: TaskflowNode, context: SkillExecutionContext) -> SkillResult:

@@ -5,6 +5,7 @@ import logging
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 from .config import ExecutorSettings
@@ -34,6 +35,7 @@ class JsonlEventWriter:
 
     def __init__(self, execution_log_dir: Path) -> None:
         self.execution_log_dir = execution_log_dir
+        self._lock = Lock()
         self.execution_log_dir.mkdir(parents=True, exist_ok=True)
 
     @classmethod
@@ -42,9 +44,10 @@ class JsonlEventWriter:
 
     def write(self, event: RuntimeEvent) -> Path:
         target = self.execution_log_dir / f"{datetime.now(timezone.utc):%Y%m%d}.jsonl"
-        with target.open("a", encoding="utf-8") as file:
-            file.write(event.to_json_line())
-            file.write("\n")
+        with self._lock:
+            with target.open("a", encoding="utf-8") as file:
+                file.write(event.to_json_line())
+                file.write("\n")
         return target
 
 

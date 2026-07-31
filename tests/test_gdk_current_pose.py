@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from typing import Any
+
 from gsa_taskflow_executor.gdk.current_pose import run_gdk_current_pose_snapshot
+from gsa_taskflow_executor.gdk.session import GdkSessionManager
 
 LEFT_ARM = [
     "idx21_arm_l_joint1",
@@ -60,10 +63,25 @@ class FakeRobot:
 
 
 class FakeGdk:
+    init_called = 0
+
+    class GDKRes:
+        kSuccess = 0
+
+    @classmethod
+    def reset(cls) -> None:
+        cls.init_called = 0
+
+    @classmethod
+    def gdk_init(cls) -> int:
+        cls.init_called += 1
+        return cls.GDKRes.kSuccess
+
     Robot = FakeRobot
 
 
 def test_current_pose_snapshot_matches_desktop_contract() -> None:
+    FakeGdk.reset()
     result = run_gdk_current_pose_snapshot(import_module=lambda _name: FakeGdk)
 
     assert result["available"] is True
@@ -75,6 +93,9 @@ def test_current_pose_snapshot_matches_desktop_contract() -> None:
     assert result["groups"]["waist"]["joints"][0]["limit"] == {"min": -3.14, "max": 3.14}
     assert result["motionStatus"] == {"errorCode": 0, "errorMsg": ""}
     assert result["wholeBodyStatus"] == {"left_arm_error": 0, "right_arm_error": 0}
+    assert FakeGdk.init_called == 1
+    assert result["gdk_session"]["policy"] == "process_managed_session"
+    assert result["gdk_session"]["purpose"] == "current_pose"
 
 
 def test_current_pose_snapshot_reports_import_failure() -> None:
@@ -86,3 +107,25 @@ def test_current_pose_snapshot_reports_import_failure() -> None:
     assert result["available"] is False
     assert result["errorStage"] == "import_agibot_gdk"
     assert result["errorType"] == "ModuleNotFoundError"
+
+
+def test_current_pose_snapshot_returns_busy_without_importing_gdk() -> None:
+    def forbidden_import(_name: str) -> Any:
+        raise AssertionError("current pose must not import GDK while control lock is busy")
+
+    manager = GdkSessionManager()
+    lease = manager.acquire(blocking=True, initialize=False, purpose="taskflow_abs_joint")
+    assert lease is not None
+    try:
+        result = run_gdk_current_pose_snapshot(
+            import_module=forbidden_import,
+            session_manager=manager,
+        )
+
+        assert result["available"] is False
+        assert result["busy"] is True
+        assert result["errorStage"] == "gdk_session_busy"
+        assert result["errorMsg"] == "GDK 正在执行控制动作，当前位姿读取已拒绝"
+        assert result["activePurpose"] == "taskflow_abs_joint"
+    finally:
+        lease.release()

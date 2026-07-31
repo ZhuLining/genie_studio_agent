@@ -16,7 +16,7 @@ def test_gdk_scheduler_walks_linear_taskflow(monkeypatch) -> None:
     monkeypatch.setattr(
         skill_runtime,
         "run_gdk_motion_plan_abs_joint",
-        lambda _motion_params: {"available": True, "executed": True},
+        lambda _motion_params, **_kwargs: {"available": True, "executed": True},
     )
     taskflow = parse_taskflow_yaml(VALID_RIGHT_ARM_YAML)
 
@@ -34,7 +34,7 @@ def test_gdk_scheduler_walks_mixed_script_and_motion_taskflow(monkeypatch) -> No
     monkeypatch.setattr(
         skill_runtime,
         "run_gdk_script",
-        lambda _script_params: {
+        lambda _script_params, **_kwargs: {
             "available": True,
             "executed": True,
             "script_id": "gdk_hold_current_dual_arm",
@@ -43,7 +43,7 @@ def test_gdk_scheduler_walks_mixed_script_and_motion_taskflow(monkeypatch) -> No
     monkeypatch.setattr(
         skill_runtime,
         "run_gdk_motion_plan_abs_joint",
-        lambda _motion_params: {"available": True, "executed": True},
+        lambda _motion_params, **_kwargs: {"available": True, "executed": True},
     )
     taskflow = parse_taskflow_yaml(VALID_SCRIPT_AND_MOTION_YAML)
 
@@ -79,7 +79,7 @@ def test_scheduler_resolves_variable_references_before_worker(monkeypatch) -> No
     monkeypatch.setattr(
         skill_runtime,
         "run_gdk_motion_plan_abs_joint",
-        lambda _motion_params: {"available": True, "executed": True},
+        lambda _motion_params, **_kwargs: {"available": True, "executed": True},
     )
     yaml_payload = VALID_RIGHT_ARM_YAML.replace(
         """        action_data:
@@ -123,7 +123,7 @@ def test_scheduler_emits_node_execution_events(monkeypatch) -> None:
     monkeypatch.setattr(
         skill_runtime,
         "run_gdk_motion_plan_abs_joint",
-        lambda _motion_params: {"available": True, "executed": True},
+        lambda _motion_params, **_kwargs: {"available": True, "executed": True},
     )
     taskflow = parse_taskflow_yaml(VALID_RIGHT_ARM_YAML)
     events: list[NodeExecutionEvent] = []
@@ -148,7 +148,7 @@ def test_scheduler_rejects_cycle(monkeypatch) -> None:
     monkeypatch.setattr(
         skill_runtime,
         "run_gdk_motion_plan_abs_joint",
-        lambda _motion_params: {"available": True, "executed": True},
+        lambda _motion_params, **_kwargs: {"available": True, "executed": True},
     )
     yaml_payload = VALID_RIGHT_ARM_YAML.replace(
         """  - from: 位姿调整-位控

@@ -11,6 +11,7 @@ from gsa_taskflow_executor.gdk.motion_runtime import (
     WAIST_JOINTS,
     run_gdk_motion_plan_abs_joint,
 )
+from gsa_taskflow_executor.gdk.session import GdkSessionManager
 from gsa_taskflow_executor.taskflow.parser import MotionPlanParams, MotionPlanTarget
 
 
@@ -209,7 +210,14 @@ def test_gdk_motion_runtime_executes_right_arm_and_waist_abs_joint() -> None:
     assert result["gdk_velocity"] == expected_velocity
     assert result["velocity_source"] == "taskflow_speed"
     assert FakeAgibotGdk.init_called == 1
-    assert FakeAgibotGdk.release_called == 1
+    assert FakeAgibotGdk.release_called == 0
+    assert result["gdk_release"] == {
+        "called": False,
+        "success": True,
+        "reason": "process_managed_session",
+    }
+    assert result["gdk_session"]["policy"] == "process_managed_session"
+    assert result["gdk_session"]["purpose"] == "taskflow_abs_joint"
     assert FakeAgibotGdk.robot.arm_move_calls == [
         (
             [index * 0.01 for index in range(7)] + right_target,
@@ -230,3 +238,45 @@ def test_gdk_motion_runtime_executes_right_arm_and_waist_abs_joint() -> None:
     assert groups[1]["method"] == "move_waist_joint"
     assert groups[1]["effective_gdk_velocity"] == expected_velocity
     assert groups[1]["velocity_source"] == "taskflow_speed"
+
+
+def test_gdk_motion_runtime_reuses_process_session_across_multiple_calls() -> None:
+    FakeAgibotGdk.reset()
+    manager = GdkSessionManager(import_module=lambda _name: FakeAgibotGdk)
+    env = {
+        "ENABLE_GDK_CONTROL": "1",
+        "CONFIRM_GDK_CONTROL": TASKFLOW_ABS_JOINT_CONFIRMATION,
+    }
+    motion_params = MotionPlanParams(
+        targets=(
+            MotionPlanTarget(
+                body_part="right_arm",
+                control_type="ABS_JOINT",
+                action_data=[0.1] * 7,
+            ),
+        ),
+        speed=0.05,
+        timeout=50.0,
+    )
+
+    first = run_gdk_motion_plan_abs_joint(
+        motion_params,
+        environ=env,
+        session_manager=manager,
+    )
+    second = run_gdk_motion_plan_abs_joint(
+        motion_params,
+        environ=env,
+        session_manager=manager,
+    )
+    shutdown = manager.shutdown()
+
+    assert first["executed"] is True
+    assert second["executed"] is True
+    assert first["gdk_init"]["reused"] is False
+    assert second["gdk_init"]["reused"] is True
+    assert first["gdk_release"]["called"] is False
+    assert second["gdk_release"]["called"] is False
+    assert FakeAgibotGdk.init_called == 1
+    assert shutdown["called"] is True
+    assert FakeAgibotGdk.release_called == 1

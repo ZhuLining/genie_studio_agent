@@ -12,11 +12,13 @@ from .control_probe import (
     utc_now_iso,
 )
 from .motion_runtime import WAIST_JOINTS
-from .readonly import GDK_BACKEND, GDK_MODULE_NAME, to_jsonable
+from .readonly import GDK_BACKEND, to_jsonable
+from .session import GdkSessionImportError, GdkSessionInitError, GdkSessionManager
 
 
 def run_gdk_current_pose_snapshot(
     import_module: Callable[[str], Any] = importlib.import_module,
+    session_manager: GdkSessionManager | None = None,
 ) -> dict[str, object]:
     """Collect the current joint pose used by the desktop ABS_JOINT form.
 
@@ -24,60 +26,87 @@ def run_gdk_current_pose_snapshot(
     status/query methods. Motion commands stay in taskflow GDK runtimes.
     """
 
+    manager = session_manager or GdkSessionManager(import_module=import_module)
     try:
-        agibot_gdk = import_module(GDK_MODULE_NAME)
-    except Exception as error:
-        return unavailable_result("import_agibot_gdk", error)
-
-    try:
-        robot = agibot_gdk.Robot()
-    except Exception as error:
-        return unavailable_result("create_robot", error)
-
-    try:
-        joint_states = robot.get_joint_states()
-    except Exception as error:
-        return unavailable_result("get_joint_states", error)
-    if not isinstance(joint_states, Mapping):
+        lease = manager.acquire(
+            blocking=False,
+            initialize=True,
+            purpose="current_pose",
+        )
+    except GdkSessionImportError as error:
+        return unavailable_result("import_agibot_gdk", error.error)
+    except GdkSessionInitError as error:
         return unavailable_result(
-            "parse_joint_states",
-            TypeError("robot.get_joint_states() did not return a mapping"),
-        )
-
-    try:
-        limits = robot.get_joint_limits()
-    except Exception as error:
-        return unavailable_result("get_joint_limits", error)
-    if not isinstance(limits, Mapping):
-        return unavailable_result(
-            "parse_joint_limits",
-            TypeError("robot.get_joint_limits() did not return a mapping"),
-        )
-
-    try:
-        motion_status = robot.get_motion_control_status()
-    except Exception as error:
-        return unavailable_result("get_motion_control_status", error)
-
-    try:
-        whole_body_status = robot.get_whole_body_status()
-    except Exception as error:
-        return unavailable_result("get_whole_body_status", error)
-    if not isinstance(whole_body_status, Mapping):
-        return unavailable_result(
-            "parse_whole_body_status",
-            TypeError("robot.get_whole_body_status() did not return a mapping"),
-        )
-
-    try:
-        return build_current_pose_snapshot(
-            joint_states=joint_states,
-            limits=limits,
-            motion_status=motion_status,
-            whole_body_status=whole_body_status,
+            "gdk_init",
+            RuntimeError(str(error)),
+            extra={"gdk_init": error.init_result},
         )
     except Exception as error:
-        return unavailable_result("parse_joint_states", error)
+        return unavailable_result("gdk_session_acquire", error)
+
+    if lease is None:
+        return busy_result(active_purpose=manager.active_purpose)
+
+    with lease:
+        if lease.agibot_gdk is None:
+            return unavailable_result(
+                "gdk_session_acquire",
+                RuntimeError("GDK session lease missing initialized module"),
+            )
+
+        try:
+            robot = lease.agibot_gdk.Robot()
+        except Exception as error:
+            return unavailable_result("create_robot", error)
+
+        try:
+            joint_states = robot.get_joint_states()
+        except Exception as error:
+            return unavailable_result("get_joint_states", error)
+        if not isinstance(joint_states, Mapping):
+            return unavailable_result(
+                "parse_joint_states",
+                TypeError("robot.get_joint_states() did not return a mapping"),
+            )
+
+        try:
+            limits = robot.get_joint_limits()
+        except Exception as error:
+            return unavailable_result("get_joint_limits", error)
+        if not isinstance(limits, Mapping):
+            return unavailable_result(
+                "parse_joint_limits",
+                TypeError("robot.get_joint_limits() did not return a mapping"),
+            )
+
+        try:
+            motion_status = robot.get_motion_control_status()
+        except Exception as error:
+            return unavailable_result("get_motion_control_status", error)
+
+        try:
+            whole_body_status = robot.get_whole_body_status()
+        except Exception as error:
+            return unavailable_result("get_whole_body_status", error)
+        if not isinstance(whole_body_status, Mapping):
+            return unavailable_result(
+                "parse_whole_body_status",
+                TypeError("robot.get_whole_body_status() did not return a mapping"),
+            )
+
+        try:
+            snapshot = build_current_pose_snapshot(
+                joint_states=joint_states,
+                limits=limits,
+                motion_status=motion_status,
+                whole_body_status=whole_body_status,
+            )
+        except Exception as error:
+            return unavailable_result("parse_joint_states", error)
+
+        snapshot["gdk_init"] = lease.init_result
+        snapshot["gdk_session"] = lease.to_payload()
+        return snapshot
 
 
 def build_current_pose_snapshot(
@@ -185,8 +214,34 @@ def build_nonzero_error_joints(
     return failed
 
 
-def unavailable_result(stage: str, error: Exception) -> dict[str, object]:
+def busy_result(*, active_purpose: str | None) -> dict[str, object]:
     return {
+        "available": False,
+        "backend": GDK_BACKEND,
+        "collectedAt": utc_now_iso(),
+        "jointCount": 0,
+        "groups": {},
+        "nonzeroErrorJoints": [],
+        "motionStatus": {
+            "errorCode": None,
+            "errorMsg": "",
+        },
+        "wholeBodyStatus": {},
+        "busy": True,
+        "errorStage": "gdk_session_busy",
+        "errorType": "GdkSessionBusy",
+        "errorMsg": "GDK 正在执行控制动作，当前位姿读取已拒绝",
+        "activePurpose": active_purpose,
+    }
+
+
+def unavailable_result(
+    stage: str,
+    error: Exception,
+    *,
+    extra: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    result: dict[str, object] = {
         "available": False,
         "backend": GDK_BACKEND,
         "collectedAt": utc_now_iso(),
@@ -202,3 +257,6 @@ def unavailable_result(stage: str, error: Exception) -> dict[str, object]:
         "errorType": type(error).__name__,
         "errorMsg": str(error),
     }
+    if extra:
+        result.update(dict(extra))
+    return result

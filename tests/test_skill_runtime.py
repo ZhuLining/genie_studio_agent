@@ -2,6 +2,7 @@ import pytest
 
 import gsa_taskflow_executor.skills.runtime as skill_runtime
 from fixtures import VALID_RIGHT_ARM_YAML, VALID_SCRIPT_AND_MOTION_YAML
+from gsa_taskflow_executor.gdk.session import GdkSessionManager
 from gsa_taskflow_executor.skills.registry import SkillRegistry
 from gsa_taskflow_executor.skills.runtime import (
     SkillExecutionContext,
@@ -48,7 +49,7 @@ def test_motion_plan_skill_gdk_outputs_structured_motion_result(monkeypatch) -> 
     monkeypatch.setattr(
         skill_runtime,
         "run_gdk_motion_plan_abs_joint",
-        lambda _motion_params: {"available": True, "executed": True},
+        lambda _motion_params, **_kwargs: {"available": True, "executed": True},
     )
 
     result = runtime.run(
@@ -109,7 +110,7 @@ def test_motion_plan_skill_gdk_resolves_variable_reference(monkeypatch) -> None:
     monkeypatch.setattr(
         skill_runtime,
         "run_gdk_motion_plan_abs_joint",
-        lambda _motion_params: {"available": True, "executed": True},
+        lambda _motion_params, **_kwargs: {"available": True, "executed": True},
     )
 
     result = runtime.run(
@@ -136,18 +137,20 @@ def test_motion_plan_skill_gdk_resolves_variable_reference(monkeypatch) -> None:
 def test_motion_plan_skill_gdk_adapter_calls_gdk_runtime(monkeypatch) -> None:
     taskflow = parse_taskflow_yaml(VALID_RIGHT_ARM_YAML)
     node = taskflow.worker_nodes[0]
-    calls: list[tuple[object, dict[str, str] | None]] = []
+    calls: list[tuple[object, dict[str, str] | None, GdkSessionManager | None]] = []
     runtime_env = {
         "ENABLE_GDK_CONTROL": "1",
         "CONFIRM_GDK_CONTROL": "TASKFLOW_ABS_JOINT",
     }
+    gdk_session_manager = GdkSessionManager()
 
     def fake_gdk_runtime(
         motion_params: object,
         *,
         environ: dict[str, str] | None = None,
+        session_manager: GdkSessionManager | None = None,
     ) -> dict[str, object]:
-        calls.append((motion_params, environ))
+        calls.append((motion_params, environ, session_manager))
         return {
             "available": True,
             "executed": True,
@@ -168,6 +171,7 @@ def test_motion_plan_skill_gdk_adapter_calls_gdk_runtime(monkeypatch) -> None:
             }
         ),
         environ=runtime_env,
+        gdk_session_manager=gdk_session_manager,
     )
 
     result = runtime.run(
@@ -181,6 +185,7 @@ def test_motion_plan_skill_gdk_adapter_calls_gdk_runtime(monkeypatch) -> None:
 
     assert len(calls) == 1
     assert calls[0][1] == runtime_env
+    assert calls[0][2] is gdk_session_manager
     assert result.outcome == "success"
     assert result.detail is not None
     assert result.detail["adapter"] == "gdk"
@@ -197,18 +202,20 @@ def test_motion_plan_skill_gdk_adapter_calls_gdk_runtime(monkeypatch) -> None:
 def test_script_skill_gdk_adapter_calls_whitelisted_script_runtime(monkeypatch) -> None:
     taskflow = parse_taskflow_yaml(VALID_SCRIPT_AND_MOTION_YAML)
     node = taskflow.worker_nodes[0]
-    calls: list[tuple[object, dict[str, str] | None]] = []
+    calls: list[tuple[object, dict[str, str] | None, GdkSessionManager | None]] = []
     runtime_env = {
         "ENABLE_GDK_CONTROL": "1",
         "CONFIRM_GDK_CONTROL": "TASKFLOW_ABS_JOINT",
     }
+    gdk_session_manager = GdkSessionManager()
 
     def fake_script_runtime(
         script_params: object,
         *,
         environ: dict[str, str] | None = None,
+        session_manager: GdkSessionManager | None = None,
     ) -> dict[str, object]:
-        calls.append((script_params, environ))
+        calls.append((script_params, environ, session_manager))
         return {
             "available": True,
             "executed": True,
@@ -218,7 +225,7 @@ def test_script_skill_gdk_adapter_calls_whitelisted_script_runtime(monkeypatch) 
         }
 
     monkeypatch.setattr(skill_runtime, "run_gdk_script", fake_script_runtime)
-    runtime = SkillRuntime(environ=runtime_env)
+    runtime = SkillRuntime(environ=runtime_env, gdk_session_manager=gdk_session_manager)
 
     result = runtime.run(
         node,
@@ -231,6 +238,7 @@ def test_script_skill_gdk_adapter_calls_whitelisted_script_runtime(monkeypatch) 
 
     assert len(calls) == 1
     assert calls[0][1] == runtime_env
+    assert calls[0][2] is gdk_session_manager
     assert result.outcome == "success"
     assert result.detail is not None
     assert result.detail["adapter"] == "gdk"

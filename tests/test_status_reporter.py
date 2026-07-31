@@ -27,7 +27,7 @@ def test_status_reporter_publishes_node_running_and_over_payloads(monkeypatch) -
     monkeypatch.setattr(
         skill_runtime,
         "run_gdk_motion_plan_abs_joint",
-        lambda _motion_params: {"available": True, "executed": True},
+        lambda _motion_params, **_kwargs: {"available": True, "executed": True},
     )
     payloads: list[dict[str, object]] = []
     taskflow = parse_taskflow_yaml(VALID_RIGHT_ARM_YAML)
