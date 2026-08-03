@@ -126,6 +126,12 @@ def build_sub_task_payload(
         if error_message:
             payload["error_msg"] = error_message
             payload["error"] = error_message
+        error_code = read_string_field(event.result.detail, "error_code")
+        if error_code:
+            payload["error_code"] = error_code
+        error_stage = read_string_field(event.result.detail, "error_stage")
+        if error_stage:
+            payload["error_stage"] = error_stage
     if event.variables is not None:
         payload["variables"] = deepcopy(event.variables)
     return payload
@@ -143,6 +149,13 @@ def read_error_message(detail: Mapping[str, object] | None) -> str | None:
     if detail is None:
         return None
     value = detail.get("error")
+    return value if isinstance(value, str) and value else None
+
+
+def read_string_field(detail: Mapping[str, object] | None, key: str) -> str | None:
+    if detail is None:
+        return None
+    value = detail.get(key)
     return value if isinstance(value, str) and value else None
 
 

@@ -1,7 +1,12 @@
 import pytest
 
 import gsa_taskflow_executor.skills.runtime as skill_runtime
-from fixtures import VALID_RIGHT_ARM_YAML, VALID_SCRIPT_AND_MOTION_YAML
+from fixtures import (
+    VALID_CODE_AND_MOTION_YAML,
+    VALID_CODE_CHAIN_YAML,
+    VALID_END_EFFECTOR_CODE_FLOW_YAML,
+    VALID_RIGHT_ARM_YAML,
+)
 from gsa_taskflow_executor.taskflow.parser import parse_taskflow_yaml
 from gsa_taskflow_executor.taskflow.scheduler import (
     NodeExecutionEvent,
@@ -30,14 +35,15 @@ def test_gdk_scheduler_walks_linear_taskflow(monkeypatch) -> None:
     assert result.variables["位姿调整-位控"]["detail"]["mode"] == "gdk"
 
 
-def test_gdk_scheduler_walks_mixed_script_and_motion_taskflow(monkeypatch) -> None:
+def test_gdk_scheduler_walks_mixed_code_and_motion_taskflow(monkeypatch) -> None:
     monkeypatch.setattr(
         skill_runtime,
-        "run_gdk_script",
+        "run_code_script",
         lambda _script_params, **_kwargs: {
             "available": True,
             "executed": True,
-            "script_id": "gdk_hold_current_dual_arm",
+            "script_id": "code_echo_inputs",
+            "outputs": {"out_1": "code-and-motion-run"},
         },
     )
     monkeypatch.setattr(
@@ -45,18 +51,17 @@ def test_gdk_scheduler_walks_mixed_script_and_motion_taskflow(monkeypatch) -> No
         "run_gdk_motion_plan_abs_joint",
         lambda _motion_params, **_kwargs: {"available": True, "executed": True},
     )
-    taskflow = parse_taskflow_yaml(VALID_SCRIPT_AND_MOTION_YAML)
+    taskflow = parse_taskflow_yaml(VALID_CODE_AND_MOTION_YAML)
 
     result = TaskflowScheduler(taskflow).run()
 
     assert result.outcome == "success"
     assert result.terminal_node_id == "结束"
-    assert result.visited_node_ids == ("开始", "脚本控制", "位姿调整-位控", "结束")
+    assert result.visited_node_ids == ("开始", "代码", "位姿调整-位控", "结束")
     assert result.summary()["step_count"] == 4
-    assert result.variables["脚本控制"]["detail"]["status"] == "success"
-    assert result.variables["脚本控制"]["detail"]["outputs"]["script_id"] == (
-        "gdk_hold_current_dual_arm"
-    )
+    assert result.variables["代码"]["detail"]["status"] == "success"
+    assert result.variables["代码"]["detail"]["outputs"]["script_id"] == "code_echo_inputs"
+    assert result.variables["代码"]["detail"]["outputs"]["out_1"] == "code-and-motion-run"
     assert result.variables["位姿调整-位控"]["detail"]["status"] == "success"
 
 
@@ -117,6 +122,81 @@ def test_scheduler_resolves_variable_references_before_worker(monkeypatch) -> No
         -0.169,
         1.122,
     ]
+
+
+def test_scheduler_code_nodes_pass_declared_outputs_downstream() -> None:
+    taskflow = parse_taskflow_yaml(VALID_CODE_CHAIN_YAML)
+
+    result = TaskflowScheduler(taskflow).run()
+
+    assert result.outcome == "success"
+    assert result.visited_node_ids == ("开始", "代码1", "代码2", "结束")
+    assert result.variables["system"]["detail"]["outputs"]["app_execution_id"] == "code-chain-run"
+    assert result.variables["代码1"]["detail"]["outputs"]["out_1"] == "code-chain-run"
+    assert result.variables["代码2"]["detail"]["outputs"]["out_2"] == "code-chain-run"
+
+
+def test_scheduler_end_effector_code_flow_passes_adjusted_opening(monkeypatch) -> None:
+    end_effector_openings: list[float] = []
+    real_run_code_script = skill_runtime.run_code_script
+
+    def fake_end_effector_runtime(
+        end_effector_params: object,
+        **_kwargs: object,
+    ) -> dict[str, object]:
+        end_effector_openings.append(end_effector_params.opening)
+        return {
+            "available": True,
+            "executed": True,
+            "backend": "agibot_gdk.Robot",
+            "target_end": end_effector_params.target_end,
+            "end_effector_type": end_effector_params.end_effector_type or "omnipicker",
+            "opening": end_effector_params.opening,
+            "actual_openness": [end_effector_params.opening],
+        }
+
+    def fake_code_script(
+        script_params: object,
+        *,
+        inputs: dict[str, object] | None = None,
+        **kwargs: object,
+    ) -> dict[str, object]:
+        if script_params.script_id != "code_move_end_effector":
+            return real_run_code_script(script_params, inputs=inputs, **kwargs)
+
+        opening = float((inputs or {})["opening"])
+        end_effector_openings.append(opening)
+        return {
+            "available": True,
+            "executed": True,
+            "backend": "agibot_gdk.Robot",
+            "script_id": "code_move_end_effector",
+            "script_action": "move_end_effector",
+            "outputs": {
+                "actual_openness": [opening],
+                "target_end": (inputs or {}).get("target_end", "left_tool"),
+                "end_effector_type": (inputs or {}).get("end_effector_type", ""),
+            },
+        }
+
+    monkeypatch.setattr(
+        skill_runtime,
+        "run_gdk_end_effector_control",
+        fake_end_effector_runtime,
+    )
+    monkeypatch.setattr(skill_runtime, "run_code_script", fake_code_script)
+
+    taskflow = parse_taskflow_yaml(VALID_END_EFFECTOR_CODE_FLOW_YAML)
+    result = TaskflowScheduler(taskflow).run()
+
+    assert result.outcome == "success"
+    assert result.visited_node_ids == ("开始", "末端控制", "代码1", "代码2", "结束")
+    assert result.variables["末端控制"]["detail"]["outputs"]["actual_openness"] == [0.5]
+    assert result.variables["末端控制"]["detail"]["outputs"]["target_end"] == "left_tool"
+    assert result.variables["末端控制"]["detail"]["outputs"]["end_effector_type"] == "omnipicker"
+    assert result.variables["代码1"]["detail"]["outputs"]["adjusted_opening"] == pytest.approx(0.6)
+    assert result.variables["代码2"]["detail"]["outputs"]["actual_openness"] == pytest.approx([0.6])
+    assert end_effector_openings == pytest.approx([0.5, 0.6])
 
 
 def test_scheduler_emits_node_execution_events(monkeypatch) -> None:

@@ -7,16 +7,40 @@ from typing import Any
 
 import yaml
 
+from gsa_taskflow_executor.code_scripts.registry import CODE_SCRIPT_IDS
+
 YamlMapping = Mapping[str, Any]
 MOTION_SPEED_MIN = 0.001
 MOTION_SPEED_MAX = 0.1
-SCRIPT_IDS = frozenset(
-    {
-        "gdk_hold_current_dual_arm",
-        "gdk_nudge_left_j7_0p005",
-        "gdk_nudge_right_j7_0p005",
-    }
-)
+DEFAULT_SCRIPT_TIMEOUT = 50.0
+DEFAULT_END_EFFECTOR_TIMEOUT = 20.0
+END_EFFECTOR_TARGET_ALIASES = {
+    "left": "left_tool",
+    "left_end": "left_tool",
+    "left_tool": "left_tool",
+    "左末端": "left_tool",
+    "right": "right_tool",
+    "right_end": "right_tool",
+    "right_tool": "right_tool",
+    "右末端": "right_tool",
+}
+SCRIPT_IDS = CODE_SCRIPT_IDS
+SCRIPT_VALUE_TYPE_ALIASES = {
+    "string": "string",
+    "String": "string",
+    "integer": "integer",
+    "Integer": "integer",
+    "number": "number",
+    "Number": "number",
+    "boolean": "boolean",
+    "Boolean": "boolean",
+    "time": "time",
+    "Time": "time",
+    "object": "object",
+    "Object": "object",
+    "array": "array",
+    "Array": "array",
+}
 
 
 class TaskflowParseError(ValueError):
@@ -47,6 +71,29 @@ class MotionPlanParams:
 @dataclass(frozen=True)
 class ScriptParams:
     script_id: str
+    timeout: float
+    input_mappings: tuple[ScriptInputMapping, ...] = ()
+    output_variables: tuple[ScriptOutputVariable, ...] = ()
+
+
+@dataclass(frozen=True)
+class ScriptInputMapping:
+    name: str
+    value_type: str
+    variable_ref: str
+
+
+@dataclass(frozen=True)
+class ScriptOutputVariable:
+    name: str
+    value_type: str
+
+
+@dataclass(frozen=True)
+class EndEffectorParams:
+    target_end: str
+    end_effector_type: str | None
+    opening: float
     timeout: float
 
 
@@ -209,6 +256,8 @@ def validate_worker_params(skill_name: str, params: YamlMapping, path: str) -> N
         parse_motion_plan_params(params, f"{path}.params_template")
     elif skill_name == "script_skill":
         parse_script_params(params, f"{path}.params_template")
+    elif skill_name == "control_end_effector_skill":
+        parse_end_effector_params(params, f"{path}.params_template")
 
 
 def parse_motion_plan_params(params: YamlMapping, path: str) -> MotionPlanParams:
@@ -245,8 +294,101 @@ def parse_script_params(params: YamlMapping, path: str) -> ScriptParams:
     script_id = read_required_string(params, "script_id", path)
     if script_id not in SCRIPT_IDS:
         raise TaskflowParseError(f"{path}.script_id 未在白名单中: {script_id}")
-    timeout = read_positive_number(params.get("timeout"), f"{path}.timeout")
-    return ScriptParams(script_id=script_id, timeout=timeout)
+    timeout = read_positive_number_with_default(
+        params.get("timeout"),
+        f"{path}.timeout",
+        DEFAULT_SCRIPT_TIMEOUT,
+    )
+    input_mappings = parse_script_input_mappings(
+        params.get("input_mappings", ()),
+        f"{path}.input_mappings",
+    )
+    output_variables = parse_script_output_variables(
+        params.get("output_variables", ()),
+        f"{path}.output_variables",
+    )
+    return ScriptParams(
+        script_id=script_id,
+        timeout=timeout,
+        input_mappings=tuple(input_mappings),
+        output_variables=tuple(output_variables),
+    )
+
+
+def parse_script_input_mappings(raw: Any, path: str) -> list[ScriptInputMapping]:
+    if raw in (None, ()):
+        return []
+    if not isinstance(raw, list):
+        raise TaskflowParseError(f"{path} 必须是数组")
+
+    seen_names: set[str] = set()
+    mappings: list[ScriptInputMapping] = []
+    for index, item in enumerate(raw):
+        item_path = f"{path}[{index}]"
+        mapping = expect_mapping(item, item_path)
+        if is_blank_script_mapping_row(mapping, ("name", "type", "variable_ref", "variableRef")):
+            continue
+        name = read_required_string(mapping, "name", item_path)
+        validate_script_variable_name(name, f"{item_path}.name")
+        if name in seen_names:
+            raise TaskflowParseError(f"{item_path}.name 重复: {name}")
+        seen_names.add(name)
+        variable_ref = read_script_variable_ref(mapping, item_path)
+        mappings.append(
+            ScriptInputMapping(
+                name=name,
+                value_type=read_script_value_type(mapping.get("type"), f"{item_path}.type"),
+                variable_ref=variable_ref,
+            )
+        )
+    return mappings
+
+
+def parse_script_output_variables(raw: Any, path: str) -> list[ScriptOutputVariable]:
+    if raw in (None, ()):
+        return []
+    if not isinstance(raw, list):
+        raise TaskflowParseError(f"{path} 必须是数组")
+
+    seen_names: set[str] = set()
+    outputs: list[ScriptOutputVariable] = []
+    for index, item in enumerate(raw):
+        item_path = f"{path}[{index}]"
+        output = expect_mapping(item, item_path)
+        if is_blank_script_mapping_row(output, ("name", "type")):
+            continue
+        name = read_required_string(output, "name", item_path)
+        validate_script_variable_name(name, f"{item_path}.name")
+        if name in seen_names:
+            raise TaskflowParseError(f"{item_path}.name 重复: {name}")
+        seen_names.add(name)
+        outputs.append(
+            ScriptOutputVariable(
+                name=name,
+                value_type=read_script_value_type(output.get("type"), f"{item_path}.type"),
+            )
+        )
+    return outputs
+
+
+def parse_end_effector_params(params: YamlMapping, path: str) -> EndEffectorParams:
+    target_end = read_end_effector_target(params, path)
+    end_effector_type = read_optional_string(
+        params.get("end_effector_type", params.get("target_type")),
+        f"{path}.end_effector_type",
+    )
+    opening = read_end_effector_opening(params.get("opening"), f"{path}.opening")
+    timeout = read_positive_number_with_default(
+        params.get("timeout"),
+        f"{path}.timeout",
+        DEFAULT_END_EFFECTOR_TIMEOUT,
+    )
+    return EndEffectorParams(
+        target_end=target_end,
+        end_effector_type=end_effector_type,
+        opening=opening,
+        timeout=timeout,
+    )
 
 
 def parse_action_data(raw: Any, body_part: str, control_type: str, path: str) -> list[float] | str:
@@ -284,12 +426,56 @@ def read_required_string(mapping: YamlMapping, key: str, path: str) -> str:
     return value.strip()
 
 
+def read_script_variable_ref(mapping: YamlMapping, path: str) -> str:
+    raw = mapping.get("variable_ref", mapping.get("variableRef"))
+    if not isinstance(raw, str) or not raw.strip():
+        raise TaskflowParseError(f"{path}.variable_ref 必须是非空字符串")
+    variable_ref = raw.strip()
+    if not variable_ref.startswith("$.variables."):
+        raise TaskflowParseError(f"{path}.variable_ref 必须是 $.variables. 开头的变量引用")
+    return variable_ref
+
+
+def read_script_value_type(value: Any, path: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise TaskflowParseError(f"{path} 必须是非空字符串")
+    value_type = SCRIPT_VALUE_TYPE_ALIASES.get(value.strip())
+    if value_type is None:
+        allowed = "/".join(sorted(set(SCRIPT_VALUE_TYPE_ALIASES.values())))
+        raise TaskflowParseError(f"{path} 类型无效，只支持 {allowed}")
+    return value_type
+
+
+def validate_script_variable_name(name: str, path: str) -> None:
+    # 变量引用路径用 "." 分段；输出名含点会让下游解析到错误层级。
+    if "." in name:
+        raise TaskflowParseError(f"{path} 不能包含 .")
+
+
+def is_blank_script_mapping_row(mapping: YamlMapping, keys: tuple[str, ...]) -> bool:
+    for key in keys:
+        value = mapping.get(key)
+        if isinstance(value, str) and value.strip():
+            return False
+        if value is not None and not isinstance(value, str):
+            return False
+    return True
+
+
 def read_optional_string(value: Any, path: str) -> str | None:
     if value is None:
         return None
     if not isinstance(value, str):
         raise TaskflowParseError(f"{path} 必须是字符串")
     return value.strip() or None
+
+
+def read_end_effector_target(params: YamlMapping, path: str) -> str:
+    raw = read_required_string(params, "target_end", path)
+    target = END_EFFECTOR_TARGET_ALIASES.get(raw)
+    if target is None:
+        raise TaskflowParseError(f"{path}.target_end 只支持 left_tool/right_tool")
+    return target
 
 
 def read_bool(value: Any, fallback: bool) -> bool:
@@ -304,6 +490,19 @@ def read_positive_number(value: Any, path: str) -> float:
     number = to_float(value, path)
     if number <= 0:
         raise TaskflowParseError(f"{path} 必须大于 0")
+    return number
+
+
+def read_positive_number_with_default(value: Any, path: str, fallback: float) -> float:
+    if value is None:
+        return fallback
+    return read_positive_number(value, path)
+
+
+def read_end_effector_opening(value: Any, path: str) -> float:
+    number = to_float(value, path)
+    if number < 0 or number > 1:
+        raise TaskflowParseError(f"{path} 必须在 0 到 1 之间")
     return number
 
 

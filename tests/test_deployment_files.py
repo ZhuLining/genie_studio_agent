@@ -54,23 +54,39 @@ def test_example_taskflow_keeps_abs_joint_gdk_yaml() -> None:
     assert taskflow.node_ids == ("开始", "位姿调整-位控", "结束")
 
 
-def test_script_and_motion_example_keeps_whitelisted_script_yaml() -> None:
+def test_script_and_motion_example_keeps_code_script_yaml() -> None:
     yaml_file = (PROJECT_ROOT / "examples" / "script_and_motion.yaml").read_text(
         encoding="utf-8"
     )
     taskflow = parse_taskflow_yaml(yaml_file)
 
     assert "skill_name: script_skill" in yaml_file
-    assert "script_id: gdk_hold_current_dual_arm" in yaml_file
+    assert "script_id: code_echo_inputs" in yaml_file
+    assert "$.variables.system.detail.outputs.app_execution_id" in yaml_file
     assert "skill_name: motion_plan_skill" in yaml_file
     assert "speed: 0.05" in yaml_file
-    assert taskflow.node_ids == ("开始", "脚本控制", "位姿调整-位控", "结束")
+    assert taskflow.node_ids == ("开始", "代码", "位姿调整-位控", "结束")
 
 
-def test_example_skill_registry_includes_whitelisted_script_skill() -> None:
+def test_end_effector_example_keeps_move_ee_pos_yaml() -> None:
+    yaml_file = (PROJECT_ROOT / "examples" / "end_effector_open.yaml").read_text(
+        encoding="utf-8"
+    )
+    taskflow = parse_taskflow_yaml(yaml_file)
+
+    assert "skill_name: control_end_effector_skill" in yaml_file
+    assert "target_end: left_tool" in yaml_file
+    assert "end_effector_type: omnipicker" in yaml_file
+    assert "opening: 0.5" in yaml_file
+    assert taskflow.node_ids == ("开始", "末端控制", "结束")
+
+
+def test_example_skill_registry_includes_gdk_skills() -> None:
     skills_file = (PROJECT_ROOT / "skills.example.yaml").read_text(encoding="utf-8")
 
     assert "motion_plan_skill:" in skills_file
     assert "implementation: motion_plan" in skills_file
     assert "script_skill:" in skills_file
     assert "implementation: script" in skills_file
+    assert "control_end_effector_skill:" in skills_file
+    assert "implementation: end_effector" in skills_file

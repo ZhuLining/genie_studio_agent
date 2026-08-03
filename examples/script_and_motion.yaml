@@ -1,20 +1,27 @@
 start_node: 开始
-app_execution_id: sample-script-and-motion-run
+app_execution_id: sample-code-and-motion-run
 nodes:
   - id: 开始
     type: assign
     assignments: {}
-  - id: 脚本控制
+  - id: 代码
     type: worker
     skill_name: script_skill
     params_template:
-      script_id: gdk_hold_current_dual_arm
-      timeout: 20
+      script_id: code_echo_inputs
+      input_mappings:
+        - name: out_1
+          type: string
+          variable_ref: $.variables.system.detail.outputs.app_execution_id
+      output_variables:
+        - name: out_1
+          type: string
+      timeout: 50
     capture_state_detail: true
-    output_var: 脚本控制
+    output_var: 代码
     output_contract:
       required_paths:
-        - $.variables.脚本控制.detail
+        - $.variables.代码.detail
   - id: 位姿调整-位控
     type: worker
     skill_name: motion_plan_skill
@@ -42,8 +49,8 @@ nodes:
 transitions:
   - from: 开始
     outcome: success
-    to: 脚本控制
-  - from: 脚本控制
+    to: 代码
+  - from: 代码
     outcome: success
     to: 位姿调整-位控
   - from: 位姿调整-位控

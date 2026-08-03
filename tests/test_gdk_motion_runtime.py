@@ -16,14 +16,25 @@ from gsa_taskflow_executor.taskflow.parser import MotionPlanParams, MotionPlanTa
 
 
 class FakeMotionStatus:
-    error_code = 0
-    error_msg = ""
+    def __init__(
+        self,
+        *,
+        mode: object = 1,
+        control_mode: object = 1,
+        error_code: object = 0,
+        error_msg: str = "",
+    ) -> None:
+        self.mode = mode
+        self.control_mode = control_mode
+        self.error_code = error_code
+        self.error_msg = error_msg
 
 
 class FakeRobot:
     def __init__(self) -> None:
         self.arm_positions = [index * 0.01 for index in range(len(DUAL_ARM_JOINTS))]
         self.waist_positions = [index * 0.001 for index in range(len(WAIST_JOINTS))]
+        self.motion_status = FakeMotionStatus()
         self.arm_move_calls: list[tuple[list[float], list[float], int]] = []
         self.waist_move_calls: list[tuple[list[float], list[float]]] = []
 
@@ -58,7 +69,7 @@ class FakeRobot:
         }
 
     def get_motion_control_status(self) -> FakeMotionStatus:
-        return FakeMotionStatus()
+        return self.motion_status
 
     def get_whole_body_status(self) -> dict[str, object]:
         return {
@@ -280,3 +291,67 @@ def test_gdk_motion_runtime_reuses_process_session_across_multiple_calls() -> No
     assert FakeAgibotGdk.init_called == 1
     assert shutdown["called"] is True
     assert FakeAgibotGdk.release_called == 1
+
+
+def test_gdk_motion_runtime_refuses_cartesian_impedance_before_arm_move() -> None:
+    FakeAgibotGdk.reset()
+    FakeAgibotGdk.robot.motion_status = FakeMotionStatus(
+        control_mode="CTRL_CARTESIAN_IMPEDANCE",
+    )
+
+    result = run_gdk_motion_plan_abs_joint(
+        MotionPlanParams(
+            targets=(
+                MotionPlanTarget(
+                    body_part="right_arm",
+                    control_type="ABS_JOINT",
+                    action_data=[0.1] * 7,
+                ),
+            ),
+            speed=0.05,
+            timeout=50.0,
+        ),
+        environ={
+            "ENABLE_GDK_CONTROL": "1",
+            "CONFIRM_GDK_CONTROL": TASKFLOW_ABS_JOINT_CONFIRMATION,
+        },
+        import_module=lambda _name: FakeAgibotGdk,
+    )
+
+    assert result["executed"] is False
+    assert result["error_stage"] == "gdk_control_mode_unsupported"
+    assert result["error_code"] == "GDK_CONTROL_MODE_UNSUPPORTED"
+    assert result["error_msg"] == "当前为笛卡尔阻抗模式，请切换到关节位置/规划控制模式后重试"
+    assert result["motion_control_status"]["control_mode"] == "CTRL_CARTESIAN_IMPEDANCE"
+    assert FakeAgibotGdk.robot.arm_move_calls == []
+
+
+def test_gdk_motion_runtime_refuses_cartesian_impedance_before_waist_move() -> None:
+    FakeAgibotGdk.reset()
+    FakeAgibotGdk.robot.motion_status = FakeMotionStatus(
+        mode="CTRL_CARTESIAN_IMPEDANCE",
+    )
+
+    result = run_gdk_motion_plan_abs_joint(
+        MotionPlanParams(
+            targets=(
+                MotionPlanTarget(
+                    body_part="waist",
+                    control_type="ABS_JOINT",
+                    action_data=[0.01] * 5,
+                ),
+            ),
+            speed=0.05,
+            timeout=50.0,
+        ),
+        environ={
+            "ENABLE_GDK_CONTROL": "1",
+            "CONFIRM_GDK_CONTROL": TASKFLOW_ABS_JOINT_CONFIRMATION,
+        },
+        import_module=lambda _name: FakeAgibotGdk,
+    )
+
+    assert result["executed"] is False
+    assert result["error_stage"] == "gdk_control_mode_unsupported"
+    assert result["error_code"] == "GDK_CONTROL_MODE_UNSUPPORTED"
+    assert FakeAgibotGdk.robot.waist_move_calls == []

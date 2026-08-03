@@ -1,7 +1,12 @@
 import pytest
 
 import gsa_taskflow_executor.skills.runtime as skill_runtime
-from fixtures import VALID_RIGHT_ARM_YAML, VALID_SCRIPT_AND_MOTION_YAML
+from fixtures import (
+    VALID_CODE_AND_MOTION_YAML,
+    VALID_CODE_CHAIN_YAML,
+    VALID_END_EFFECTOR_YAML,
+    VALID_RIGHT_ARM_YAML,
+)
 from gsa_taskflow_executor.gdk.session import GdkSessionManager
 from gsa_taskflow_executor.skills.registry import SkillRegistry
 from gsa_taskflow_executor.skills.runtime import (
@@ -137,7 +142,9 @@ def test_motion_plan_skill_gdk_resolves_variable_reference(monkeypatch) -> None:
 def test_motion_plan_skill_gdk_adapter_calls_gdk_runtime(monkeypatch) -> None:
     taskflow = parse_taskflow_yaml(VALID_RIGHT_ARM_YAML)
     node = taskflow.worker_nodes[0]
-    calls: list[tuple[object, dict[str, str] | None, GdkSessionManager | None]] = []
+    calls: list[
+        tuple[object, dict[str, str] | None, GdkSessionManager | None, dict[str, object]]
+    ] = []
     runtime_env = {
         "ENABLE_GDK_CONTROL": "1",
         "CONFIRM_GDK_CONTROL": "TASKFLOW_ABS_JOINT",
@@ -199,10 +206,12 @@ def test_motion_plan_skill_gdk_adapter_calls_gdk_runtime(monkeypatch) -> None:
     }
 
 
-def test_script_skill_gdk_adapter_calls_whitelisted_script_runtime(monkeypatch) -> None:
-    taskflow = parse_taskflow_yaml(VALID_SCRIPT_AND_MOTION_YAML)
+def test_script_skill_gdk_adapter_calls_code_script_runtime(monkeypatch) -> None:
+    taskflow = parse_taskflow_yaml(VALID_CODE_AND_MOTION_YAML)
     node = taskflow.worker_nodes[0]
-    calls: list[tuple[object, dict[str, str] | None, GdkSessionManager | None]] = []
+    calls: list[
+        tuple[object, dict[str, str] | None, GdkSessionManager | None, dict[str, object]]
+    ] = []
     runtime_env = {
         "ENABLE_GDK_CONTROL": "1",
         "CONFIRM_GDK_CONTROL": "TASKFLOW_ABS_JOINT",
@@ -214,17 +223,226 @@ def test_script_skill_gdk_adapter_calls_whitelisted_script_runtime(monkeypatch) 
         *,
         environ: dict[str, str] | None = None,
         session_manager: GdkSessionManager | None = None,
+        inputs: dict[str, object] | None = None,
     ) -> dict[str, object]:
-        calls.append((script_params, environ, session_manager))
+        calls.append((script_params, environ, session_manager, dict(inputs or {})))
         return {
             "available": True,
             "executed": True,
-            "backend": "gdk_script",
-            "script_id": "gdk_hold_current_dual_arm",
-            "script_action": "hold_current",
+            "backend": "executor_builtin_code",
+            "script_id": "code_echo_inputs",
+            "script_action": "echo_inputs",
+            "outputs": {"out_1": "code-and-motion-run"},
         }
 
-    monkeypatch.setattr(skill_runtime, "run_gdk_script", fake_script_runtime)
+    monkeypatch.setattr(skill_runtime, "run_code_script", fake_script_runtime)
+    runtime = SkillRuntime(environ=runtime_env, gdk_session_manager=gdk_session_manager)
+    store = VariableStore(
+        variables={
+            "system": {
+                "detail": {
+                    "outputs": {
+                        "app_execution_id": taskflow.app_execution_id,
+                    }
+                }
+            }
+        }
+    )
+
+    result = runtime.run(
+        node,
+        SkillExecutionContext(
+            app_execution_id=taskflow.app_execution_id,
+            variable_store=store,
+            mode="gdk",
+        ),
+    )
+
+    assert len(calls) == 1
+    assert calls[0][1] == runtime_env
+    assert calls[0][2] is gdk_session_manager
+    assert calls[0][3] == {"out_1": "code-and-motion-run"}
+    assert result.outcome == "success"
+    assert result.detail is not None
+    assert result.detail["adapter"] == "gdk"
+    assert result.outputs is not None
+    assert result.outputs["script_id"] == "code_echo_inputs"
+    assert result.outputs["timeout"] == 50.0
+    assert result.outputs["out_1"] == "code-and-motion-run"
+    assert result.outputs["script_result"] == {
+        "available": True,
+        "executed": True,
+        "backend": "executor_builtin_code",
+        "script_id": "code_echo_inputs",
+        "script_action": "echo_inputs",
+        "outputs": {"out_1": "code-and-motion-run"},
+    }
+
+
+def test_code_echo_inputs_resolves_and_exports_declared_outputs() -> None:
+    taskflow = parse_taskflow_yaml(VALID_CODE_CHAIN_YAML)
+    runtime = SkillRuntime()
+    store = VariableStore(
+        variables={
+            "system": {
+                "detail": {
+                    "outputs": {
+                        "timestamp": "2026-08-02T00:00:00+00:00",
+                        "app_execution_id": taskflow.app_execution_id,
+                    }
+                }
+            }
+        }
+    )
+
+    first_result = runtime.run(
+        taskflow.worker_nodes[0],
+        SkillExecutionContext(
+            app_execution_id=taskflow.app_execution_id,
+            variable_store=store,
+            mode="gdk",
+        ),
+    )
+    assert first_result.outputs is not None
+    store.set_node_detail(
+        "代码1",
+        {
+            "status": first_result.outcome,
+            "outputs": first_result.outputs,
+        },
+    )
+
+    second_result = runtime.run(
+        taskflow.worker_nodes[1],
+        SkillExecutionContext(
+            app_execution_id=taskflow.app_execution_id,
+            variable_store=store,
+            mode="gdk",
+        ),
+    )
+
+    assert first_result.outputs["out_1"] == taskflow.app_execution_id
+    assert first_result.outputs["script_result"]["backend"] == "executor_builtin_code"
+    assert second_result.outputs is not None
+    assert second_result.outputs["out_2"] == taskflow.app_execution_id
+
+
+def test_code_node_rejects_missing_variable_reference() -> None:
+    taskflow = parse_taskflow_yaml(VALID_CODE_CHAIN_YAML)
+    runtime = SkillRuntime()
+
+    with pytest.raises(SkillRuntimeError, match="变量路径不存在"):
+        runtime.run(
+            taskflow.worker_nodes[0],
+            SkillExecutionContext(
+                app_execution_id=taskflow.app_execution_id,
+                variable_store=VariableStore(),
+                mode="gdk",
+            ),
+        )
+
+
+def test_code_node_rejects_input_type_mismatch() -> None:
+    taskflow = parse_taskflow_yaml(VALID_CODE_CHAIN_YAML.replace("type: string", "type: number", 1))
+    runtime = SkillRuntime()
+    store = VariableStore(
+        variables={
+            "system": {
+                "detail": {
+                    "outputs": {
+                        "timestamp": "2026-08-02T00:00:00+00:00",
+                        "app_execution_id": taskflow.app_execution_id,
+                    }
+                }
+            }
+        }
+    )
+
+    with pytest.raises(SkillRuntimeError, match="输入参数 out_1 类型不匹配"):
+        runtime.run(
+            taskflow.worker_nodes[0],
+            SkillExecutionContext(
+                app_execution_id=taskflow.app_execution_id,
+                variable_store=store,
+                mode="gdk",
+            ),
+        )
+
+
+def test_code_node_rejects_declared_output_type_mismatch(monkeypatch) -> None:
+    taskflow = parse_taskflow_yaml(VALID_CODE_CHAIN_YAML)
+    runtime = SkillRuntime()
+    store = VariableStore(
+        variables={
+            "system": {
+                "detail": {
+                    "outputs": {
+                        "timestamp": "2026-08-02T00:00:00+00:00",
+                        "app_execution_id": taskflow.app_execution_id,
+                    }
+                }
+            }
+        }
+    )
+
+    def fake_script_runtime(
+        script_params: object,
+        *,
+        environ: dict[str, str] | None = None,
+        session_manager: GdkSessionManager | None = None,
+        inputs: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        del script_params, environ, session_manager, inputs
+        return {
+            "available": True,
+            "executed": True,
+            "backend": "executor_builtin_code",
+            "script_id": "code_echo_inputs",
+            "outputs": {"out_1": 7},
+        }
+
+    monkeypatch.setattr(skill_runtime, "run_code_script", fake_script_runtime)
+
+    with pytest.raises(SkillRuntimeError, match="输出变量 out_1 类型不匹配"):
+        runtime.run(
+            taskflow.worker_nodes[0],
+            SkillExecutionContext(
+                app_execution_id=taskflow.app_execution_id,
+                variable_store=store,
+                mode="gdk",
+            ),
+        )
+
+
+def test_end_effector_skill_gdk_adapter_calls_gdk_runtime(monkeypatch) -> None:
+    taskflow = parse_taskflow_yaml(VALID_END_EFFECTOR_YAML)
+    node = taskflow.worker_nodes[0]
+    calls: list[tuple[object, dict[str, str] | None, GdkSessionManager | None]] = []
+    runtime_env = {
+        "ENABLE_GDK_CONTROL": "1",
+        "CONFIRM_GDK_CONTROL": "TASKFLOW_ABS_JOINT",
+    }
+    gdk_session_manager = GdkSessionManager()
+
+    def fake_end_effector_runtime(
+        end_effector_params: object,
+        *,
+        environ: dict[str, str] | None = None,
+        session_manager: GdkSessionManager | None = None,
+    ) -> dict[str, object]:
+        calls.append((end_effector_params, environ, session_manager))
+        return {
+            "available": True,
+            "executed": True,
+            "backend": "agibot_gdk.Robot",
+            "action": "taskflow_end_effector",
+        }
+
+    monkeypatch.setattr(
+        skill_runtime,
+        "run_gdk_end_effector_control",
+        fake_end_effector_runtime,
+    )
     runtime = SkillRuntime(environ=runtime_env, gdk_session_manager=gdk_session_manager)
 
     result = runtime.run(
@@ -243,14 +461,17 @@ def test_script_skill_gdk_adapter_calls_whitelisted_script_runtime(monkeypatch) 
     assert result.detail is not None
     assert result.detail["adapter"] == "gdk"
     assert result.outputs is not None
-    assert result.outputs["script_id"] == "gdk_hold_current_dual_arm"
+    assert result.outputs["target_end"] == "left_tool"
+    assert result.outputs["end_effector_type"] == "omnipicker"
+    assert result.outputs["opening"] == 0.5
+    assert result.outputs["actual_openness"] == [0.5]
+    assert result.outputs["actual_openness_source"] == "requested_opening_fallback"
     assert result.outputs["timeout"] == 20.0
-    assert result.outputs["script_result"] == {
+    assert result.outputs["end_effector_result"] == {
         "available": True,
         "executed": True,
-        "backend": "gdk_script",
-        "script_id": "gdk_hold_current_dual_arm",
-        "script_action": "hold_current",
+        "backend": "agibot_gdk.Robot",
+        "action": "taskflow_end_effector",
     }
 
 

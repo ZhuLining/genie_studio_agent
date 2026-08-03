@@ -39,6 +39,9 @@ from .session import (
 
 ACTION_TASKFLOW_ABS_JOINT = "taskflow_abs_joint"
 TASKFLOW_ABS_JOINT_CONFIRMATION = "TASKFLOW_ABS_JOINT"
+GDK_CONTROL_MODE_UNSUPPORTED = "GDK_CONTROL_MODE_UNSUPPORTED"
+UNSUPPORTED_CARTESIAN_IMPEDANCE_MODE = "CTRL_CARTESIAN_IMPEDANCE"
+UNSUPPORTED_CONTROL_MODE_MESSAGE = "当前为笛卡尔阻抗模式，请切换到关节位置/规划控制模式后重试"
 WAIST_JOINTS = [
     "idx01_body_joint1",
     "idx02_body_joint2",
@@ -46,6 +49,20 @@ WAIST_JOINTS = [
     "idx04_body_joint4",
     "idx05_body_joint5",
 ]
+
+
+class UnsupportedGdkControlModeError(RuntimeError):
+    """当前 GDK 控制模式不支持关节位置 move_* 接口。"""
+
+    def __init__(
+        self,
+        *,
+        motion_status: Any,
+        unsupported_fields: Sequence[Mapping[str, object]],
+    ) -> None:
+        super().__init__(UNSUPPORTED_CONTROL_MODE_MESSAGE)
+        self.motion_status = motion_status
+        self.unsupported_fields = [dict(field) for field in unsupported_fields]
 
 
 def run_gdk_motion_plan_abs_joint(
@@ -105,7 +122,13 @@ def run_gdk_motion_plan_abs_joint(
             if lease.agibot_gdk is None:
                 raise RuntimeError("GDK session lease missing initialized module")
             robot = lease.agibot_gdk.Robot()
-            result = execute_abs_joint_targets(robot, motion_params)
+            result = execute_abs_joint_targets(
+                robot,
+                motion_params,
+                agibot_gdk=lease.agibot_gdk,
+            )
+        except UnsupportedGdkControlModeError as error:
+            result = refused_control_mode_result(error)
         except Exception as error:
             result = unavailable_result("execute_abs_joint_targets", error)
 
@@ -116,7 +139,12 @@ def run_gdk_motion_plan_abs_joint(
     return result
 
 
-def execute_abs_joint_targets(robot: Any, motion_params: MotionPlanParams) -> dict[str, object]:
+def execute_abs_joint_targets(
+    robot: Any,
+    motion_params: MotionPlanParams,
+    *,
+    agibot_gdk: Any | None = None,
+) -> dict[str, object]:
     targets_by_part = {
         target.body_part: read_abs_joint_action_data(target)
         for target in motion_params.targets
@@ -130,7 +158,14 @@ def execute_abs_joint_targets(robot: Any, motion_params: MotionPlanParams) -> di
     }
     velocity = float(motion_params.speed)
     if arm_targets:
-        executed_groups.append(execute_arm_abs_joint_targets(robot, arm_targets, velocity))
+        executed_groups.append(
+            execute_arm_abs_joint_targets(
+                robot,
+                arm_targets,
+                velocity,
+                agibot_gdk=agibot_gdk,
+            )
+        )
 
     if "waist" in targets_by_part:
         executed_groups.append(
@@ -138,6 +173,7 @@ def execute_abs_joint_targets(robot: Any, motion_params: MotionPlanParams) -> di
                 robot,
                 targets_by_part["waist"],
                 velocity,
+                agibot_gdk=agibot_gdk,
             )
         )
 
@@ -168,8 +204,11 @@ def execute_arm_abs_joint_targets(
     robot: Any,
     targets_by_part: Mapping[str, Sequence[float]],
     velocity: float,
+    *,
+    agibot_gdk: Any | None = None,
 ) -> dict[str, object]:
     origin = collect_dual_arm_snapshot(robot)
+    ensure_supported_move_control_mode(origin.motion_status, agibot_gdk=agibot_gdk)
     target_positions = list(origin.positions)
 
     if "left_arm" in targets_by_part:
@@ -216,8 +255,11 @@ def execute_waist_abs_joint_target(
     robot: Any,
     target_positions: Sequence[float],
     velocity: float,
+    *,
+    agibot_gdk: Any | None = None,
 ) -> dict[str, object]:
     origin = collect_waist_snapshot(robot)
+    ensure_supported_move_control_mode(origin.motion_status, agibot_gdk=agibot_gdk)
     target = [float(value) for value in target_positions]
     limits = robot.get_joint_limits()
     if not isinstance(limits, Mapping):
@@ -290,6 +332,108 @@ def collect_waist_snapshot(robot: Any) -> JointSnapshot:
     )
 
 
+def ensure_supported_move_control_mode(
+    motion_status: Any,
+    *,
+    agibot_gdk: Any | None = None,
+) -> None:
+    candidates = cartesian_impedance_control_mode_candidates(agibot_gdk)
+    unsupported_fields: list[dict[str, object]] = []
+    has_control_mode = hasattr(motion_status, "control_mode")
+
+    for field_name in ("control_mode", "mode"):
+        raw_value = getattr(motion_status, field_name, None)
+        allow_numeric_match = field_name == "control_mode" or not has_control_mode
+        if is_cartesian_impedance_mode(
+            raw_value,
+            candidates,
+            allow_numeric_match=allow_numeric_match,
+        ):
+            unsupported_fields.append(
+                {
+                    "field": field_name,
+                    "value": to_jsonable(raw_value),
+                    "repr": repr(raw_value),
+                }
+            )
+
+    status_repr = repr(motion_status)
+    if not unsupported_fields and UNSUPPORTED_CARTESIAN_IMPEDANCE_MODE in status_repr:
+        unsupported_fields.append(
+            {
+                "field": "repr",
+                "value": status_repr,
+                "repr": status_repr,
+            }
+        )
+
+    if unsupported_fields:
+        raise UnsupportedGdkControlModeError(
+            motion_status=motion_status,
+            unsupported_fields=unsupported_fields,
+        )
+
+
+def cartesian_impedance_control_mode_candidates(agibot_gdk: Any | None) -> tuple[Any, ...]:
+    if agibot_gdk is None:
+        return ()
+
+    candidates: list[Any] = []
+    for container in (agibot_gdk, getattr(agibot_gdk, "MotionControlMode", None)):
+        if container is None:
+            continue
+        candidate = getattr(container, UNSUPPORTED_CARTESIAN_IMPEDANCE_MODE, None)
+        if candidate is not None:
+            candidates.append(candidate)
+    return tuple(candidates)
+
+
+def is_cartesian_impedance_mode(
+    value: Any,
+    candidates: Sequence[Any],
+    *,
+    allow_numeric_match: bool,
+) -> bool:
+    if value is None:
+        return False
+
+    value_text = f"{value!s} {value!r}"
+    if UNSUPPORTED_CARTESIAN_IMPEDANCE_MODE in value_text:
+        return True
+
+    for candidate in candidates:
+        if value == candidate:
+            return True
+        candidate_text = f"{candidate!s} {candidate!r}"
+        if UNSUPPORTED_CARTESIAN_IMPEDANCE_MODE in candidate_text and value_text in {
+            candidate_text,
+            str(candidate),
+            repr(candidate),
+        }:
+            return True
+        if allow_numeric_match and int_values_equal(value, candidate):
+            return True
+
+    return False
+
+
+def int_values_equal(left: Any, right: Any) -> bool:
+    try:
+        return int(left) == int(right)
+    except (TypeError, ValueError):
+        return False
+
+
+def motion_control_status_payload(motion_status: Any) -> dict[str, object]:
+    return {
+        "mode": to_jsonable(getattr(motion_status, "mode", None)),
+        "control_mode": to_jsonable(getattr(motion_status, "control_mode", None)),
+        "error_code": to_jsonable(getattr(motion_status, "error_code", None)),
+        "error_msg": str(getattr(motion_status, "error_msg", "") or ""),
+        "repr": repr(motion_status),
+    }
+
+
 def assert_waist_positions_within_limits(
     limits: Mapping[str, Any],
     positions: Sequence[float],
@@ -355,6 +499,27 @@ def snapshot_raw(snapshot: JointSnapshot) -> dict[str, object]:
         "motion_status": to_jsonable(snapshot.motion_status),
         "whole_body_status": to_jsonable(snapshot.whole_body_status),
     }
+
+
+def refused_control_mode_result(error: UnsupportedGdkControlModeError) -> dict[str, object]:
+    status_payload = motion_control_status_payload(error.motion_status)
+    return refused_result(
+        stage="gdk_control_mode_unsupported",
+        message=UNSUPPORTED_CONTROL_MODE_MESSAGE,
+        extra={
+            "error_code": GDK_CONTROL_MODE_UNSUPPORTED,
+            "motion_control_status": status_payload,
+            "unsupported_control_mode_fields": error.unsupported_fields,
+            "safety_gate": {
+                "enabled": True,
+                "confirmed": True,
+                "expected_confirmation": TASKFLOW_ABS_JOINT_CONFIRMATION,
+            },
+            "raw": {
+                "motion_status": status_payload,
+            },
+        },
+    )
 
 
 def refused_result(

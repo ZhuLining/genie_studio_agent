@@ -1,0 +1,29 @@
+start_node: 开始
+app_execution_id: sample-end-effector-run
+nodes:
+  - id: 开始
+    type: assign
+    assignments: {}
+  - id: 末端控制
+    type: worker
+    skill_name: control_end_effector_skill
+    params_template:
+      target_end: left_tool
+      end_effector_type: omnipicker
+      opening: 0.5
+      timeout: 20
+    capture_state_detail: true
+    output_var: 末端控制
+    output_contract:
+      required_paths:
+        - $.variables.末端控制.detail
+  - id: 结束
+    type: assign
+    assignments: {}
+transitions:
+  - from: 开始
+    outcome: success
+    to: 末端控制
+  - from: 末端控制
+    outcome: success
+    to: 结束

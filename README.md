@@ -11,9 +11,10 @@
 ```
 
 工作流执行不再使用 mock/dry-run：`motion_plan_skill` 会在安全门确认后调用已验证的
-GDK `ABS_JOINT` 接口；`script_skill` 只允许以子进程执行 executor 内置白名单 GDK 探针脚本模块，
-用于验证同一条工作流中混合不同 worker 实现。未设置 `ENABLE_GDK_CONTROL=1` 与
-`CONFIRM_GDK_CONTROL=TASKFLOW_ABS_JOINT` 时，会在导入 GDK 前拒绝执行控制。
+GDK `ABS_JOINT` 接口；`control_end_effector_skill` 与代码节点中的末端控制脚本会在安全门确认后调用
+GDK `move_ee_pos`。`script_skill` 的普通代码脚本只做变量回显、开合度计算等参数传递验证，不导入 GDK；
+涉及末端控制的代码脚本以独立白名单脚本文件实现，并在安全门确认后直接调用 `move_ee_pos()`。
+未设置 `ENABLE_GDK_CONTROL=1` 与 `CONFIRM_GDK_CONTROL=TASKFLOW_ABS_JOINT` 时，涉及真机控制的节点会在导入 GDK 前拒绝执行控制。
 
 `--listen` 还会提供一个独立的只读机器人状态查询入口：订阅
 `gsa/self/robot/state/get_current_pose/request`，调用 GDK 只读接口获取当前关节状态，并发布到
@@ -36,7 +37,8 @@ src/gsa_taskflow_executor/
   runtime/           配置读取、stdout/JSONL 事件日志
   taskflow/          YAML parser、DAG scheduler、变量存储
   skills/            Skill Registry 与 worker skill runtime
-  gdk/               GDK 只读探针、控制探针、ABS_JOINT runtime、固定脚本模块
+  code_scripts/      【代码】节点白名单 registry、runtime 与 scripts/ 独立脚本文件
+  gdk/               GDK 只读/控制探针、ABS_JOINT runtime、末端 runtime、进程级 session
   mqtt/              MQTT gateway、状态回传、当前位姿请求、端到端 probe
 ```
 
@@ -155,16 +157,19 @@ EXECUTOR_MODE=gdk \
 gsa-taskflow-executor --env-file .env.example --listen
 ```
 
-该模式的正式运动控制只支持已经实测的 `motion_plan_skill` + `ABS_JOINT`：
+该模式的正式 GDK 控制只支持已经实测/按高可信文档收敛的受控接口：
 
 ```text
 left_arm/right_arm  robot.move_arm_joint(positions14, velocities14, 2)
 waist               robot.move_waist_joint(positions5, velocities5)
+end_effector        robot.move_ee_pos(joint_states)
 ```
 
 左右臂会合并为 14 维数组，单臂控制时另一臂填当前值；腰部使用 5 维数组。Taskflow
 `speed` 作为 GDK `velocities` 使用，允许范围为 `0.001~0.1`，新建节点默认 `0.05`。
-手动控制探针仍使用已验证默认 `0.02`。
+末端控制使用 `target_end/end_effector_type/opening` 构造 `JointStates`；开合度 `0~1`
+当前只映射文档明确给出单关节范围的 `omnipicker/dahuan/ctek90d`。手动控制探针仍使用已验证默认
+`0.02`。
 
 监听 `gsa/self/taskflow_yaml`：
 
@@ -173,8 +178,9 @@ gsa-taskflow-executor --env-file .env.example --listen
 ```
 
 监听模式会订阅 YAML、解析 Taskflow、按 DAG 顺序进入 Skill Runtime。`EXECUTOR_MODE`
-只支持 `gdk`，registry 只允许 `motion_plan_skill` 和受控 `script_skill` 的 GDK adapter；
-安全门确认通过后，才会导入 GDK 并执行已验证的绝对关节角控制，或启动固定白名单脚本模块。
+只支持 `gdk`，registry 只允许 `motion_plan_skill`、受控 `script_skill` 和
+`control_end_effector_skill` 的 GDK adapter；纯代码脚本不会导入 GDK，涉及真机控制的运动/末端节点
+会在安全门确认通过后才导入 GDK 并执行已验证的绝对关节角控制或末端开合控制。
 
 同时，监听模式还会订阅只读当前位姿请求：
 
@@ -218,10 +224,10 @@ skill runtime schedule outcome=success terminal=结束 steps=3 path=开始 -> �
 ```
 
 该调度器负责节点顺序、transition 选择和变量写入。真实技能调用由 Skill Runtime 封装。
-可选的多 worker 实现验证链路：
+可选的代码节点与位控混排验证链路：
 
 ```text
-开始 -> 脚本控制 -> 位姿调整-位控 -> 结束
+开始 -> 代码 -> 位姿调整-位控 -> 结束
 ```
 
 可直接发布示例 YAML 验证：
@@ -229,6 +235,13 @@ skill runtime schedule outcome=success terminal=结束 steps=3 path=开始 -> �
 ```bash
 mosquitto_pub -h 127.0.0.1 -p 1883 -t gsa/self/taskflow_yaml \
   -f examples/script_and_motion.yaml
+```
+
+末端控制示例：
+
+```bash
+mosquitto_pub -h 127.0.0.1 -p 1883 -t gsa/self/taskflow_yaml \
+  -f examples/end_effector_open.yaml
 ```
 
 当前已接入 VariableStore。GDK 调度过程中会维护运行时变量空间：
@@ -257,7 +270,9 @@ $.variables.二维码定位.detail.action_data.抓取点A
 ```text
 assign              解析 assignments，写入节点 detail.outputs.assignments
 motion_plan_skill   gdk  受保护调用 GDK ABS_JOINT，输出 gdk_result
-script_skill        gdk  受保护执行白名单 GDK 探针脚本模块，输出 script_result
+script_skill        gdk  执行白名单代码脚本文件，输出 script_result 和声明输出变量
+control_end_effector_skill
+                    gdk  受保护调用 GDK move_ee_pos，输出 end_effector_result
 ```
 
 当前已接入配置化 Skill Registry。默认内置配置等价于：
@@ -270,6 +285,9 @@ skills:
   script_skill:
     adapter: gdk
     implementation: script
+  control_end_effector_skill:
+    adapter: gdk
+    implementation: end_effector
 ```
 
 也可以通过环境变量指定配置文件：
@@ -279,8 +297,9 @@ SKILL_REGISTRY_FILE=skills.example.yaml
 ```
 
 registry 当前只支持 `adapter: gdk`。`gdk` 当前只允许 `motion_plan_skill`
-的 `ABS_JOINT` 和 `script_skill` 的白名单脚本 ID，并要求 `ENABLE_GDK_CONTROL=1` 与
-`CONFIRM_GDK_CONTROL=TASKFLOW_ABS_JOINT`；`python_script`、`http` 等 adapter 暂不启用。
+的 `ABS_JOINT`、`control_end_effector_skill` 的末端开合控制和 `script_skill` 的白名单代码脚本 ID。
+纯代码脚本不触碰 GDK；涉及真机控制的运动/末端节点仍要求
+`ENABLE_GDK_CONTROL=1` 与 `CONFIRM_GDK_CONTROL=TASKFLOW_ABS_JOINT`；`python_script`、`http` 等 adapter 暂不启用。
 
 当前已接入状态回传。每个节点会按生命周期发布：
 
@@ -464,7 +483,7 @@ logs/executions/YYYYMMDD.jsonl  可复盘的结构化运行事件
 20. Skill Runtime
 21. assign skill
 22. motion_plan_skill GDK skill
-23. script_skill GDK 白名单脚本 skill
+23. script_skill 内置代码脚本 skill
 24. worker 参数进入 runtime 后二次校验
 25. gsa/self/{aid}/status 状态回传
 26. 节点 RUNNING / OVER / ERROR 生命周期事件

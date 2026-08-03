@@ -105,7 +105,10 @@ class SkillRuntimeNodeRunner:
                 ),
             )
         except SkillRuntimeError as error:
-            return NodeRunResult(outcome="error", detail={"error": str(error)})
+            detail: dict[str, object] = {"error": str(error)}
+            if error.detail is not None:
+                detail.update(error.detail)
+            return NodeRunResult(outcome="error", detail=detail)
 
         return NodeRunResult(
             outcome=result.outcome,
@@ -128,6 +131,7 @@ class TaskflowScheduler:
         self.definition = definition
         self.node_runner = node_runner or SkillRuntimeNodeRunner(definition.app_execution_id)
         self.variable_store = variable_store or VariableStore()
+        self.seed_system_variables()
         self.node_event_handler = node_event_handler
         self.max_steps = max_steps or (len(definition.nodes) + 1)
         self.nodes_by_id = {node.node_id: node for node in definition.nodes}
@@ -233,6 +237,22 @@ class TaskflowScheduler:
     def emit_node_event(self, event: NodeExecutionEvent) -> None:
         if self.node_event_handler is not None:
             self.node_event_handler(event)
+
+    def seed_system_variables(self) -> None:
+        if "system" in self.variable_store.variables:
+            return
+        # 系统变量不是画布节点产物，但下游代码节点需要通过同一变量空间稳定引用。
+        self.variable_store.set_node_detail(
+            "system",
+            {
+                "status": "success",
+                "node_type": "system",
+                "outputs": {
+                    "timestamp": utc_now_iso(),
+                    "app_execution_id": self.definition.app_execution_id,
+                },
+            },
+        )
 
 
 def build_transition_index(

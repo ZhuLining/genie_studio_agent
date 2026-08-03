@@ -91,6 +91,45 @@ def test_status_reporter_publishes_node_error_payload() -> None:
     assert payloads[-1]["task_state"] == "ERROR"
 
 
+def test_status_reporter_publishes_gdk_control_mode_error_code(monkeypatch) -> None:
+    error_message = "当前为笛卡尔阻抗模式，请切换到关节位置/规划控制模式后重试"
+    monkeypatch.setattr(
+        skill_runtime,
+        "run_gdk_motion_plan_abs_joint",
+        lambda _motion_params, **_kwargs: {
+            "available": False,
+            "executed": False,
+            "backend": "agibot_gdk.Robot",
+            "action": "taskflow_abs_joint",
+            "error_stage": "gdk_control_mode_unsupported",
+            "error_code": "GDK_CONTROL_MODE_UNSUPPORTED",
+            "error_msg": error_message,
+        },
+    )
+    payloads: list[dict[str, object]] = []
+    taskflow = parse_taskflow_yaml(VALID_RIGHT_ARM_YAML)
+    reporter = TaskflowStatusReporter(
+        settings=ExecutorSettings(executor_aid="aid-1"),
+        publish_status=payloads.append,
+    )
+
+    result = TaskflowScheduler(
+        taskflow,
+        node_event_handler=reporter.publish_node_event,
+    ).run()
+    reporter.publish_execution_finished(result)
+
+    error_payload = payloads[3]["sub_task"]
+    assert error_payload["state"] == "ERROR"
+    assert error_payload["error_code"] == "GDK_CONTROL_MODE_UNSUPPORTED"
+    assert error_payload["error_stage"] == "gdk_control_mode_unsupported"
+    assert error_payload["error_msg"] == error_message
+    assert error_payload["detail"]["gdk_result"]["error_code"] == (
+        "GDK_CONTROL_MODE_UNSUPPORTED"
+    )
+    assert payloads[-1]["task_state"] == "ERROR"
+
+
 def test_status_reporter_publishes_parse_error_payload_without_app_execution_id() -> None:
     payloads: list[dict[str, object]] = []
     reporter = TaskflowStatusReporter(

@@ -6,4 +6,8 @@ skills:
   script_skill:
     adapter: gdk
     implementation: script
-    description: Guarded executor-side whitelisted GDK script skill.
+    description: Executor-side whitelisted code script file skill for parameter passing.
+  control_end_effector_skill:
+    adapter: gdk
+    implementation: end_effector
+    description: Guarded GDK move_ee_pos end-effector open/close skill.

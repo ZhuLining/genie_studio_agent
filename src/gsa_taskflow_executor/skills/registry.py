@@ -12,12 +12,13 @@ from gsa_taskflow_executor.runtime.config import ExecutorSettings
 from gsa_taskflow_executor.taskflow.parser import (
     TaskflowDefinition,
     TaskflowParseError,
+    parse_end_effector_params,
     parse_motion_plan_params,
     parse_script_params,
 )
 
 SkillAdapter = Literal["gdk"]
-SkillImplementation = Literal["motion_plan", "script"]
+SkillImplementation = Literal["motion_plan", "script", "end_effector"]
 YamlMapping = Mapping[str, Any]
 
 
@@ -62,6 +63,12 @@ class SkillRegistry:
                     adapter="gdk",
                     implementation="script",
                     description="GDK whitelisted script skill.",
+                ),
+                "control_end_effector_skill": SkillDefinition(
+                    name="control_end_effector_skill",
+                    adapter="gdk",
+                    implementation="end_effector",
+                    description="GDK end-effector open/close skill.",
                 ),
             }
         )
@@ -131,6 +138,14 @@ class SkillRegistry:
                     )
                 except TaskflowParseError as error:
                     raise SkillRegistryError(str(error)) from error
+            if skill.implementation == "end_effector":
+                try:
+                    parse_end_effector_params(
+                        node.params_template,
+                        f"nodes[{node.node_id}].params_template",
+                    )
+                except TaskflowParseError as error:
+                    raise SkillRegistryError(str(error)) from error
 
     def summary(self) -> dict[str, object]:
         return {
@@ -150,10 +165,14 @@ def parse_skill_definition(name: str, raw_config: Any) -> SkillDefinition:
     allowed_implementations = {
         "motion_plan_skill": "motion_plan",
         "script_skill": "script",
+        "control_end_effector_skill": "end_effector",
     }
     expected_implementation = allowed_implementations.get(name)
     if expected_implementation is None:
-        raise SkillRegistryError("MVP 当前只支持 motion_plan_skill 和 script_skill")
+        raise SkillRegistryError(
+            "MVP 当前只支持 motion_plan_skill、script_skill 和 "
+            "control_end_effector_skill"
+        )
     implementation_value = read_optional_string(
         config,
         ("implementation",),
