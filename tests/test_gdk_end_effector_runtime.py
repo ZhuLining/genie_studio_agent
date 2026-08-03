@@ -92,6 +92,7 @@ def test_end_effector_runtime_refuses_before_importing_without_safety_gate() -> 
             end_effector_type="omnipicker",
             opening=0.5,
             timeout=20.0,
+            post_wait_seconds=0.0,
         ),
         environ={},
         import_module=forbidden_import,
@@ -112,6 +113,7 @@ def test_end_effector_runtime_executes_single_joint_type() -> None:
             end_effector_type="omnipicker",
             opening=0.5,
             timeout=20.0,
+            post_wait_seconds=0.0,
         ),
         environ=confirmed_env(),
         import_module=lambda _name: FakeAgibotGdk,
@@ -123,6 +125,8 @@ def test_end_effector_runtime_executes_single_joint_type() -> None:
     assert result["target_end"] == "left_tool"
     assert result["end_effector_type"] == "omnipicker"
     assert result["target_positions"] == pytest.approx([-0.3925])
+    assert result["post_wait_seconds"] == 0.0
+    assert result["wait_after_command"] is False
     assert result["actual_openness"] == pytest.approx([0.5])
     assert result["actual_openness_source"] == "requested_opening_fallback"
     assert FakeAgibotGdk.init_called == 1
@@ -155,6 +159,7 @@ def test_end_effector_runtime_prefers_actual_openness_from_after_state() -> None
             end_effector_type="omnipicker",
             opening=0.5,
             timeout=20.0,
+            post_wait_seconds=0.0,
         ),
         environ=confirmed_env(),
         import_module=lambda _name: FakeAgibotGdk,
@@ -163,6 +168,29 @@ def test_end_effector_runtime_prefers_actual_openness_from_after_state() -> None
     assert result["executed"] is True
     assert result["actual_openness"] == pytest.approx([0.62])
     assert result["actual_openness_source"] == "gdk_after_end_state"
+
+
+def test_end_effector_runtime_waits_after_move_before_reading_after_state() -> None:
+    FakeAgibotGdk.reset()
+    sleep_calls: list[float] = []
+
+    result = run_gdk_end_effector_control(
+        EndEffectorParams(
+            target_end="left_tool",
+            end_effector_type="omnipicker",
+            opening=0.5,
+            timeout=20.0,
+            post_wait_seconds=1.0,
+        ),
+        environ=confirmed_env(),
+        import_module=lambda _name: FakeAgibotGdk,
+        sleep=sleep_calls.append,
+    )
+
+    assert result["executed"] is True
+    assert sleep_calls == [1.0]
+    assert result["post_wait_seconds"] == 1.0
+    assert result["wait_after_command"] is True
 
 
 def test_end_effector_runtime_infers_type_from_end_state() -> None:
@@ -175,6 +203,7 @@ def test_end_effector_runtime_infers_type_from_end_state() -> None:
             end_effector_type=None,
             opening=0.25,
             timeout=20.0,
+            post_wait_seconds=0.0,
         ),
         environ=confirmed_env(),
         import_module=lambda _name: FakeAgibotGdk,
@@ -198,6 +227,7 @@ def test_end_effector_runtime_refuses_unknown_robot_reported_type() -> None:
             end_effector_type=None,
             opening=0.5,
             timeout=20.0,
+            post_wait_seconds=0.0,
         ),
         environ=confirmed_env(),
         import_module=lambda _name: FakeAgibotGdk,
@@ -218,6 +248,7 @@ def test_end_effector_runtime_refuses_multi_joint_type_without_mapping() -> None
             end_effector_type="o10_t2",
             opening=0.5,
             timeout=20.0,
+            post_wait_seconds=0.0,
         ),
         environ=confirmed_env(),
         import_module=lambda _name: FakeAgibotGdk,
@@ -240,6 +271,7 @@ def test_end_effector_runtime_holds_gdk_session_during_move_call() -> None:
             end_effector_type="omnipicker",
             opening=1.0,
             timeout=20.0,
+            post_wait_seconds=0.0,
         ),
         environ=confirmed_env(),
         session_manager=manager,

@@ -14,6 +14,7 @@ MOTION_SPEED_MIN = 0.001
 MOTION_SPEED_MAX = 0.1
 DEFAULT_SCRIPT_TIMEOUT = 50.0
 DEFAULT_END_EFFECTOR_TIMEOUT = 20.0
+DEFAULT_END_EFFECTOR_POST_WAIT_SECONDS = 1.0
 END_EFFECTOR_TARGET_ALIASES = {
     "left": "left_tool",
     "left_end": "left_tool",
@@ -95,6 +96,7 @@ class EndEffectorParams:
     end_effector_type: str | None
     opening: float
     timeout: float
+    post_wait_seconds: float = DEFAULT_END_EFFECTOR_POST_WAIT_SECONDS
 
 
 @dataclass(frozen=True)
@@ -383,11 +385,17 @@ def parse_end_effector_params(params: YamlMapping, path: str) -> EndEffectorPara
         f"{path}.timeout",
         DEFAULT_END_EFFECTOR_TIMEOUT,
     )
+    post_wait_seconds = read_non_negative_number_with_default(
+        params.get("post_wait_seconds", params.get("postWaitSeconds")),
+        f"{path}.post_wait_seconds",
+        DEFAULT_END_EFFECTOR_POST_WAIT_SECONDS,
+    )
     return EndEffectorParams(
         target_end=target_end,
         end_effector_type=end_effector_type,
         opening=opening,
         timeout=timeout,
+        post_wait_seconds=post_wait_seconds,
     )
 
 
@@ -497,6 +505,15 @@ def read_positive_number_with_default(value: Any, path: str, fallback: float) ->
     if value is None:
         return fallback
     return read_positive_number(value, path)
+
+
+def read_non_negative_number_with_default(value: Any, path: str, fallback: float) -> float:
+    if value is None:
+        return fallback
+    number = to_float(value, path)
+    if number < 0:
+        raise TaskflowParseError(f"{path} 必须大于等于 0")
+    return number
 
 
 def read_end_effector_opening(value: Any, path: str) -> float:

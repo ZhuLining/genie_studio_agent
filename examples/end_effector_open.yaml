@@ -12,6 +12,7 @@ nodes:
       end_effector_type: omnipicker
       opening: 0.5
       timeout: 20
+      post_wait_seconds: 1
     capture_state_detail: true
     output_var: 末端控制
     output_contract:

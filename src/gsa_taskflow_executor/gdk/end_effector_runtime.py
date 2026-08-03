@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import time
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
@@ -36,6 +37,7 @@ def run_gdk_end_effector_control(
     environ: Mapping[str, str] | None = None,
     import_module: Callable[[str], Any] = importlib.import_module,
     session_manager: GdkSessionManager | None = None,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> dict[str, object]:
     """通过 GDK move_ee_pos 控制末端执行器开合。"""
 
@@ -80,6 +82,7 @@ def run_gdk_end_effector_control(
                 robot,
                 end_effector_params,
                 agibot_gdk=lease.agibot_gdk,
+                sleep=sleep,
             )
         except Exception as error:
             result = unavailable_result("execute_end_effector_control", error)
@@ -96,6 +99,7 @@ def execute_end_effector_control(
     end_effector_params: EndEffectorParams,
     *,
     agibot_gdk: Any,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> dict[str, object]:
     before_end_state = read_end_state(robot)
     end_effector_type = resolve_end_effector_type(
@@ -151,6 +155,12 @@ def execute_end_effector_control(
     if not is_zero_error(move_return):
         raise RuntimeError(f"move_ee_pos returned {move_return!r}")
 
+    wait_after_command = end_effector_params.post_wait_seconds > 0
+    if wait_after_command:
+        # move_ee_pos 的返回值只代表命令被 GDK 接收，不保证末端已经完成动作；
+        # 这里复刻原 GSA 的指令后等待，避免下游位控立即抢占末端开合动作。
+        sleep(end_effector_params.post_wait_seconds)
+
     after_end_state = read_end_state(robot)
     actual_openness = extract_actual_openness(after_end_state, end_effector_params.target_end)
     actual_openness_source = "gdk_after_end_state"
@@ -170,6 +180,8 @@ def execute_end_effector_control(
         "end_effector_type": end_effector_type,
         "target_type": end_effector_type,
         "opening": end_effector_params.opening,
+        "post_wait_seconds": end_effector_params.post_wait_seconds,
+        "wait_after_command": wait_after_command,
         "actual_openness": actual_openness,
         "actual_openness_source": actual_openness_source,
         "target_positions": positions,

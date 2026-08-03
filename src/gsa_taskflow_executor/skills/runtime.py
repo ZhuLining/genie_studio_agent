@@ -514,5 +514,6 @@ def build_end_effector_outputs(
         "end_effector_type": end_effector_params.end_effector_type,
         "opening": end_effector_params.opening,
         "timeout": end_effector_params.timeout,
+        "post_wait_seconds": end_effector_params.post_wait_seconds,
         "resolved_params_template": deepcopy(dict(params_template)),
     }

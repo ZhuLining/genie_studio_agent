@@ -129,6 +129,19 @@ def test_parse_end_effector_skill_params() -> None:
     assert params.end_effector_type == "omnipicker"
     assert params.opening == 0.5
     assert params.timeout == 20
+    assert params.post_wait_seconds == 1.0
+
+
+def test_parse_end_effector_skill_params_accepts_post_wait_seconds() -> None:
+    taskflow = parse_taskflow_yaml(
+        VALID_END_EFFECTOR_YAML.replace(
+            "      timeout: 20\n",
+            "      timeout: 20\n      post_wait_seconds: 0.5\n",
+        )
+    )
+    params = parse_end_effector_params(taskflow.worker_nodes[0].params_template, "params_template")
+
+    assert params.post_wait_seconds == 0.5
 
 
 def test_parse_end_effector_params_allows_robot_reported_type() -> None:
