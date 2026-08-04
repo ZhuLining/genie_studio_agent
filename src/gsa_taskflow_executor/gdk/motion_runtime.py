@@ -100,8 +100,8 @@ def run_gdk_motion_plan_abs_joint(
             session_manager=session_manager,
         )
 
-    # 父进程只持有调度互斥锁，不导入 GDK；真正的 C 扩展调用在子进程内完成，
-    # 超时后可以杀掉子进程并释放父进程 worker，避免 MQTT 执行队列永久卡死。
+    # 父进程只持有调度互斥锁，不导入 GDK；真正的 C 扩展调用在常驻 worker 子进程完成。
+    # 命令超时时杀掉并重启 worker，兼顾正常路径响应速度和阻塞故障隔离。
     manager = session_manager or GdkSessionManager()
     try:
         lease = manager.acquire(

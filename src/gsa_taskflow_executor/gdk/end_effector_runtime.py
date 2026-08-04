@@ -55,7 +55,8 @@ def run_gdk_end_effector_control(
             sleep=sleep,
         )
 
-    # 末端 move_ee_pos 是同步 C 扩展调用；父进程只保留互斥锁，超时后杀子进程。
+    # 末端 move_ee_pos 是同步 C 扩展调用；父进程只保留互斥锁。
+    # 常驻 worker 复用 GDK 初始化，超时时再杀掉并重启该 worker。
     manager = session_manager or GdkSessionManager()
     try:
         lease = manager.acquire(

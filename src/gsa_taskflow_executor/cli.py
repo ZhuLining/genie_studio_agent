@@ -12,6 +12,7 @@ from .gdk.current_pose import run_gdk_current_pose_snapshot
 from .gdk.motion_runtime import TASKFLOW_ABS_JOINT_CONFIRMATION
 from .gdk.readonly import run_gdk_readonly_probe
 from .gdk.session import GdkSessionManager
+from .gdk.worker_runtime import shutdown_default_gdk_worker
 from .mqtt.gateway import MqttGateway, MqttGatewayError, TaskflowMessage
 from .mqtt.message_queue import MqttMessageQueueError, MqttMessageWorkerQueue
 from .mqtt.robot_state import handle_current_pose_request
@@ -391,6 +392,20 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             taskflow_queue.stop()
             robot_state_queue.stop()
+            worker_shutdown = shutdown_default_gdk_worker()
+            worker_shutdown_level = (
+                "info" if worker_shutdown.get("success") is True else "warning"
+            )
+            if worker_shutdown_level == "warning":
+                logger.warning("GDK worker shutdown skipped or failed: %s", worker_shutdown)
+            writer.write(
+                RuntimeEvent(
+                    event_type="gdk_worker_shutdown",
+                    level=worker_shutdown_level,
+                    message="GDK persistent worker shutdown completed",
+                    payload={"gdk_worker": worker_shutdown},
+                )
+            )
             shutdown_result = gdk_session.shutdown()
             shutdown_level = "info" if shutdown_result.get("success") is True else "warning"
             if shutdown_level == "warning":

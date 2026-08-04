@@ -8,7 +8,7 @@ from queue import Empty
 from typing import Any, cast
 
 from gsa_taskflow_executor.gdk.control_probe import initialize_gdk, release_gdk, utc_now_iso
-from gsa_taskflow_executor.gdk.readonly import GDK_BACKEND, GDK_MODULE_NAME, to_jsonable
+from gsa_taskflow_executor.gdk.readonly import GDK_MODULE_NAME, to_jsonable
 
 GDK_OPERATION_TIMEOUT_CODE = "GDK_OPERATION_TIMEOUT"
 GDK_SUBPROCESS_FAILED_CODE = "GDK_SUBPROCESS_FAILED"
@@ -104,13 +104,10 @@ def run_motion_abs_joint_in_subprocess(
     *,
     safety_gate: Mapping[str, object],
 ) -> dict[str, object]:
-    return run_gdk_subprocess(
-        operation="motion_abs_joint",
-        action="taskflow_abs_joint",
-        backend=GDK_BACKEND,
-        timeout_seconds=read_timeout_seconds(motion_params),
-        child_target=motion_abs_joint_child,
-        child_args=(motion_params,),
+    from gsa_taskflow_executor.gdk.worker_runtime import run_motion_abs_joint_in_worker
+
+    return run_motion_abs_joint_in_worker(
+        motion_params,
         safety_gate=safety_gate,
     )
 
@@ -120,13 +117,10 @@ def run_end_effector_in_subprocess(
     *,
     safety_gate: Mapping[str, object],
 ) -> dict[str, object]:
-    return run_gdk_subprocess(
-        operation="end_effector",
-        action="taskflow_end_effector",
-        backend=GDK_BACKEND,
-        timeout_seconds=read_timeout_seconds(end_effector_params),
-        child_target=end_effector_child,
-        child_args=(end_effector_params,),
+    from gsa_taskflow_executor.gdk.worker_runtime import run_end_effector_in_worker
+
+    return run_end_effector_in_worker(
+        end_effector_params,
         safety_gate=safety_gate,
     )
 
@@ -139,13 +133,13 @@ def run_code_script_in_subprocess(
     environ: Mapping[str, str],
     safety_gate: Mapping[str, object],
 ) -> dict[str, object]:
-    return run_gdk_subprocess(
-        operation=f"code_script_{script_id}",
-        action=script_id,
-        backend="executor_code_script",
-        timeout_seconds=read_timeout_seconds(script_params),
-        child_target=code_script_child,
-        child_args=(script_params, script_id, dict(inputs), dict(environ)),
+    from gsa_taskflow_executor.gdk.worker_runtime import run_code_script_in_worker
+
+    return run_code_script_in_worker(
+        script_params,
+        script_id=script_id,
+        inputs=inputs,
+        environ=environ,
         safety_gate=safety_gate,
     )
 

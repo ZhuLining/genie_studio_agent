@@ -133,8 +133,8 @@ def run_gdk_code_script(
             inputs=inputs,
         )
 
-    # 代码节点中的 GDK 脚本仍属于真机控制；父进程只做白名单和互斥，
-    # 具体 move_ee_pos 在子进程执行，避免脚本 timeout 只停在参数层。
+    # 代码节点中的 GDK 脚本仍属于真机控制；父进程只做白名单和互斥。
+    # 具体 GDK 调用交给常驻 worker，正常路径复用初始化，timeout 时杀 worker 兜底。
     manager = session_manager or GdkSessionManager()
     try:
         lease = manager.acquire(
