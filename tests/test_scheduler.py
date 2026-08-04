@@ -5,6 +5,7 @@ from fixtures import (
     VALID_CODE_AND_MOTION_YAML,
     VALID_CODE_CHAIN_YAML,
     VALID_END_EFFECTOR_CODE_FLOW_YAML,
+    VALID_LOOP_TIMER_YAML,
     VALID_RIGHT_ARM_YAML,
 )
 from gsa_taskflow_executor.taskflow.parser import parse_taskflow_yaml
@@ -134,6 +135,80 @@ def test_scheduler_code_nodes_pass_declared_outputs_downstream() -> None:
     assert result.variables["system"]["detail"]["outputs"]["app_execution_id"] == "code-chain-run"
     assert result.variables["代码1"]["detail"]["outputs"]["out_1"] == "code-chain-run"
     assert result.variables["代码2"]["detail"]["outputs"]["out_2"] == "code-chain-run"
+
+
+def test_scheduler_timer_and_count_loop_execute_in_order() -> None:
+    taskflow = parse_taskflow_yaml(VALID_LOOP_TIMER_YAML)
+    sleep_calls: list[float] = []
+    worker_counts: dict[str, int] = {}
+
+    def runner(node, _variable_store):
+        worker_counts[node.node_id] = worker_counts.get(node.node_id, 0) + 1
+        count = worker_counts[node.node_id]
+        output_name = "out_1" if node.node_id == "代码1" else "out_2"
+        return NodeRunResult(
+            outcome="success",
+            outputs={output_name: f"{node.node_id}-{count}"},
+        )
+
+    result = TaskflowScheduler(
+        taskflow,
+        node_runner=runner,
+        sleep=sleep_calls.append,
+    ).run()
+
+    assert result.outcome == "success"
+    assert result.terminal_node_id == "结束"
+    assert result.visited_node_ids == (
+        "开始",
+        "定时器",
+        "代码1",
+        "循环内定时器",
+        "代码2",
+        "代码1",
+        "循环内定时器",
+        "代码2",
+        "代码1",
+        "循环内定时器",
+        "代码2",
+        "循环",
+        "结束",
+    )
+    assert sleep_calls == [0.2, 0.1, 0.1, 0.1]
+    assert result.variables["代码1"]["detail"]["outputs"]["out_1"] == "代码1-3"
+    assert result.variables["代码2"]["detail"]["outputs"]["out_2"] == "代码2-3"
+    loop_outputs = result.variables["循环"]["detail"]["outputs"]
+    assert loop_outputs["completed_iterations"] == 3
+    assert loop_outputs["iteration_max"] == 3
+    assert [item["outcome"] for item in loop_outputs["iteration_results"]] == [
+        "success",
+        "success",
+        "success",
+    ]
+
+
+def test_scheduler_loop_failure_marks_parent_loop_error() -> None:
+    taskflow = parse_taskflow_yaml(VALID_LOOP_TIMER_YAML)
+
+    def runner(node, _variable_store):
+        if node.node_id == "代码2":
+            return NodeRunResult(outcome="error", detail={"error": "child failed"})
+        return NodeRunResult(outcome="success")
+
+    result = TaskflowScheduler(
+        taskflow,
+        node_runner=runner,
+        sleep=lambda _duration: None,
+    ).run()
+
+    assert result.outcome == "error"
+    assert result.terminal_node_id == "循环"
+    assert result.visited_node_ids == ("开始", "定时器", "代码1", "循环内定时器", "代码2", "循环")
+    loop_detail = result.variables["循环"]["detail"]
+    assert loop_detail["status"] == "error"
+    assert loop_detail["failed_iteration"] == 1
+    assert loop_detail["failed_child_node"] == "代码2"
+    assert loop_detail["outputs"]["completed_iterations"] == 0
 
 
 def test_scheduler_end_effector_code_flow_passes_adjusted_opening(monkeypatch) -> None:

@@ -272,3 +272,81 @@ transitions:
     outcome: success
     to: 结束
 """
+
+
+VALID_LOOP_TIMER_YAML = """
+start_node: 开始
+app_execution_id: loop-timer-run
+nodes:
+  - id: 开始
+    type: assign
+    assignments: {}
+  - id: 定时器
+    type: timer
+    timer_mode: rel
+    duration: 0.2
+  - id: 循环
+    type: loop
+    loop_mode: count
+    children:
+      - 代码1
+      - 循环内定时器
+      - 代码2
+    iteration_max: 3
+  - id: 代码1
+    type: worker
+    skill_name: script_skill
+    params_template:
+      script_id: code_echo_inputs
+      input_mappings: []
+      output_variables:
+        - name: out_1
+          type: string
+      timeout: 50
+    capture_state_detail: true
+    output_var: 代码1
+    output_contract:
+      required_paths:
+        - $.variables.代码1.detail
+  - id: 循环内定时器
+    type: timer
+    timer_mode: rel
+    duration: 0.1
+  - id: 代码2
+    type: worker
+    skill_name: script_skill
+    params_template:
+      script_id: code_echo_inputs
+      input_mappings:
+        - name: out_2
+          type: string
+          variable_ref: $.variables.代码1.detail.outputs.out_1
+      output_variables:
+        - name: out_2
+          type: string
+      timeout: 50
+    capture_state_detail: true
+    output_var: 代码2
+    output_contract:
+      required_paths:
+        - $.variables.代码2.detail
+  - id: 结束
+    type: assign
+    assignments: {}
+transitions:
+  - from: 开始
+    outcome: success
+    to: 定时器
+  - from: 定时器
+    outcome: success
+    to: 循环
+  - from: 代码1
+    outcome: success
+    to: 循环内定时器
+  - from: 循环内定时器
+    outcome: success
+    to: 代码2
+  - from: 循环
+    outcome: success
+    to: 结束
+"""

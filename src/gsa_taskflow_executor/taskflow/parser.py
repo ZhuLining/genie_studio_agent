@@ -15,6 +15,9 @@ MOTION_SPEED_MAX = 0.1
 DEFAULT_SCRIPT_TIMEOUT = 50.0
 DEFAULT_END_EFFECTOR_TIMEOUT = 20.0
 DEFAULT_END_EFFECTOR_POST_WAIT_SECONDS = 1.0
+LOOP_MODE_COUNT = "count"
+TIMER_MODE_REL = "rel"
+MAX_LOOP_ITERATIONS = 100
 END_EFFECTOR_TARGET_ALIASES = {
     "left": "left_tool",
     "left_end": "left_tool",
@@ -100,6 +103,19 @@ class EndEffectorParams:
 
 
 @dataclass(frozen=True)
+class TimerParams:
+    timer_mode: str
+    duration: float
+
+
+@dataclass(frozen=True)
+class LoopParams:
+    loop_mode: str
+    children: tuple[str, ...]
+    iteration_max: int
+
+
+@dataclass(frozen=True)
 class TaskflowNode:
     node_id: str
     node_type: str
@@ -109,10 +125,23 @@ class TaskflowNode:
     capture_state_detail: bool
     output_var: str | None
     output_contract: YamlMapping
+    loop_mode: str | None = None
+    children: tuple[str, ...] = ()
+    iteration_max: int | None = None
+    timer_mode: str | None = None
+    duration: float | None = None
 
     @property
     def is_worker(self) -> bool:
         return self.node_type == "worker"
+
+    @property
+    def is_loop(self) -> bool:
+        return self.node_type == "loop"
+
+    @property
+    def is_timer(self) -> bool:
+        return self.node_type == "timer"
 
 
 @dataclass(frozen=True)
@@ -190,6 +219,43 @@ def parse_nodes(raw_nodes: Any) -> list[TaskflowNode]:
             )
             continue
 
+        if node_type == "timer":
+            timer_params = parse_timer_params(node, path)
+            nodes.append(
+                TaskflowNode(
+                    node_id=node_id,
+                    node_type=node_type,
+                    assignments={},
+                    skill_name=None,
+                    params_template={},
+                    capture_state_detail=False,
+                    output_var=None,
+                    output_contract={},
+                    timer_mode=timer_params.timer_mode,
+                    duration=timer_params.duration,
+                )
+            )
+            continue
+
+        if node_type == "loop":
+            loop_params = parse_loop_params(node, path)
+            nodes.append(
+                TaskflowNode(
+                    node_id=node_id,
+                    node_type=node_type,
+                    assignments={},
+                    skill_name=None,
+                    params_template={},
+                    capture_state_detail=False,
+                    output_var=None,
+                    output_contract={},
+                    loop_mode=loop_params.loop_mode,
+                    children=loop_params.children,
+                    iteration_max=loop_params.iteration_max,
+                )
+            )
+            continue
+
         if node_type != "worker":
             raise TaskflowParseError(f"{path}.type 暂不支持: {node_type}")
 
@@ -236,13 +302,34 @@ def parse_transitions(raw_transitions: Any) -> list[TaskflowTransition]:
 
 def validate_definition(definition: TaskflowDefinition) -> None:
     seen: set[str] = set()
+    nodes_by_id: dict[str, TaskflowNode] = {}
     for node in definition.nodes:
         if node.node_id in seen:
             raise TaskflowParseError(f"节点 ID 重复: {node.node_id}")
         seen.add(node.node_id)
+        nodes_by_id[node.node_id] = node
 
     if definition.start_node not in seen:
         raise TaskflowParseError(f"start_node 不存在: {definition.start_node}")
+
+    child_to_loop: dict[str, str] = {}
+    for node in definition.nodes:
+        if not node.is_loop:
+            continue
+        for child_id in node.children:
+            child = nodes_by_id.get(child_id)
+            if child is None:
+                raise TaskflowParseError(f"loop.children 不存在: {child_id}")
+            if child.is_loop:
+                raise TaskflowParseError("v1 暂不支持嵌套循环")
+            if child.node_type not in {"worker", "timer"}:
+                raise TaskflowParseError(f"loop.children 只支持 worker/timer 节点: {child_id}")
+            existing_loop = child_to_loop.get(child_id)
+            if existing_loop is not None:
+                raise TaskflowParseError(
+                    f"节点 {child_id} 同时属于多个循环: {existing_loop}, {node.node_id}"
+                )
+            child_to_loop[child_id] = node.node_id
 
     for transition in definition.transitions:
         if transition.from_node not in seen:
@@ -251,6 +338,62 @@ def validate_definition(definition: TaskflowDefinition) -> None:
             raise TaskflowParseError(f"transition.to 不存在: {transition.to_node}")
         if transition.outcome != "success":
             raise TaskflowParseError(f"第一阶段只支持 success transition: {transition.outcome}")
+        source_loop = child_to_loop.get(transition.from_node)
+        target_loop = child_to_loop.get(transition.to_node)
+        if source_loop != target_loop:
+            raise TaskflowParseError("循环内部节点只能连接同一个循环内部节点")
+
+    for node in definition.nodes:
+        if node.is_loop:
+            validate_loop_body_transitions(definition, node)
+
+
+def validate_loop_body_transitions(
+    definition: TaskflowDefinition,
+    loop_node: TaskflowNode,
+) -> None:
+    child_ids = set(loop_node.children)
+    internal_transitions = [
+        transition
+        for transition in definition.transitions
+        if transition.from_node in child_ids and transition.to_node in child_ids
+    ]
+    if len(internal_transitions) != max(0, len(loop_node.children) - 1):
+        raise TaskflowParseError(f"循环 {loop_node.node_id} 内部必须是单入口单出口线性链")
+
+    incoming_count = {child_id: 0 for child_id in loop_node.children}
+    outgoing_count = {child_id: 0 for child_id in loop_node.children}
+    adjacency: dict[str, list[str]] = {child_id: [] for child_id in loop_node.children}
+    for transition in internal_transitions:
+        outgoing_count[transition.from_node] += 1
+        incoming_count[transition.to_node] += 1
+        adjacency[transition.from_node].append(transition.to_node)
+
+    entry_ids = [child_id for child_id, count in incoming_count.items() if count == 0]
+    exit_ids = [child_id for child_id, count in outgoing_count.items() if count == 0]
+    if len(entry_ids) != 1 or len(exit_ids) != 1:
+        raise TaskflowParseError(f"循环 {loop_node.node_id} 内部必须有且仅有一个入口和出口")
+
+    for child_id in loop_node.children:
+        incoming = incoming_count[child_id]
+        outgoing = outgoing_count[child_id]
+        if (
+            incoming > 1
+            or outgoing > 1
+            or (child_id != entry_ids[0] and incoming != 1)
+            or (child_id != exit_ids[0] and outgoing != 1)
+        ):
+            raise TaskflowParseError(f"循环 {loop_node.node_id} 内部节点 {child_id} 不是线性链")
+
+    visited: set[str] = set()
+    current_id: str | None = entry_ids[0]
+    while current_id is not None and current_id not in visited:
+        visited.add(current_id)
+        next_ids = adjacency[current_id]
+        current_id = next_ids[0] if next_ids else None
+
+    if len(visited) != len(loop_node.children):
+        raise TaskflowParseError(f"循环 {loop_node.node_id} 内部节点未全部连通")
 
 
 def validate_worker_params(skill_name: str, params: YamlMapping, path: str) -> None:
@@ -260,6 +403,31 @@ def validate_worker_params(skill_name: str, params: YamlMapping, path: str) -> N
         parse_script_params(params, f"{path}.params_template")
     elif skill_name == "control_end_effector_skill":
         parse_end_effector_params(params, f"{path}.params_template")
+
+
+def parse_timer_params(params: YamlMapping, path: str) -> TimerParams:
+    timer_mode = read_required_string(params, "timer_mode", path)
+    if timer_mode != TIMER_MODE_REL:
+        raise TaskflowParseError(f"{path}.timer_mode 目前只支持 {TIMER_MODE_REL}")
+    return TimerParams(
+        timer_mode=timer_mode,
+        duration=read_non_negative_number(params.get("duration"), f"{path}.duration"),
+    )
+
+
+def parse_loop_params(params: YamlMapping, path: str) -> LoopParams:
+    loop_mode = read_required_string(params, "loop_mode", path)
+    if loop_mode != LOOP_MODE_COUNT:
+        raise TaskflowParseError(f"{path}.loop_mode 目前只支持 {LOOP_MODE_COUNT}")
+    return LoopParams(
+        loop_mode=loop_mode,
+        children=tuple(read_required_string_list(params.get("children"), f"{path}.children")),
+        iteration_max=read_positive_int(
+            params.get("iteration_max"),
+            f"{path}.iteration_max",
+            maximum=MAX_LOOP_ITERATIONS,
+        ),
+    )
 
 
 def parse_motion_plan_params(params: YamlMapping, path: str) -> MotionPlanParams:
@@ -434,6 +602,23 @@ def read_required_string(mapping: YamlMapping, key: str, path: str) -> str:
     return value.strip()
 
 
+def read_required_string_list(value: Any, path: str) -> list[str]:
+    if not isinstance(value, list) or not value:
+        raise TaskflowParseError(f"{path} 必须是非空字符串数组")
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for index, item in enumerate(value):
+        if not isinstance(item, str) or not item.strip():
+            raise TaskflowParseError(f"{path}[{index}] 必须是非空字符串")
+        child_id = item.strip()
+        if child_id in seen:
+            raise TaskflowParseError(f"{path}[{index}] 重复: {child_id}")
+        seen.add(child_id)
+        result.append(child_id)
+    return result
+
+
 def read_script_variable_ref(mapping: YamlMapping, path: str) -> str:
     raw = mapping.get("variable_ref", mapping.get("variableRef"))
     if not isinstance(raw, str) or not raw.strip():
@@ -499,6 +684,21 @@ def read_positive_number(value: Any, path: str) -> float:
     if number <= 0:
         raise TaskflowParseError(f"{path} 必须大于 0")
     return number
+
+
+def read_non_negative_number(value: Any, path: str) -> float:
+    number = to_float(value, path)
+    if number < 0:
+        raise TaskflowParseError(f"{path} 必须大于等于 0")
+    return number
+
+
+def read_positive_int(value: Any, path: str, *, maximum: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TaskflowParseError(f"{path} 必须是整数")
+    if value < 1 or value > maximum:
+        raise TaskflowParseError(f"{path} 必须在 1 到 {maximum} 之间")
+    return int(value)
 
 
 def read_positive_number_with_default(value: Any, path: str, fallback: float) -> float:

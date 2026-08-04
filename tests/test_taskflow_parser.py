@@ -5,6 +5,7 @@ from fixtures import (
     VALID_CODE_CHAIN_YAML,
     VALID_END_EFFECTOR_CODE_FLOW_YAML,
     VALID_END_EFFECTOR_YAML,
+    VALID_LOOP_TIMER_YAML,
     VALID_RIGHT_ARM_YAML,
 )
 from gsa_taskflow_executor.taskflow.parser import (
@@ -142,6 +143,34 @@ def test_parse_end_effector_skill_params_accepts_post_wait_seconds() -> None:
     params = parse_end_effector_params(taskflow.worker_nodes[0].params_template, "params_template")
 
     assert params.post_wait_seconds == 0.5
+
+
+def test_parse_loop_and_timer_nodes() -> None:
+    taskflow = parse_taskflow_yaml(VALID_LOOP_TIMER_YAML)
+    timer = next(node for node in taskflow.nodes if node.node_id == "定时器")
+    loop = next(node for node in taskflow.nodes if node.node_id == "循环")
+
+    assert timer.is_timer
+    assert timer.timer_mode == "rel"
+    assert timer.duration == 0.2
+    assert loop.is_loop
+    assert loop.loop_mode == "count"
+    assert loop.children == ("代码1", "循环内定时器", "代码2")
+    assert loop.iteration_max == 3
+
+
+def test_reject_loop_cross_boundary_transition() -> None:
+    yaml_payload = VALID_LOOP_TIMER_YAML.replace(
+        """  - from: 定时器
+    outcome: success
+    to: 循环""",
+        """  - from: 定时器
+    outcome: success
+    to: 代码1""",
+    )
+
+    with pytest.raises(TaskflowParseError, match="循环内部节点只能连接"):
+        parse_taskflow_yaml(yaml_payload)
 
 
 def test_parse_end_effector_params_allows_robot_reported_type() -> None:
