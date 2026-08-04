@@ -36,6 +36,7 @@ from .session import (
     GdkSessionInitError,
     GdkSessionManager,
 )
+from .subprocess_runtime import GDK_PARENT_LOCK_POLICY, run_motion_abs_joint_in_subprocess
 
 ACTION_TASKFLOW_ABS_JOINT = "taskflow_abs_joint"
 TASKFLOW_ABS_JOINT_CONFIRMATION = "TASKFLOW_ABS_JOINT"
@@ -92,6 +93,49 @@ def run_gdk_motion_plan_abs_joint(
     if validation_result is not None:
         return validation_result
 
+    if should_use_in_process_runtime(import_module, session_manager):
+        return run_gdk_motion_plan_abs_joint_in_process(
+            motion_params,
+            import_module=import_module,
+            session_manager=session_manager,
+        )
+
+    # 父进程只持有调度互斥锁，不导入 GDK；真正的 C 扩展调用在子进程内完成，
+    # 超时后可以杀掉子进程并释放父进程 worker，避免 MQTT 执行队列永久卡死。
+    manager = session_manager or GdkSessionManager()
+    try:
+        lease = manager.acquire(
+            blocking=True,
+            initialize=False,
+            purpose=ACTION_TASKFLOW_ABS_JOINT,
+        )
+    except Exception as error:
+        return unavailable_result("gdk_session_acquire", error)
+
+    if lease is None:
+        return refused_result(
+            stage="gdk_session_busy",
+            message="GDK session is busy",
+        )
+
+    with lease:
+        result = run_motion_abs_joint_in_subprocess(
+            motion_params,
+            safety_gate=confirmed_taskflow_safety_gate(),
+        )
+        result["gdk_parent_lock"] = {
+            **lease.to_payload(),
+            "policy": GDK_PARENT_LOCK_POLICY,
+        }
+        return result
+
+
+def run_gdk_motion_plan_abs_joint_in_process(
+    motion_params: MotionPlanParams,
+    *,
+    import_module: Callable[[str], Any] = importlib.import_module,
+    session_manager: GdkSessionManager | None = None,
+) -> dict[str, object]:
     manager = session_manager or GdkSessionManager(import_module=import_module)
     try:
         lease = manager.acquire(
@@ -137,6 +181,26 @@ def run_gdk_motion_plan_abs_joint(
         result["gdk_session"] = lease.to_payload()
 
     return result
+
+
+def should_use_in_process_runtime(
+    import_module: Callable[[str], Any],
+    session_manager: GdkSessionManager | None,
+) -> bool:
+    if import_module is not importlib.import_module:
+        return True
+    return (
+        session_manager is not None
+        and session_manager.import_module is not importlib.import_module
+    )
+
+
+def confirmed_taskflow_safety_gate() -> dict[str, object]:
+    return {
+        "enabled": True,
+        "confirmed": True,
+        "expected_confirmation": TASKFLOW_ABS_JOINT_CONFIRMATION,
+    }
 
 
 def execute_abs_joint_targets(

@@ -12,6 +12,7 @@ from gsa_taskflow_executor.gdk.motion_runtime import (
     run_gdk_motion_plan_abs_joint,
 )
 from gsa_taskflow_executor.gdk.session import GdkSessionManager
+from gsa_taskflow_executor.gdk.subprocess_runtime import GDK_OPERATION_TIMEOUT_CODE
 from gsa_taskflow_executor.taskflow.parser import MotionPlanParams, MotionPlanTarget
 
 
@@ -291,6 +292,54 @@ def test_gdk_motion_runtime_reuses_process_session_across_multiple_calls() -> No
     assert FakeAgibotGdk.init_called == 1
     assert shutdown["called"] is True
     assert FakeAgibotGdk.release_called == 1
+
+
+def test_gdk_motion_runtime_releases_parent_lock_after_subprocess_timeout(monkeypatch) -> None:
+    manager = GdkSessionManager()
+
+    def fake_subprocess(_motion_params: MotionPlanParams, **_kwargs: object) -> dict[str, object]:
+        return {
+            "available": False,
+            "executed": False,
+            "backend": "agibot_gdk.Robot",
+            "action": "taskflow_abs_joint",
+            "error_stage": "gdk_operation_timeout",
+            "error_code": GDK_OPERATION_TIMEOUT_CODE,
+            "error_type": "GdkOperationTimeout",
+            "error_msg": "timed out",
+        }
+
+    monkeypatch.setattr(
+        "gsa_taskflow_executor.gdk.motion_runtime.run_motion_abs_joint_in_subprocess",
+        fake_subprocess,
+    )
+
+    result = run_gdk_motion_plan_abs_joint(
+        MotionPlanParams(
+            targets=(
+                MotionPlanTarget(
+                    body_part="right_arm",
+                    control_type="ABS_JOINT",
+                    action_data=[0.1] * 7,
+                ),
+            ),
+            speed=0.05,
+            timeout=0.1,
+        ),
+        environ={
+            "ENABLE_GDK_CONTROL": "1",
+            "CONFIRM_GDK_CONTROL": TASKFLOW_ABS_JOINT_CONFIRMATION,
+        },
+        session_manager=manager,
+    )
+
+    assert result["executed"] is False
+    assert result["error_code"] == GDK_OPERATION_TIMEOUT_CODE
+    assert manager.busy is False
+
+    lease = manager.acquire(blocking=False, initialize=False, purpose="current_pose")
+    assert lease is not None
+    lease.release()
 
 
 def test_gdk_motion_runtime_refuses_cartesian_impedance_before_arm_move() -> None:

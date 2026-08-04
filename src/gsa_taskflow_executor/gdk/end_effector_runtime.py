@@ -17,6 +17,7 @@ from .session import (
     GdkSessionInitError,
     GdkSessionManager,
 )
+from .subprocess_runtime import GDK_PARENT_LOCK_POLICY, run_end_effector_in_subprocess
 
 ACTION_TASKFLOW_END_EFFECTOR = "taskflow_end_effector"
 GDK_END_EFFECTOR_TYPE_UNKNOWN = "GDK_END_EFFECTOR_TYPE_UNKNOWN"
@@ -46,6 +47,51 @@ def run_gdk_end_effector_control(
     if gate_result is not None:
         return gate_result
 
+    if should_use_in_process_runtime(import_module, session_manager, sleep):
+        return run_gdk_end_effector_control_in_process(
+            end_effector_params,
+            import_module=import_module,
+            session_manager=session_manager,
+            sleep=sleep,
+        )
+
+    # 末端 move_ee_pos 是同步 C 扩展调用；父进程只保留互斥锁，超时后杀子进程。
+    manager = session_manager or GdkSessionManager()
+    try:
+        lease = manager.acquire(
+            blocking=True,
+            initialize=False,
+            purpose=ACTION_TASKFLOW_END_EFFECTOR,
+        )
+    except Exception as error:
+        return unavailable_result("gdk_session_acquire", error)
+
+    if lease is None:
+        return refused_result(
+            stage="gdk_session_busy",
+            message="GDK session is busy",
+            safety_confirmed=True,
+        )
+
+    with lease:
+        result = run_end_effector_in_subprocess(
+            end_effector_params,
+            safety_gate=confirmed_taskflow_safety_gate(),
+        )
+        result["gdk_parent_lock"] = {
+            **lease.to_payload(),
+            "policy": GDK_PARENT_LOCK_POLICY,
+        }
+        return result
+
+
+def run_gdk_end_effector_control_in_process(
+    end_effector_params: EndEffectorParams,
+    *,
+    import_module: Callable[[str], Any] = importlib.import_module,
+    session_manager: GdkSessionManager | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+) -> dict[str, object]:
     manager = session_manager or GdkSessionManager(import_module=import_module)
     try:
         lease = manager.acquire(
@@ -92,6 +138,29 @@ def run_gdk_end_effector_control(
         result["gdk_session"] = lease.to_payload()
 
     return result
+
+
+def should_use_in_process_runtime(
+    import_module: Callable[[str], Any],
+    session_manager: GdkSessionManager | None,
+    sleep: Callable[[float], None],
+) -> bool:
+    if import_module is not importlib.import_module:
+        return True
+    if sleep is not time.sleep:
+        return True
+    return (
+        session_manager is not None
+        and session_manager.import_module is not importlib.import_module
+    )
+
+
+def confirmed_taskflow_safety_gate() -> dict[str, object]:
+    return {
+        "enabled": True,
+        "confirmed": True,
+        "expected_confirmation": TASKFLOW_ABS_JOINT_CONFIRMATION,
+    }
 
 
 def execute_end_effector_control(

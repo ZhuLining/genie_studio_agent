@@ -12,6 +12,10 @@ from gsa_taskflow_executor.gdk.session import (
     GdkSessionInitError,
     GdkSessionManager,
 )
+from gsa_taskflow_executor.gdk.subprocess_runtime import (
+    GDK_PARENT_LOCK_POLICY,
+    run_code_script_in_subprocess,
+)
 from gsa_taskflow_executor.taskflow.parser import ScriptParams
 
 from .api import CodeScriptContext, refused_result, unavailable_result
@@ -119,6 +123,67 @@ def run_gdk_code_script(
     if gate_result is not None:
         return gate_result
 
+    if should_use_in_process_runtime(session_manager):
+        return run_gdk_code_script_in_process(
+            script_params,
+            definition=definition,
+            script_runner=script_runner,
+            environ=env,
+            session_manager=session_manager,
+            inputs=inputs,
+        )
+
+    # 代码节点中的 GDK 脚本仍属于真机控制；父进程只做白名单和互斥，
+    # 具体 move_ee_pos 在子进程执行，避免脚本 timeout 只停在参数层。
+    manager = session_manager or GdkSessionManager()
+    try:
+        lease = manager.acquire(
+            blocking=True,
+            initialize=False,
+            purpose=f"code_script:{definition.script_id}",
+        )
+    except Exception as error:
+        return unavailable_result(
+            script_id=definition.script_id,
+            stage="gdk_session_acquire",
+            error=error,
+            safety_gate_enabled=True,
+            safety_confirmed=True,
+        )
+
+    if lease is None:
+        return refused_result(
+            script_id=definition.script_id,
+            stage="gdk_session_busy",
+            message="GDK session is busy",
+            safety_gate_enabled=True,
+            safety_confirmed=True,
+        )
+
+    with lease:
+        result = run_code_script_in_subprocess(
+            script_params,
+            script_id=definition.script_id,
+            inputs=inputs,
+            environ=env,
+            safety_gate=confirmed_code_script_safety_gate(),
+        )
+        result["gdk_parent_lock"] = {
+            **lease.to_payload(),
+            "policy": GDK_PARENT_LOCK_POLICY,
+        }
+        return result
+
+
+def run_gdk_code_script_in_process(
+    script_params: ScriptParams,
+    *,
+    definition: CodeScriptDefinition,
+    script_runner: CodeScriptRunner,
+    environ: Mapping[str, str] | None,
+    session_manager: GdkSessionManager | None,
+    inputs: Mapping[str, object],
+) -> dict[str, object]:
     manager = session_manager or GdkSessionManager()
     try:
         lease = manager.acquire(
@@ -188,7 +253,7 @@ def run_gdk_code_script(
             description=definition.description,
             timeout=script_params.timeout,
             output_variables=script_params.output_variables,
-            environ=env,
+            environ=environ,
             agibot_gdk=lease.agibot_gdk,
             robot=robot,
             gdk_init=lease.init_result,
@@ -206,6 +271,21 @@ def run_gdk_code_script(
         result.setdefault("gdk_release", dict(PROCESS_MANAGED_RELEASE_RESULT))
         result.setdefault("gdk_session", lease.to_payload())
         return result
+
+
+def should_use_in_process_runtime(session_manager: GdkSessionManager | None) -> bool:
+    return (
+        session_manager is not None
+        and session_manager.import_module is not importlib.import_module
+    )
+
+
+def confirmed_code_script_safety_gate() -> dict[str, object]:
+    return {
+        "enabled": True,
+        "confirmed": True,
+        "expected_confirmation": TASKFLOW_ABS_JOINT_CONFIRMATION,
+    }
 
 
 def run_script_safely(

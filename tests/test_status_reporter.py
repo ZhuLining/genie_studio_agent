@@ -23,7 +23,7 @@ def test_status_reporter_publishes_execution_started_payload() -> None:
     assert payloads[0]["executor_mode"] == "gdk"
 
 
-def test_status_reporter_publishes_node_running_and_over_payloads(monkeypatch) -> None:
+def test_status_reporter_publishes_node_running_and_sub_task_over_payloads(monkeypatch) -> None:
     monkeypatch.setattr(
         skill_runtime,
         "run_gdk_motion_plan_abs_joint",
@@ -42,8 +42,11 @@ def test_status_reporter_publishes_node_running_and_over_payloads(monkeypatch) -
     ).run()
     reporter.publish_execution_finished(result)
 
-    sub_tasks = [payload["sub_task"] for payload in payloads if "sub_task" in payload]
+    node_payloads = [payload for payload in payloads if "sub_task" in payload]
+    sub_tasks = [payload["sub_task"] for payload in node_payloads]
     assert len(sub_tasks) == 6
+    assert all(payload["task_state"] == "RUNNING" for payload in node_payloads)
+    assert all(payload["status"] == "RUNNING" for payload in node_payloads)
     assert sub_tasks[0]["node_id"] == "开始"
     assert sub_tasks[0]["state"] == "RUNNING"
     assert sub_tasks[1]["node_id"] == "开始"
@@ -85,6 +88,8 @@ def test_status_reporter_publishes_node_error_payload() -> None:
     reporter.publish_execution_finished(result)
 
     error_payload = payloads[3]["sub_task"]
+    assert payloads[3]["task_state"] == "ERROR"
+    assert payloads[3]["status"] == "ERROR"
     assert error_payload["node_id"] == "位姿调整-位控"
     assert error_payload["state"] == "ERROR"
     assert error_payload["error_msg"] == "gdk failure"

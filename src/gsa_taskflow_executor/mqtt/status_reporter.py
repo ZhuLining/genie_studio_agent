@@ -39,12 +39,13 @@ class TaskflowStatusReporter:
         )
 
     def publish_node_event(self, event: NodeExecutionEvent) -> None:
-        task_state = map_node_status_to_task_state(event.status)
+        sub_task_state = map_node_status_to_sub_task_state(event.status)
+        task_state = map_node_status_to_execution_state(event.status)
         payload = self.build_base_payload(
             app_execution_id=event.app_execution_id,
             task_state=task_state,
             timestamp=event.finished_at or event.started_at,
-            extra={"sub_task": build_sub_task_payload(event, task_state)},
+            extra={"sub_task": build_sub_task_payload(event, sub_task_state)},
         )
         self.publish_status(payload)
 
@@ -137,7 +138,15 @@ def build_sub_task_payload(
     return payload
 
 
-def map_node_status_to_task_state(status: str) -> TaskflowRuntimeState:
+def map_node_status_to_execution_state(status: str) -> TaskflowRuntimeState:
+    # 顶层 task_state 表示整条 Taskflow 生命周期；单个节点成功不能发 OVER，
+    # 否则客户端会提前把本次执行标记完成并停止跟踪后续节点。
+    if status == "error":
+        return "ERROR"
+    return "RUNNING"
+
+
+def map_node_status_to_sub_task_state(status: str) -> TaskflowRuntimeState:
     if status == "running":
         return "RUNNING"
     if status == "success":

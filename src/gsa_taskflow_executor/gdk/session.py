@@ -70,6 +70,8 @@ class GdkSessionManager:
     agibot_gdk 的 IPC/DDS 线程安全边界未知，因此所有 GDK 读写都必须先获取
     同一把 operation lock。控制动作阻塞等待，当前位姿读取使用非阻塞获取，
     忙时直接返回 ROBOT_BUSY，避免 release/use-after-release 竞态。
+    对带 timeout 的正式控制 runtime，父进程只用 initialize=False lease 做调度互斥；
+    真正的 GDK 初始化、控制调用和 release 放在可被杀掉的子进程里。
     """
 
     def __init__(
