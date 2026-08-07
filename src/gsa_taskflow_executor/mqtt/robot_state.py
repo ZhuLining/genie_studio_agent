@@ -364,7 +364,7 @@ def read_positive_int(value: Any, fallback: int) -> int:
 
 
 def read_error_code(snapshot: Mapping[str, object], fallback: str) -> str:
-    error_code = snapshot.get("errorCode")
+    error_code = snapshot.get("errorCode") or snapshot.get("error_code")
     if isinstance(error_code, str) and error_code.strip():
         return error_code.strip()
     return fallback
@@ -374,10 +374,10 @@ def read_error_message(
     snapshot: Mapping[str, object],
     fallback: str = "GDK 当前位姿读取失败",
 ) -> str:
-    error_msg = snapshot.get("errorMsg")
+    error_msg = snapshot.get("errorMsg") or snapshot.get("error_msg")
     if isinstance(error_msg, str) and error_msg.strip():
         return error_msg.strip()
-    error_stage = snapshot.get("errorStage")
+    error_stage = snapshot.get("errorStage") or snapshot.get("error_stage")
     if isinstance(error_stage, str) and error_stage.strip():
         return f"{fallback}: {error_stage}"
     return fallback

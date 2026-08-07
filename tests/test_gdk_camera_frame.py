@@ -6,6 +6,7 @@ from typing import Any
 from gsa_taskflow_executor.gdk.camera_frame import (
     CAMERA_ENCODING_UNSUPPORTED,
     build_bmp_bytes,
+    build_subprocess_timeout_seconds,
     resolve_gdk_camera_type,
     run_gdk_camera_frame_snapshot,
 )
@@ -76,6 +77,10 @@ def reset_fake_camera(image: FakeImage) -> None:
 def test_resolve_gdk_camera_type_maps_left_hand_alias() -> None:
     assert resolve_gdk_camera_type(FakeAgibotGdk, "hand_left_color") == "FakeHandLeftColor"
     assert resolve_gdk_camera_type(FakeAgibotGdk, "hand_left_upper_color") == "FakeHandLeftColor"
+
+
+def test_subprocess_timeout_includes_camera_warmup() -> None:
+    assert build_subprocess_timeout_seconds(1500, warmup_seconds=3.0) == 6.5
 
 
 def test_gdk_camera_frame_snapshot_returns_jpeg_base64() -> None:

@@ -77,7 +77,10 @@ def run_gdk_camera_frame_snapshot(
             operation="camera_frame",
             action=ACTION_GET_CAMERA_FRAME,
             backend=GDK_BACKEND,
-            timeout_seconds=build_subprocess_timeout_seconds(timeout_ms),
+            timeout_seconds=build_subprocess_timeout_seconds(
+                timeout_ms,
+                warmup_seconds=warmup_seconds,
+            ),
             child_target=camera_frame_child,
             child_args=(camera_id, timeout_ms, warmup_seconds),
             safety_gate={"enabled": False, "confirmed": True, "reason": "read_only_camera_frame"},
@@ -366,8 +369,17 @@ def validate_timeout_ms(timeout_ms: int) -> dict[str, object] | None:
     return None
 
 
-def build_subprocess_timeout_seconds(timeout_ms: int) -> float:
-    return max(1.0, timeout_ms / 1000.0 + SUBPROCESS_TIMEOUT_MARGIN_SECONDS)
+def build_subprocess_timeout_seconds(
+    timeout_ms: int,
+    *,
+    warmup_seconds: float = DEFAULT_CAMERA_WARMUP_SECONDS,
+) -> float:
+    # 子进程总超时覆盖：GDK 初始化 + Camera warmup + get_latest_image 自身超时 + 兜底余量。
+    # 否则 warmup 还没结束，父进程就会误杀只读取帧子进程。
+    return max(
+        1.0,
+        max(0.0, warmup_seconds) + timeout_ms / 1000.0 + SUBPROCESS_TIMEOUT_MARGIN_SECONDS,
+    )
 
 
 def should_use_in_process_runtime(
