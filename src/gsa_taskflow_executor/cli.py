@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
+from .gdk.camera_capture import CameraCaptureService
 from .gdk.camera_frame import run_gdk_camera_frame_snapshot
 from .gdk.control_probe import ALLOWED_ACTIONS, run_gdk_control_probe
 from .gdk.current_pose import run_gdk_current_pose_snapshot
@@ -16,7 +17,12 @@ from .gdk.session import GdkSessionManager
 from .gdk.worker_runtime import shutdown_default_gdk_worker
 from .mqtt.gateway import MqttGateway, MqttGatewayError, TaskflowMessage
 from .mqtt.message_queue import MqttMessageQueueError, MqttMessageWorkerQueue
-from .mqtt.robot_state import CAMERA_FRAME_REQUEST_TYPE, handle_robot_state_request
+from .mqtt.robot_state import (
+    CAMERA_CAPTURE_START_REQUEST_TYPE,
+    CAMERA_CAPTURE_STOP_REQUEST_TYPE,
+    CAMERA_FRAME_REQUEST_TYPE,
+    handle_robot_state_request,
+)
 from .mqtt.status_reporter import TaskflowStatusReporter
 from .runtime.config import ConfigError, ExecutorSettings, build_env_source
 from .runtime.event_log import JsonlEventWriter, RuntimeEvent, configure_stdout_logging
@@ -160,6 +166,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.listen:
         writer = JsonlEventWriter.from_settings(settings)
         gdk_session = GdkSessionManager()
+        camera_capture_service = CameraCaptureService(
+            session_manager=gdk_session,
+            mqtt_broker_url=settings.mqtt_broker_url,
+            mqtt_client_id=settings.mqtt_client_id,
+            executor_aid=settings.executor_aid,
+        )
         skill_runtime = SkillRuntime(
             registry=skill_registry,
             environ=runtime_env,
@@ -303,6 +315,8 @@ def main(argv: list[str] | None = None) -> int:
                     timeout_ms=timeout_ms,
                     session_manager=gdk_session,
                 ),
+                start_camera_capture=camera_capture_service.start,
+                stop_camera_capture=camera_capture_service.stop,
             )
 
         # taskflow_queue 保持 MVP 单任务串行；
@@ -399,6 +413,17 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             taskflow_queue.stop()
             robot_state_queue.stop()
+            camera_capture_shutdown = camera_capture_service.shutdown()
+            writer.write(
+                RuntimeEvent(
+                    event_type="camera_capture_shutdown",
+                    level="info"
+                    if camera_capture_shutdown.get("success") is True
+                    else "warning",
+                    message="camera capture shutdown completed",
+                    payload={"camera_capture": camera_capture_shutdown},
+                )
+            )
             worker_shutdown = shutdown_default_gdk_worker()
             worker_shutdown_level = (
                 "info" if worker_shutdown.get("success") is True else "warning"
@@ -440,13 +465,22 @@ def publish_robot_state_queue_error(
     error_message: str,
 ) -> None:
     # 队列不可用时仍尽量按对应 response 协议回包，客户端可以展示明确错误。
-    is_camera_request = message.topic == settings.robot_camera_frame_request_topic
+    response_topic = settings.robot_current_pose_response_topic
+    response_type = "get_current_pose"
+    if message.topic == settings.robot_camera_frame_request_topic:
+        response_topic = settings.robot_camera_frame_response_topic
+        response_type = CAMERA_FRAME_REQUEST_TYPE
+    elif message.topic == settings.robot_camera_capture_start_request_topic:
+        response_topic = settings.robot_camera_capture_start_response_topic
+        response_type = CAMERA_CAPTURE_START_REQUEST_TYPE
+    elif message.topic == settings.robot_camera_capture_stop_request_topic:
+        response_topic = settings.robot_camera_capture_stop_response_topic
+        response_type = CAMERA_CAPTURE_STOP_REQUEST_TYPE
+
     publish_response(
-        settings.robot_camera_frame_response_topic
-        if is_camera_request
-        else settings.robot_current_pose_response_topic,
+        response_topic,
         {
-            "type": CAMERA_FRAME_REQUEST_TYPE if is_camera_request else "get_current_pose",
+            "type": response_type,
             "requestId": read_request_id(message.payload),
             "ok": False,
             "executorAid": settings.executor_aid,

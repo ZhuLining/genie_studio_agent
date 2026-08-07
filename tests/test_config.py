@@ -28,6 +28,18 @@ def test_default_status_topic() -> None:
         settings.robot_camera_frame_response_topic
         == "gsa/self/robot/state/get_camera_frame/response"
     )
+    assert (
+        settings.robot_camera_capture_start_request_topic
+        == "gsa/self/robot/state/camera_capture/start/request"
+    )
+    assert (
+        settings.robot_camera_capture_stop_request_topic
+        == "gsa/self/robot/state/camera_capture/stop/request"
+    )
+    assert (
+        settings.robot_camera_capture_frame_topic_template
+        == "gsa/self/robot/state/camera_capture/{sessionId}/frame"
+    )
 
 
 def test_env_overrides(monkeypatch) -> None:
@@ -37,6 +49,14 @@ def test_env_overrides(monkeypatch) -> None:
     monkeypatch.setenv("ROBOT_CURRENT_POSE_RESPONSE_TOPIC", "robot/custom/response")
     monkeypatch.setenv("ROBOT_CAMERA_FRAME_REQUEST_TOPIC", "robot/camera/request")
     monkeypatch.setenv("ROBOT_CAMERA_FRAME_RESPONSE_TOPIC", "robot/camera/response")
+    monkeypatch.setenv("ROBOT_CAMERA_CAPTURE_START_REQUEST_TOPIC", "robot/capture/start")
+    monkeypatch.setenv("ROBOT_CAMERA_CAPTURE_START_RESPONSE_TOPIC", "robot/capture/start/resp")
+    monkeypatch.setenv("ROBOT_CAMERA_CAPTURE_STOP_REQUEST_TOPIC", "robot/capture/stop")
+    monkeypatch.setenv("ROBOT_CAMERA_CAPTURE_STOP_RESPONSE_TOPIC", "robot/capture/stop/resp")
+    monkeypatch.setenv(
+        "ROBOT_CAMERA_CAPTURE_FRAME_TOPIC_TEMPLATE",
+        "robot/capture/{sessionId}/frame",
+    )
 
     settings = ExecutorSettings.from_env()
 
@@ -46,6 +66,11 @@ def test_env_overrides(monkeypatch) -> None:
     assert settings.robot_current_pose_response_topic == "robot/custom/response"
     assert settings.robot_camera_frame_request_topic == "robot/camera/request"
     assert settings.robot_camera_frame_response_topic == "robot/camera/response"
+    assert settings.robot_camera_capture_start_request_topic == "robot/capture/start"
+    assert settings.robot_camera_capture_start_response_topic == "robot/capture/start/resp"
+    assert settings.robot_camera_capture_stop_request_topic == "robot/capture/stop"
+    assert settings.robot_camera_capture_stop_response_topic == "robot/capture/stop/resp"
+    assert settings.robot_camera_capture_frame_topic_template == "robot/capture/{sessionId}/frame"
 
 
 def test_env_file_loading(tmp_path) -> None:

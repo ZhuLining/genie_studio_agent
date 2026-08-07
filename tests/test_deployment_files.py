@@ -43,6 +43,18 @@ def test_deploy_env_template_uses_gdk_mode() -> None:
         "ROBOT_CAMERA_FRAME_RESPONSE_TOPIC=gsa/self/robot/state/get_camera_frame/response"
         in env_file
     )
+    assert (
+        "ROBOT_CAMERA_CAPTURE_START_REQUEST_TOPIC=gsa/self/robot/state/camera_capture/start/request"
+        in env_file
+    )
+    assert (
+        "ROBOT_CAMERA_CAPTURE_STOP_REQUEST_TOPIC=gsa/self/robot/state/camera_capture/stop/request"
+        in env_file
+    )
+    assert (
+        "ROBOT_CAMERA_CAPTURE_FRAME_TOPIC_TEMPLATE=gsa/self/robot/state/camera_capture/{sessionId}/frame"
+        in env_file
+    )
     assert "EXECUTOR_MODE=gdk" in env_file
     assert "# ENABLE_GDK_CONTROL=1" in env_file
     assert "# CONFIRM_GDK_CONTROL=TASKFLOW_ABS_JOINT" in env_file

@@ -2,11 +2,17 @@ import json
 
 from gsa_taskflow_executor.mqtt.gateway import TaskflowMessage
 from gsa_taskflow_executor.mqtt.robot_state import (
+    build_camera_capture_start_response,
+    build_camera_capture_stop_response,
     build_camera_frame_response,
     build_current_pose_response,
+    handle_camera_capture_start_request,
+    handle_camera_capture_stop_request,
     handle_camera_frame_request,
     handle_current_pose_request,
     handle_robot_state_request,
+    parse_camera_capture_start_request,
+    parse_camera_capture_stop_request,
     parse_camera_frame_request,
     parse_current_pose_request,
 )
@@ -131,6 +137,49 @@ def test_parse_camera_frame_request_defaults_camera_and_timeout() -> None:
     assert request.timeout_ms == 3000
 
 
+def test_parse_camera_capture_start_request_defaults_frame_topic() -> None:
+    request = parse_camera_capture_start_request(
+        json.dumps(
+            {
+                "type": "start_camera_capture",
+                "requestId": "req-start",
+                "sessionId": "session-1",
+                "cameraId": "head_color",
+                "captureRateFps": 5,
+                "timeoutMs": 2500,
+            }
+        ),
+        default_reply_topic="gsa/self/robot/state/camera_capture/start/response",
+        default_frame_topic_template="gsa/self/robot/state/camera_capture/{sessionId}/frame",
+    )
+
+    assert request.request_id == "req-start"
+    assert request.reply_topic == "gsa/self/robot/state/camera_capture/start/response"
+    assert request.params.session_id == "session-1"
+    assert request.params.frame_topic == "gsa/self/robot/state/camera_capture/session-1/frame"
+    assert request.params.camera_id == "head_color"
+    assert request.params.capture_rate_fps == 5
+    assert request.params.timeout_ms == 2500
+
+
+def test_parse_camera_capture_stop_request_reads_session_id() -> None:
+    request = parse_camera_capture_stop_request(
+        json.dumps(
+            {
+                "type": "stop_camera_capture",
+                "requestId": "req-stop",
+                "sessionId": "session-1",
+                "replyTopic": "robot/capture/stop/response/session-1",
+            }
+        ),
+        default_reply_topic="gsa/self/robot/state/camera_capture/stop/response",
+    )
+
+    assert request.request_id == "req-stop"
+    assert request.reply_topic == "robot/capture/stop/response/session-1"
+    assert request.session_id == "session-1"
+
+
 def test_handle_camera_frame_request_publishes_success_response() -> None:
     published: list[tuple[str, dict[str, object]]] = []
     snapshot = {
@@ -191,6 +240,96 @@ def test_handle_robot_state_request_dispatches_camera_frame_by_topic() -> None:
     assert payload["data"]["cameraId"] == "head_color"
 
 
+def test_handle_camera_capture_start_request_publishes_success_response() -> None:
+    published: list[tuple[str, dict[str, object]]] = []
+
+    handle_camera_capture_start_request(
+        TaskflowMessage(
+            topic="gsa/self/robot/state/camera_capture/start/request",
+            payload=json.dumps({"requestId": "req-start", "sessionId": "session-1"}),
+            received_at="2026-07-27T00:00:00+00:00",
+        ),
+        settings=ExecutorSettings(executor_aid="aid-1"),
+        publish_response=lambda topic, payload: published.append((topic, dict(payload))),
+        start_camera_capture=lambda params: {
+            "started": True,
+            "sessionId": params.session_id,
+            "frameTopic": params.frame_topic,
+            "cameraId": params.camera_id,
+            "captureRateFps": params.capture_rate_fps,
+            "timeoutMs": params.timeout_ms,
+            "startedAt": "2026-07-27T00:00:00+00:00",
+        },
+    )
+
+    [(topic, payload)] = published
+    assert topic == "gsa/self/robot/state/camera_capture/start/response"
+    assert payload["type"] == "start_camera_capture"
+    assert payload["requestId"] == "req-start"
+    assert payload["ok"] is True
+    assert payload["data"]["sessionId"] == "session-1"
+    assert (
+        payload["data"]["frameTopic"]
+        == "gsa/self/robot/state/camera_capture/session-1/frame"
+    )
+
+
+def test_handle_camera_capture_stop_request_publishes_success_response() -> None:
+    published: list[tuple[str, dict[str, object]]] = []
+
+    handle_camera_capture_stop_request(
+        TaskflowMessage(
+            topic="gsa/self/robot/state/camera_capture/stop/request",
+            payload=json.dumps({"requestId": "req-stop", "sessionId": "session-1"}),
+            received_at="2026-07-27T00:00:00+00:00",
+        ),
+        settings=ExecutorSettings(executor_aid="aid-1"),
+        publish_response=lambda topic, payload: published.append((topic, dict(payload))),
+        stop_camera_capture=lambda session_id: {
+            "stopped": True,
+            "sessionId": session_id,
+            "framesCaptured": 3,
+            "framesPublished": 3,
+        },
+    )
+
+    [(topic, payload)] = published
+    assert topic == "gsa/self/robot/state/camera_capture/stop/response"
+    assert payload["type"] == "stop_camera_capture"
+    assert payload["requestId"] == "req-stop"
+    assert payload["ok"] is True
+    assert payload["data"]["sessionId"] == "session-1"
+    assert payload["data"]["framesPublished"] == 3
+
+
+def test_handle_robot_state_request_dispatches_camera_capture_start_by_topic() -> None:
+    published: list[tuple[str, dict[str, object]]] = []
+
+    handle_robot_state_request(
+        TaskflowMessage(
+            topic="gsa/self/robot/state/camera_capture/start/request",
+            payload=json.dumps({"requestId": "req-start", "sessionId": "session-1"}),
+            received_at="2026-07-27T00:00:00+00:00",
+        ),
+        settings=ExecutorSettings(executor_aid="aid-1"),
+        publish_response=lambda topic, payload: published.append((topic, dict(payload))),
+        start_camera_capture=lambda params: {
+            "started": True,
+            "sessionId": params.session_id,
+            "frameTopic": params.frame_topic,
+            "cameraId": params.camera_id,
+            "captureRateFps": params.capture_rate_fps,
+            "timeoutMs": params.timeout_ms,
+            "startedAt": "2026-07-27T00:00:00+00:00",
+        },
+    )
+
+    [(topic, payload)] = published
+    assert topic == "gsa/self/robot/state/camera_capture/start/response"
+    assert payload["type"] == "start_camera_capture"
+    assert payload["data"]["cameraId"] == "hand_left_color"
+
+
 def test_build_camera_frame_response_maps_busy_snapshot_to_robot_busy() -> None:
     response = build_camera_frame_response(
         request_id="req-camera",
@@ -206,6 +345,35 @@ def test_build_camera_frame_response_maps_busy_snapshot_to_robot_busy() -> None:
     assert response["type"] == "get_camera_frame"
     assert response["error"]["code"] == "ROBOT_BUSY"
     assert response["error"]["message"] == "GDK 正在执行控制动作，相机图像读取已拒绝"
+
+
+def test_build_camera_capture_start_response_maps_busy_to_robot_busy() -> None:
+    response = build_camera_capture_start_response(
+        request_id="req-start",
+        executor_aid="aid-1",
+        result={"started": False, "busy": True},
+    )
+
+    assert response["ok"] is False
+    assert response["type"] == "start_camera_capture"
+    assert response["error"]["code"] == "ROBOT_BUSY"
+    assert response["error"]["message"] == "GDK 正在执行控制动作，相机连续采集已拒绝"
+
+
+def test_build_camera_capture_stop_response_maps_not_found_to_error() -> None:
+    response = build_camera_capture_stop_response(
+        request_id="req-stop",
+        executor_aid="aid-1",
+        result={
+            "stopped": False,
+            "errorCode": "CAMERA_CAPTURE_NOT_FOUND",
+            "errorMsg": "未找到正在运行的相机采集会话",
+        },
+    )
+
+    assert response["ok"] is False
+    assert response["type"] == "stop_camera_capture"
+    assert response["error"]["code"] == "CAMERA_CAPTURE_NOT_FOUND"
 
 
 def test_build_camera_frame_response_preserves_subprocess_timeout_error() -> None:

@@ -129,6 +129,8 @@ def test_on_connect_subscribes_robot_state_topic_when_handler_configured() -> No
         ("gsa/self/taskflow_yaml", 0),
         ("gsa/self/robot/state/get_current_pose/request", 0),
         ("gsa/self/robot/state/get_camera_frame/request", 0),
+        ("gsa/self/robot/state/camera_capture/start/request", 0),
+        ("gsa/self/robot/state/camera_capture/stop/request", 0),
     ]
 
 

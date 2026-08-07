@@ -26,6 +26,21 @@ class ExecutorSettings:
     robot_current_pose_response_topic: str = "gsa/self/robot/state/get_current_pose/response"
     robot_camera_frame_request_topic: str = "gsa/self/robot/state/get_camera_frame/request"
     robot_camera_frame_response_topic: str = "gsa/self/robot/state/get_camera_frame/response"
+    robot_camera_capture_start_request_topic: str = (
+        "gsa/self/robot/state/camera_capture/start/request"
+    )
+    robot_camera_capture_start_response_topic: str = (
+        "gsa/self/robot/state/camera_capture/start/response"
+    )
+    robot_camera_capture_stop_request_topic: str = (
+        "gsa/self/robot/state/camera_capture/stop/request"
+    )
+    robot_camera_capture_stop_response_topic: str = (
+        "gsa/self/robot/state/camera_capture/stop/response"
+    )
+    robot_camera_capture_frame_topic_template: str = (
+        "gsa/self/robot/state/camera_capture/{sessionId}/frame"
+    )
     executor_aid: str = "gsa-dev"
     executor_mode: str = "gdk"
     executor_log_dir: str = "logs"
@@ -66,6 +81,26 @@ class ExecutorSettings:
                 "ROBOT_CAMERA_FRAME_RESPONSE_TOPIC",
                 cls.robot_camera_frame_response_topic,
             ).strip(),
+            robot_camera_capture_start_request_topic=source.get(
+                "ROBOT_CAMERA_CAPTURE_START_REQUEST_TOPIC",
+                cls.robot_camera_capture_start_request_topic,
+            ).strip(),
+            robot_camera_capture_start_response_topic=source.get(
+                "ROBOT_CAMERA_CAPTURE_START_RESPONSE_TOPIC",
+                cls.robot_camera_capture_start_response_topic,
+            ).strip(),
+            robot_camera_capture_stop_request_topic=source.get(
+                "ROBOT_CAMERA_CAPTURE_STOP_REQUEST_TOPIC",
+                cls.robot_camera_capture_stop_request_topic,
+            ).strip(),
+            robot_camera_capture_stop_response_topic=source.get(
+                "ROBOT_CAMERA_CAPTURE_STOP_RESPONSE_TOPIC",
+                cls.robot_camera_capture_stop_response_topic,
+            ).strip(),
+            robot_camera_capture_frame_topic_template=source.get(
+                "ROBOT_CAMERA_CAPTURE_FRAME_TOPIC_TEMPLATE",
+                cls.robot_camera_capture_frame_topic_template,
+            ).strip(),
             executor_aid=source.get("EXECUTOR_AID", cls.executor_aid).strip(),
             executor_mode=source.get("EXECUTOR_MODE", cls.executor_mode).strip(),
             executor_log_dir=source.get("EXECUTOR_LOG_DIR", cls.executor_log_dir).strip(),
@@ -90,6 +125,8 @@ class ExecutorSettings:
         return (
             self.robot_current_pose_request_topic,
             self.robot_camera_frame_request_topic,
+            self.robot_camera_capture_start_request_topic,
+            self.robot_camera_capture_stop_request_topic,
         )
 
     @property
@@ -121,6 +158,26 @@ class ExecutorSettings:
             "ROBOT_CAMERA_FRAME_RESPONSE_TOPIC",
             self.robot_camera_frame_response_topic,
         )
+        require_non_empty(
+            "ROBOT_CAMERA_CAPTURE_START_REQUEST_TOPIC",
+            self.robot_camera_capture_start_request_topic,
+        )
+        require_non_empty(
+            "ROBOT_CAMERA_CAPTURE_START_RESPONSE_TOPIC",
+            self.robot_camera_capture_start_response_topic,
+        )
+        require_non_empty(
+            "ROBOT_CAMERA_CAPTURE_STOP_REQUEST_TOPIC",
+            self.robot_camera_capture_stop_request_topic,
+        )
+        require_non_empty(
+            "ROBOT_CAMERA_CAPTURE_STOP_RESPONSE_TOPIC",
+            self.robot_camera_capture_stop_response_topic,
+        )
+        require_non_empty(
+            "ROBOT_CAMERA_CAPTURE_FRAME_TOPIC_TEMPLATE",
+            self.robot_camera_capture_frame_topic_template,
+        )
         require_non_empty("EXECUTOR_AID", self.executor_aid)
         require_non_empty("EXECUTOR_MODE", self.executor_mode)
         require_non_empty("EXECUTOR_LOG_DIR", self.executor_log_dir)
@@ -134,6 +191,8 @@ class ExecutorSettings:
             raise ConfigError("MQTT_BROKER_URL 必须包含 broker host")
         if "{aid}" not in self.taskflow_status_topic_template:
             raise ConfigError("TASKFLOW_STATUS_TOPIC_TEMPLATE 必须包含 {aid}")
+        if "{sessionId}" not in self.robot_camera_capture_frame_topic_template:
+            raise ConfigError("ROBOT_CAMERA_CAPTURE_FRAME_TOPIC_TEMPLATE 必须包含 {sessionId}")
         if self.executor_mode != "gdk":
             raise ConfigError("EXECUTOR_MODE 只支持 gdk")
 
