@@ -77,7 +77,8 @@ def run_gdk_camera_frame_snapshot(
     if lease is None:
         return busy_result(active_purpose=manager.active_purpose, camera_id=camera_id)
 
-    progress_path = build_camera_child_progress_path()
+    progress_path = build_camera_child_artifact_path("progress")
+    result_path = build_camera_child_artifact_path("result")
     with lease:
         try:
             result = run_gdk_subprocess(
@@ -89,18 +90,26 @@ def run_gdk_camera_frame_snapshot(
                     warmup_seconds=warmup_seconds,
                 ),
                 child_target=camera_frame_child,
-                child_args=(camera_id, timeout_ms, warmup_seconds, str(progress_path)),
+                child_args=(
+                    camera_id,
+                    timeout_ms,
+                    warmup_seconds,
+                    str(progress_path),
+                    str(result_path),
+                ),
                 safety_gate={
                     "enabled": False,
                     "confirmed": True,
                     "reason": "read_only_camera_frame",
                 },
             )
+            result = load_camera_child_result(result, result_path, camera_id=camera_id)
             attach_camera_child_progress(result, progress_path)
             result["gdk_parent_lock"] = lease.to_payload()
             return result
         finally:
-            remove_camera_child_progress(progress_path)
+            remove_camera_child_artifact(progress_path)
+            remove_camera_child_artifact(result_path)
 
 
 def run_gdk_camera_frame_snapshot_in_process(
@@ -158,6 +167,7 @@ def camera_frame_child(
     timeout_ms: int,
     warmup_seconds: float,
     progress_path: str | None = None,
+    result_path: str | None = None,
 ) -> None:
     agibot_gdk = None
     gdk_initialized = False
@@ -200,8 +210,15 @@ def camera_frame_child(
             write_camera_child_progress(progress_path, "gdk_release_finished", camera_id=camera_id)
         result.setdefault("gdk_release", {"called": False, "success": True, "return": None})
         attach_camera_child_progress(result, Path(progress_path) if progress_path else None)
+        queue_payload = write_camera_child_result_reference(
+            result,
+            result_path=result_path,
+            camera_id=camera_id,
+            progress_path=progress_path,
+        )
         write_camera_child_progress(progress_path, "result_put_started", camera_id=camera_id)
-        result_queue.put(result)
+        result_queue.put(queue_payload)
+        write_camera_child_progress(progress_path, "result_put_finished", camera_id=camera_id)
 
 
 def collect_camera_frame(
@@ -447,8 +464,69 @@ def build_subprocess_timeout_seconds(
     )
 
 
-def build_camera_child_progress_path() -> Path:
-    return Path(tempfile.gettempdir()) / f"gsa_camera_frame_{uuid4().hex}.json"
+def build_camera_child_artifact_path(kind: str) -> Path:
+    return Path(tempfile.gettempdir()) / f"gsa_camera_frame_{kind}_{uuid4().hex}.json"
+
+
+def write_camera_child_result_reference(
+    result: Mapping[str, object],
+    *,
+    result_path: str | None,
+    camera_id: str,
+    progress_path: str | None = None,
+) -> dict[str, object]:
+    if not result_path:
+        return dict(result)
+
+    try:
+        encoded = json.dumps(to_jsonable(dict(result)), ensure_ascii=False)
+        Path(result_path).write_text(encoded, encoding="utf-8")
+    except Exception as error:
+        return unavailable_result("write_camera_child_result", error, camera_id=camera_id)
+
+    byte_count = len(encoded.encode("utf-8"))
+    write_camera_child_progress(
+        progress_path,
+        "result_file_written",
+        camera_id=camera_id,
+        result_bytes=byte_count,
+    )
+    return {
+        "cameraResultFile": result_path,
+        "cameraResultBytes": byte_count,
+    }
+
+
+def load_camera_child_result(
+    result: Mapping[str, object],
+    result_path: Path,
+    *,
+    camera_id: str,
+) -> dict[str, object]:
+    loaded = read_camera_child_result(result, result_path)
+    if loaded is None:
+        return dict(result)
+
+    for key in ("subprocess", "cameraResultBytes"):
+        if key in result:
+            loaded[key] = result[key]
+    return loaded
+
+
+def read_camera_child_result(
+    result: Mapping[str, object],
+    result_path: Path,
+) -> dict[str, object] | None:
+    raw_path = result.get("cameraResultFile")
+    path = Path(raw_path) if isinstance(raw_path, str) and raw_path else result_path
+    if not path.exists():
+        return None
+
+    try:
+        decoded = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return decoded if isinstance(decoded, dict) else None
 
 
 def write_camera_child_progress(
@@ -493,9 +571,9 @@ def read_camera_child_progress(progress_path: Path | None) -> dict[str, object] 
     return decoded if isinstance(decoded, dict) else None
 
 
-def remove_camera_child_progress(progress_path: Path) -> None:
+def remove_camera_child_artifact(path: Path) -> None:
     try:
-        progress_path.unlink(missing_ok=True)
+        path.unlink(missing_ok=True)
     except Exception:
         return
 

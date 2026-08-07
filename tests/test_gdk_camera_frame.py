@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import base64
+from pathlib import Path
 from typing import Any
 
 from gsa_taskflow_executor.gdk.camera_frame import (
     CAMERA_ENCODING_UNSUPPORTED,
     build_bmp_bytes,
     build_subprocess_timeout_seconds,
+    load_camera_child_result,
     resolve_gdk_camera_type,
     run_gdk_camera_frame_snapshot,
+    write_camera_child_result_reference,
 )
 from gsa_taskflow_executor.gdk.session import GdkSessionManager
 
@@ -81,6 +84,34 @@ def test_resolve_gdk_camera_type_maps_left_hand_alias() -> None:
 
 def test_subprocess_timeout_includes_camera_warmup() -> None:
     assert build_subprocess_timeout_seconds(3000, warmup_seconds=3.0) == 12.0
+
+
+def test_camera_child_result_uses_file_reference_for_large_payload(tmp_path: Path) -> None:
+    result_path = tmp_path / "camera_result.json"
+    full_result = {
+        "available": True,
+        "cameraId": "hand_left_color",
+        "imageBase64": "x" * 200_000,
+    }
+
+    queue_payload = write_camera_child_result_reference(
+        full_result,
+        result_path=str(result_path),
+        camera_id="hand_left_color",
+    )
+    restored = load_camera_child_result(
+        {
+            **queue_payload,
+            "subprocess": {"timed_out": False},
+        },
+        result_path,
+        camera_id="hand_left_color",
+    )
+
+    assert queue_payload["cameraResultFile"] == str(result_path)
+    assert restored["available"] is True
+    assert restored["imageBase64"] == full_result["imageBase64"]
+    assert restored["subprocess"] == {"timed_out": False}
 
 
 def test_gdk_camera_frame_snapshot_returns_jpeg_base64() -> None:
