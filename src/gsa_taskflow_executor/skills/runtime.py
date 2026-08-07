@@ -8,6 +8,7 @@ from typing import Any, Literal, Protocol
 
 from gsa_taskflow_executor.code_scripts.runtime import run_code_script
 from gsa_taskflow_executor.gdk.end_effector_runtime import run_gdk_end_effector_control
+from gsa_taskflow_executor.gdk.force_control_runtime import run_gdk_force_control_unverified
 from gsa_taskflow_executor.gdk.motion_runtime import run_gdk_motion_plan_abs_joint
 from gsa_taskflow_executor.gdk.session import GdkSessionManager
 from gsa_taskflow_executor.skills.registry import (
@@ -17,6 +18,7 @@ from gsa_taskflow_executor.skills.registry import (
 )
 from gsa_taskflow_executor.taskflow.parser import (
     EndEffectorParams,
+    ForceControlParams,
     MotionPlanParams,
     ScriptInputMapping,
     ScriptOutputVariable,
@@ -24,6 +26,7 @@ from gsa_taskflow_executor.taskflow.parser import (
     TaskflowNode,
     TaskflowParseError,
     parse_end_effector_params,
+    parse_force_control_params,
     parse_motion_plan_params,
     parse_script_params,
 )
@@ -272,6 +275,26 @@ class EndEffectorSkillGdk:
         )
 
 
+class ForceControlSkillGdk:
+    def run(self, node: TaskflowNode, context: SkillExecutionContext) -> SkillResult:
+        resolved_params = context.variable_store.resolve_value(node.params_template)
+        if not isinstance(resolved_params, Mapping):
+            raise SkillRuntimeError(f"{node.node_id}.params_template 解析后不是对象")
+
+        try:
+            force_params = parse_force_control_params(resolved_params, "params_template")
+        except TaskflowParseError as error:
+            raise SkillRuntimeError(str(error)) from error
+
+        force_control_result = run_gdk_force_control_unverified(force_params)
+        error_msg = force_control_result.get("error_msg")
+        message = str(error_msg or "GDK 力控执行未开放")
+        raise SkillRuntimeError(
+            message,
+            detail=build_gdk_error_detail(message, force_control_result),
+        )
+
+
 class SkillRuntime:
     def __init__(
         self,
@@ -294,6 +317,7 @@ class SkillRuntime:
                 environ=environ,
                 gdk_session_manager=gdk_session_manager,
             ),
+            "force_control": ForceControlSkillGdk(),
         }
 
     def run(self, node: TaskflowNode, context: SkillExecutionContext) -> SkillResult:
@@ -515,5 +539,28 @@ def build_end_effector_outputs(
         "opening": end_effector_params.opening,
         "timeout": end_effector_params.timeout,
         "post_wait_seconds": end_effector_params.post_wait_seconds,
+        "resolved_params_template": deepcopy(dict(params_template)),
+    }
+
+
+def build_force_control_outputs(
+    *,
+    app_execution_id: str,
+    skill_name: str | None,
+    mode: str,
+    params_template: Mapping[str, Any],
+    force_params: ForceControlParams,
+) -> dict[str, object]:
+    return {
+        "app_execution_id": app_execution_id,
+        "skill_name": skill_name,
+        "mode": mode,
+        "method": force_params.method,
+        "arm": force_params.arm,
+        "delta_xyz": deepcopy(list(force_params.delta_xyz)),
+        "force_threshold": force_params.force_threshold,
+        "timeout_s": force_params.timeout_s,
+        "control_hz": force_params.control_hz,
+        "step": force_params.step,
         "resolved_params_template": deepcopy(dict(params_template)),
     }

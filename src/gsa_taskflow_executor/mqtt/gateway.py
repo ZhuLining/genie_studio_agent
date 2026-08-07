@@ -100,10 +100,10 @@ class MqttGateway:
     def run_forever(self) -> None:
         self.connect()
         self.logger.info(
-            "listening taskflow YAML on %s, status topic %s, current pose request topic %s",
+            "listening taskflow YAML on %s, status topic %s, robot state request topics %s",
             self.settings.taskflow_input_topic,
             self.settings.status_topic,
-            self.settings.robot_current_pose_request_topic,
+            ", ".join(self.settings.robot_state_request_topics),
         )
         try:
             while True:
@@ -246,11 +246,9 @@ class MqttGateway:
             self.logger.info("MQTT connected, subscribing %s", self.settings.taskflow_input_topic)
             client.subscribe(self.settings.taskflow_input_topic, qos=0)
             if self.on_robot_state_message is not None:
-                self.logger.info(
-                    "MQTT connected, subscribing %s",
-                    self.settings.robot_current_pose_request_topic,
-                )
-                client.subscribe(self.settings.robot_current_pose_request_topic, qos=0)
+                for topic in self.settings.robot_state_request_topics:
+                    self.logger.info("MQTT connected, subscribing %s", topic)
+                    client.subscribe(topic, qos=0)
             self.record_event(
                 RuntimeEvent(
                     event_type="mqtt_connected",
@@ -308,7 +306,7 @@ class MqttGateway:
     def _on_message(self, _client: Any, _userdata: Any, message: Any) -> None:
         if (
             self.on_robot_state_message is not None
-            and message.topic == self.settings.robot_current_pose_request_topic
+            and message.topic in self.settings.robot_state_request_topics
         ):
             self.handle_robot_state_message(message.topic, message.payload)
             return

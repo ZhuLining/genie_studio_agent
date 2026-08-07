@@ -5,6 +5,7 @@ from fixtures import (
     VALID_CODE_AND_MOTION_YAML,
     VALID_CODE_CHAIN_YAML,
     VALID_END_EFFECTOR_CODE_FLOW_YAML,
+    VALID_FORCE_CONTROL_YAML,
     VALID_LOOP_TIMER_YAML,
     VALID_RIGHT_ARM_YAML,
 )
@@ -209,6 +210,21 @@ def test_scheduler_loop_failure_marks_parent_loop_error() -> None:
     assert loop_detail["failed_iteration"] == 1
     assert loop_detail["failed_child_node"] == "代码2"
     assert loop_detail["outputs"]["completed_iterations"] == 0
+
+
+def test_scheduler_force_control_stub_returns_unverified_error() -> None:
+    taskflow = parse_taskflow_yaml(VALID_FORCE_CONTROL_YAML)
+
+    result = TaskflowScheduler(taskflow).run()
+
+    assert result.outcome == "error"
+    assert result.terminal_node_id == "位姿调整-力控"
+    assert result.visited_node_ids == ("开始", "位姿调整-力控")
+    force_detail = result.variables["位姿调整-力控"]["detail"]
+    assert force_detail["status"] == "error"
+    assert force_detail["error_code"] == "GDK_FORCE_CONTROL_UNVERIFIED"
+    assert force_detail["gdk_result"]["reason"] == "GDK_FORCE_CONTROL_UNVERIFIED"
+    assert force_detail["gdk_result"]["params"]["arm"] == "left_arm"
 
 
 def test_scheduler_end_effector_code_flow_passes_adjusted_opening(monkeypatch) -> None:

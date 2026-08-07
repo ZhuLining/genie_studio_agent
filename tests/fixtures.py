@@ -101,6 +101,45 @@ transitions:
 """
 
 
+VALID_FORCE_CONTROL_YAML = """
+start_node: 开始
+app_execution_id: force-control-run
+nodes:
+  - id: 开始
+    type: assign
+    assignments: {}
+  - id: 位姿调整-力控
+    type: worker
+    skill_name: force_control_skill
+    params_template:
+      method: move_until_force
+      arm: left_arm
+      delta_xyz:
+        - 0
+        - 0
+        - 1
+      force_threshold: 10
+      timeout_s: 50
+      control_hz: 50
+      step: 0.01
+    capture_state_detail: true
+    output_var: 位姿调整-力控
+    output_contract:
+      required_paths:
+        - $.variables.位姿调整-力控.detail
+  - id: 结束
+    type: assign
+    assignments: {}
+transitions:
+  - from: 开始
+    outcome: success
+    to: 位姿调整-力控
+  - from: 位姿调整-力控
+    outcome: success
+    to: 结束
+"""
+
+
 VALID_CODE_CHAIN_YAML = """
 start_node: 开始
 app_execution_id: code-chain-run

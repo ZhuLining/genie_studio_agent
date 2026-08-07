@@ -128,7 +128,29 @@ def test_on_connect_subscribes_robot_state_topic_when_handler_configured() -> No
     assert client.subscribed == [
         ("gsa/self/taskflow_yaml", 0),
         ("gsa/self/robot/state/get_current_pose/request", 0),
+        ("gsa/self/robot/state/get_camera_frame/request", 0),
     ]
+
+
+def test_on_message_routes_camera_frame_topic_to_robot_state_handler() -> None:
+    received_robot_state: list[str] = []
+    gateway = MqttGateway(
+        settings=ExecutorSettings(),
+        on_taskflow_message=lambda _message: None,
+        on_robot_state_message=lambda message: received_robot_state.append(message.topic),
+    )
+    message = type(
+        "Message",
+        (),
+        {
+            "topic": "gsa/self/robot/state/get_camera_frame/request",
+            "payload": b'{"requestId":"req-camera"}',
+        },
+    )()
+
+    gateway._on_message(None, None, message)
+
+    assert received_robot_state == ["gsa/self/robot/state/get_camera_frame/request"]
 
 
 @pytest.mark.parametrize(

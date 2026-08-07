@@ -11,3 +11,7 @@ skills:
     adapter: gdk
     implementation: end_effector
     description: Guarded GDK move_ee_pos end-effector open/close skill.
+  force_control_skill:
+    adapter: gdk
+    implementation: force_control
+    description: Blocked GDK force-control skill until robot verification is complete.

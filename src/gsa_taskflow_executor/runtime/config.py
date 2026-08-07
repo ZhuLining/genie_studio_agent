@@ -24,6 +24,8 @@ class ExecutorSettings:
     taskflow_status_topic_template: str = "gsa/self/{aid}/status"
     robot_current_pose_request_topic: str = "gsa/self/robot/state/get_current_pose/request"
     robot_current_pose_response_topic: str = "gsa/self/robot/state/get_current_pose/response"
+    robot_camera_frame_request_topic: str = "gsa/self/robot/state/get_camera_frame/request"
+    robot_camera_frame_response_topic: str = "gsa/self/robot/state/get_camera_frame/response"
     executor_aid: str = "gsa-dev"
     executor_mode: str = "gdk"
     executor_log_dir: str = "logs"
@@ -56,6 +58,14 @@ class ExecutorSettings:
                 "ROBOT_CURRENT_POSE_RESPONSE_TOPIC",
                 cls.robot_current_pose_response_topic,
             ).strip(),
+            robot_camera_frame_request_topic=source.get(
+                "ROBOT_CAMERA_FRAME_REQUEST_TOPIC",
+                cls.robot_camera_frame_request_topic,
+            ).strip(),
+            robot_camera_frame_response_topic=source.get(
+                "ROBOT_CAMERA_FRAME_RESPONSE_TOPIC",
+                cls.robot_camera_frame_response_topic,
+            ).strip(),
             executor_aid=source.get("EXECUTOR_AID", cls.executor_aid).strip(),
             executor_mode=source.get("EXECUTOR_MODE", cls.executor_mode).strip(),
             executor_log_dir=source.get("EXECUTOR_LOG_DIR", cls.executor_log_dir).strip(),
@@ -74,6 +84,13 @@ class ExecutorSettings:
     @property
     def status_topic(self) -> str:
         return self.taskflow_status_topic_template.format(aid=self.executor_aid)
+
+    @property
+    def robot_state_request_topics(self) -> tuple[str, ...]:
+        return (
+            self.robot_current_pose_request_topic,
+            self.robot_camera_frame_request_topic,
+        )
 
     @property
     def log_dir_path(self) -> Path:
@@ -95,6 +112,14 @@ class ExecutorSettings:
         require_non_empty(
             "ROBOT_CURRENT_POSE_RESPONSE_TOPIC",
             self.robot_current_pose_response_topic,
+        )
+        require_non_empty(
+            "ROBOT_CAMERA_FRAME_REQUEST_TOPIC",
+            self.robot_camera_frame_request_topic,
+        )
+        require_non_empty(
+            "ROBOT_CAMERA_FRAME_RESPONSE_TOPIC",
+            self.robot_camera_frame_response_topic,
         )
         require_non_empty("EXECUTOR_AID", self.executor_aid)
         require_non_empty("EXECUTOR_MODE", self.executor_mode)

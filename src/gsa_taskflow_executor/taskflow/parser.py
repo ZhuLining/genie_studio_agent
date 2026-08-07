@@ -15,9 +15,23 @@ MOTION_SPEED_MAX = 0.1
 DEFAULT_SCRIPT_TIMEOUT = 50.0
 DEFAULT_END_EFFECTOR_TIMEOUT = 20.0
 DEFAULT_END_EFFECTOR_POST_WAIT_SECONDS = 1.0
+DEFAULT_FORCE_CONTROL_TIMEOUT = 50.0
+DEFAULT_FORCE_CONTROL_HZ = 50
+DEFAULT_FORCE_CONTROL_STEP = 0.01
 LOOP_MODE_COUNT = "count"
 TIMER_MODE_REL = "rel"
 MAX_LOOP_ITERATIONS = 100
+FORCE_CONTROL_METHOD_SMOOTH_MOVE = "smooth_move"
+FORCE_CONTROL_METHOD_MOVE_UNTIL_FORCE = "move_until_force"
+FORCE_CONTROL_METHODS = {
+    FORCE_CONTROL_METHOD_SMOOTH_MOVE,
+    FORCE_CONTROL_METHOD_MOVE_UNTIL_FORCE,
+}
+FORCE_CONTROL_ARMS = {"left_arm", "right_arm"}
+FORCE_CONTROL_HZ_MIN = 1
+FORCE_CONTROL_HZ_MAX = 100
+FORCE_CONTROL_STEP_MIN = 0.001
+FORCE_CONTROL_STEP_MAX = 0.05
 END_EFFECTOR_TARGET_ALIASES = {
     "left": "left_tool",
     "left_end": "left_tool",
@@ -100,6 +114,17 @@ class EndEffectorParams:
     opening: float
     timeout: float
     post_wait_seconds: float = DEFAULT_END_EFFECTOR_POST_WAIT_SECONDS
+
+
+@dataclass(frozen=True)
+class ForceControlParams:
+    method: str
+    arm: str
+    delta_xyz: tuple[float, float, float]
+    force_threshold: float | None
+    timeout_s: float
+    control_hz: int
+    step: float
 
 
 @dataclass(frozen=True)
@@ -403,6 +428,8 @@ def validate_worker_params(skill_name: str, params: YamlMapping, path: str) -> N
         parse_script_params(params, f"{path}.params_template")
     elif skill_name == "control_end_effector_skill":
         parse_end_effector_params(params, f"{path}.params_template")
+    elif skill_name == "force_control_skill":
+        parse_force_control_params(params, f"{path}.params_template")
 
 
 def parse_timer_params(params: YamlMapping, path: str) -> TimerParams:
@@ -567,6 +594,64 @@ def parse_end_effector_params(params: YamlMapping, path: str) -> EndEffectorPara
     )
 
 
+def parse_force_control_params(params: YamlMapping, path: str) -> ForceControlParams:
+    method = read_required_string(params, "method", path)
+    if method not in FORCE_CONTROL_METHODS:
+        raise TaskflowParseError(f"{path}.method 只支持 smooth_move/move_until_force")
+
+    arm = read_required_string(params, "arm", path)
+    if arm not in FORCE_CONTROL_ARMS:
+        raise TaskflowParseError(f"{path}.arm 只支持 left_arm/right_arm")
+
+    force_threshold: float | None = None
+    if method == FORCE_CONTROL_METHOD_MOVE_UNTIL_FORCE:
+        force_threshold = read_positive_number(
+            params.get("force_threshold"),
+            f"{path}.force_threshold",
+        )
+
+    return ForceControlParams(
+        method=method,
+        arm=arm,
+        delta_xyz=read_force_delta_xyz(params.get("delta_xyz"), f"{path}.delta_xyz"),
+        force_threshold=force_threshold,
+        timeout_s=read_positive_number_with_default(
+            params.get("timeout_s"),
+            f"{path}.timeout_s",
+            DEFAULT_FORCE_CONTROL_TIMEOUT,
+        ),
+        control_hz=read_int_in_range_with_default(
+            params.get("control_hz"),
+            f"{path}.control_hz",
+            fallback=DEFAULT_FORCE_CONTROL_HZ,
+            minimum=FORCE_CONTROL_HZ_MIN,
+            maximum=FORCE_CONTROL_HZ_MAX,
+        ),
+        step=read_number_in_range_with_default(
+            params.get("step"),
+            f"{path}.step",
+            fallback=DEFAULT_FORCE_CONTROL_STEP,
+            minimum=FORCE_CONTROL_STEP_MIN,
+            maximum=FORCE_CONTROL_STEP_MAX,
+        ),
+    )
+
+
+def read_force_delta_xyz(value: Any, path: str) -> tuple[float, float, float]:
+    if not isinstance(value, list):
+        raise TaskflowParseError(f"{path} 必须是长度为 3 的数字数组")
+    if len(value) != 3:
+        raise TaskflowParseError(f"{path} 长度必须是 3，当前为 {len(value)}")
+
+    x = to_float(value[0], f"{path}[0]")
+    y = to_float(value[1], f"{path}[1]")
+    z = to_float(value[2], f"{path}[2]")
+    values = (x, y, z)
+    if all(abs(item) < 1e-12 for item in values):
+        raise TaskflowParseError(f"{path} 不能全为 0")
+    return values
+
+
 def parse_action_data(raw: Any, body_part: str, control_type: str, path: str) -> list[float] | str:
     if isinstance(raw, str):
         value = raw.strip()
@@ -701,6 +786,20 @@ def read_positive_int(value: Any, path: str, *, maximum: int) -> int:
     return int(value)
 
 
+def read_int_in_range(value: Any, path: str, *, minimum: int, maximum: int) -> int:
+    if isinstance(value, bool):
+        raise TaskflowParseError(f"{path} 必须是整数")
+    if isinstance(value, int):
+        number = value
+    elif isinstance(value, float) and value.is_integer():
+        number = int(value)
+    else:
+        raise TaskflowParseError(f"{path} 必须是整数")
+    if number < minimum or number > maximum:
+        raise TaskflowParseError(f"{path} 必须在 {minimum} 到 {maximum} 之间")
+    return number
+
+
 def read_positive_number_with_default(value: Any, path: str, fallback: float) -> float:
     if value is None:
         return fallback
@@ -713,6 +812,35 @@ def read_non_negative_number_with_default(value: Any, path: str, fallback: float
     number = to_float(value, path)
     if number < 0:
         raise TaskflowParseError(f"{path} 必须大于等于 0")
+    return number
+
+
+def read_int_in_range_with_default(
+    value: Any,
+    path: str,
+    *,
+    fallback: int,
+    minimum: int,
+    maximum: int,
+) -> int:
+    if value is None:
+        return fallback
+    return read_int_in_range(value, path, minimum=minimum, maximum=maximum)
+
+
+def read_number_in_range_with_default(
+    value: Any,
+    path: str,
+    *,
+    fallback: float,
+    minimum: float,
+    maximum: float,
+) -> float:
+    if value is None:
+        return fallback
+    number = to_float(value, path)
+    if number < minimum or number > maximum:
+        raise TaskflowParseError(f"{path} 必须在 {minimum} 到 {maximum} 之间")
     return number
 
 

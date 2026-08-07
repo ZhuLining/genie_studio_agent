@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
+from .gdk.camera_frame import run_gdk_camera_frame_snapshot
 from .gdk.control_probe import ALLOWED_ACTIONS, run_gdk_control_probe
 from .gdk.current_pose import run_gdk_current_pose_snapshot
 from .gdk.motion_runtime import TASKFLOW_ABS_JOINT_CONFIRMATION
@@ -15,7 +16,7 @@ from .gdk.session import GdkSessionManager
 from .gdk.worker_runtime import shutdown_default_gdk_worker
 from .mqtt.gateway import MqttGateway, MqttGatewayError, TaskflowMessage
 from .mqtt.message_queue import MqttMessageQueueError, MqttMessageWorkerQueue
-from .mqtt.robot_state import handle_current_pose_request
+from .mqtt.robot_state import CAMERA_FRAME_REQUEST_TYPE, handle_robot_state_request
 from .mqtt.status_reporter import TaskflowStatusReporter
 from .runtime.config import ConfigError, ExecutorSettings, build_env_source
 from .runtime.event_log import JsonlEventWriter, RuntimeEvent, configure_stdout_logging
@@ -282,18 +283,24 @@ def main(argv: list[str] | None = None) -> int:
             )
 
         def process_robot_state_message(message: TaskflowMessage) -> None:
-            # 当前位姿是独立只读请求，放入单独 worker，避免被 Taskflow FIFO 队列排在长动作之后。
-            handle_current_pose_request(
+            # 机器人只读请求放入单独 worker，避免被 Taskflow FIFO 队列排在长动作之后。
+            # 具体 GDK 访问再由 session 锁互斥；相机请求忙时直接拒绝，不等待控制动作。
+            handle_robot_state_request(
                 message,
                 settings=settings,
                 publish_response=lambda topic, payload: gateway.publish_json(
                     topic,
                     payload,
-                    event_type="robot_current_pose_response_mqtt_published",
-                    message="current pose response published",
+                    event_type="robot_state_response_mqtt_published",
+                    message="robot state response published",
                 ),
                 event_writer=writer,
-                collect_snapshot=lambda: run_gdk_current_pose_snapshot(
+                collect_current_pose=lambda: run_gdk_current_pose_snapshot(
+                    session_manager=gdk_session,
+                ),
+                collect_camera_frame=lambda camera_id, timeout_ms: run_gdk_camera_frame_snapshot(
+                    camera_id=camera_id,
+                    timeout_ms=timeout_ms,
                     session_manager=gdk_session,
                 ),
             )
@@ -307,8 +314,8 @@ def main(argv: list[str] | None = None) -> int:
             logger=logger,
             event_writer=writer,
         )
-        # robot_state_queue 让 get_current_pose 请求脱离 paho 回调；
-        # 具体 GDK 访问再由 session 锁互斥。
+        # robot_state_queue 让 get_current_pose/get_camera_frame 请求脱离 paho 回调；
+        # 相机取帧同样是 GDK 只读能力，但必须和控制动作互斥。
         robot_state_queue = MqttMessageWorkerQueue(
             name="robot-state-worker",
             handler=process_robot_state_message,
@@ -432,11 +439,14 @@ def publish_robot_state_queue_error(
     publish_response: RobotStatePublisher,
     error_message: str,
 ) -> None:
-    # 队列不可用时仍尽量按当前位姿 response 协议回包，客户端可以展示明确错误。
+    # 队列不可用时仍尽量按对应 response 协议回包，客户端可以展示明确错误。
+    is_camera_request = message.topic == settings.robot_camera_frame_request_topic
     publish_response(
-        settings.robot_current_pose_response_topic,
+        settings.robot_camera_frame_response_topic
+        if is_camera_request
+        else settings.robot_current_pose_response_topic,
         {
-            "type": "get_current_pose",
+            "type": CAMERA_FRAME_REQUEST_TYPE if is_camera_request else "get_current_pose",
             "requestId": read_request_id(message.payload),
             "ok": False,
             "executorAid": settings.executor_aid,

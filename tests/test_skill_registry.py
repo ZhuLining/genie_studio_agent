@@ -5,6 +5,7 @@ import pytest
 from fixtures import (
     VALID_CODE_AND_MOTION_YAML,
     VALID_END_EFFECTOR_YAML,
+    VALID_FORCE_CONTROL_YAML,
     VALID_RIGHT_ARM_YAML,
 )
 from gsa_taskflow_executor.runtime.config import ExecutorSettings
@@ -21,6 +22,7 @@ def test_default_registry_contains_gdk_motion_plan() -> None:
     skill = registry.require("motion_plan_skill")
     script_skill = registry.require("script_skill")
     end_effector_skill = registry.require("control_end_effector_skill")
+    force_control_skill = registry.require("force_control_skill")
 
     assert skill.adapter == "gdk"
     assert skill.implementation == "motion_plan"
@@ -28,7 +30,9 @@ def test_default_registry_contains_gdk_motion_plan() -> None:
     assert script_skill.implementation == "script"
     assert end_effector_skill.adapter == "gdk"
     assert end_effector_skill.implementation == "end_effector"
-    assert registry.summary()["skill_count"] == 3
+    assert force_control_skill.adapter == "gdk"
+    assert force_control_skill.implementation == "force_control"
+    assert registry.summary()["skill_count"] == 4
 
 
 def test_registry_loads_from_mapping() -> None:
@@ -50,6 +54,11 @@ def test_registry_loads_from_mapping() -> None:
                     "implementation": "end_effector",
                     "description": "guarded gdk end-effector skill",
                 },
+                "force_control_skill": {
+                    "adapter": "gdk",
+                    "implementation": "force_control",
+                    "description": "blocked gdk force-control skill",
+                },
             }
         }
     )
@@ -57,6 +66,7 @@ def test_registry_loads_from_mapping() -> None:
     skill = registry.require("motion_plan_skill")
     script_skill = registry.require("script_skill")
     end_effector_skill = registry.require("control_end_effector_skill")
+    force_control_skill = registry.require("force_control_skill")
 
     assert skill.adapter == "gdk"
     assert skill.implementation == "motion_plan"
@@ -67,6 +77,9 @@ def test_registry_loads_from_mapping() -> None:
     assert end_effector_skill.adapter == "gdk"
     assert end_effector_skill.implementation == "end_effector"
     assert end_effector_skill.description == "guarded gdk end-effector skill"
+    assert force_control_skill.adapter == "gdk"
+    assert force_control_skill.implementation == "force_control"
+    assert force_control_skill.description == "blocked gdk force-control skill"
 
 
 def test_registry_loads_from_settings_file(tmp_path) -> None:
@@ -102,6 +115,9 @@ def test_registry_accepts_gdk_motion_plan_adapter() -> None:
                 "control_end_effector_skill": {
                     "adapter": "gdk",
                 },
+                "force_control_skill": {
+                    "adapter": "gdk",
+                },
             }
         }
     )
@@ -109,6 +125,7 @@ def test_registry_accepts_gdk_motion_plan_adapter() -> None:
     skill = registry.require("motion_plan_skill")
     script_skill = registry.require("script_skill")
     end_effector_skill = registry.require("control_end_effector_skill")
+    force_control_skill = registry.require("force_control_skill")
 
     assert skill.adapter == "gdk"
     assert skill.implementation == "motion_plan"
@@ -116,6 +133,8 @@ def test_registry_accepts_gdk_motion_plan_adapter() -> None:
     assert script_skill.implementation == "script"
     assert end_effector_skill.adapter == "gdk"
     assert end_effector_skill.implementation == "end_effector"
+    assert force_control_skill.adapter == "gdk"
+    assert force_control_skill.implementation == "force_control"
 
 
 def test_registry_rejects_non_motion_plan_implementation() -> None:
@@ -160,6 +179,20 @@ def test_registry_rejects_non_end_effector_implementation() -> None:
         )
 
 
+def test_registry_rejects_non_force_control_implementation() -> None:
+    with pytest.raises(SkillRegistryError, match="implementation 只支持 force_control"):
+        SkillRegistry.from_mapping(
+            {
+                "skills": {
+                    "force_control_skill": {
+                        "adapter": "gdk",
+                        "implementation": "motion_plan",
+                    }
+                }
+            }
+        )
+
+
 def test_registry_rejects_mock_adapter() -> None:
     with pytest.raises(SkillRegistryError, match="adapter 只支持 gdk"):
         SkillRegistry.from_mapping(
@@ -176,7 +209,10 @@ def test_registry_rejects_mock_adapter() -> None:
 def test_registry_rejects_non_mvp_skill() -> None:
     with pytest.raises(
         SkillRegistryError,
-        match="MVP 当前只支持 motion_plan_skill、script_skill 和 control_end_effector_skill",
+        match=(
+            "MVP 当前只支持 motion_plan_skill、script_skill、"
+            "control_end_effector_skill 和 force_control_skill"
+        ),
     ):
         SkillRegistry.from_mapping(
             {
@@ -215,6 +251,13 @@ def test_registry_validates_script_skill_params() -> None:
 
 def test_registry_validates_end_effector_skill_params() -> None:
     taskflow = parse_taskflow_yaml(VALID_END_EFFECTOR_YAML)
+    registry = SkillRegistry.default()
+
+    registry.validate_taskflow(taskflow)
+
+
+def test_registry_validates_force_control_skill_params() -> None:
+    taskflow = parse_taskflow_yaml(VALID_FORCE_CONTROL_YAML)
     registry = SkillRegistry.default()
 
     registry.validate_taskflow(taskflow)

@@ -13,12 +13,13 @@ from gsa_taskflow_executor.taskflow.parser import (
     TaskflowDefinition,
     TaskflowParseError,
     parse_end_effector_params,
+    parse_force_control_params,
     parse_motion_plan_params,
     parse_script_params,
 )
 
 SkillAdapter = Literal["gdk"]
-SkillImplementation = Literal["motion_plan", "script", "end_effector"]
+SkillImplementation = Literal["motion_plan", "script", "end_effector", "force_control"]
 YamlMapping = Mapping[str, Any]
 
 
@@ -69,6 +70,12 @@ class SkillRegistry:
                     adapter="gdk",
                     implementation="end_effector",
                     description="GDK end-effector open/close skill.",
+                ),
+                "force_control_skill": SkillDefinition(
+                    name="force_control_skill",
+                    adapter="gdk",
+                    implementation="force_control",
+                    description="GDK force-control skill, blocked until robot verification.",
                 ),
             }
         )
@@ -146,6 +153,14 @@ class SkillRegistry:
                     )
                 except TaskflowParseError as error:
                     raise SkillRegistryError(str(error)) from error
+            if skill.implementation == "force_control":
+                try:
+                    parse_force_control_params(
+                        node.params_template,
+                        f"nodes[{node.node_id}].params_template",
+                    )
+                except TaskflowParseError as error:
+                    raise SkillRegistryError(str(error)) from error
 
     def summary(self) -> dict[str, object]:
         return {
@@ -166,12 +181,13 @@ def parse_skill_definition(name: str, raw_config: Any) -> SkillDefinition:
         "motion_plan_skill": "motion_plan",
         "script_skill": "script",
         "control_end_effector_skill": "end_effector",
+        "force_control_skill": "force_control",
     }
     expected_implementation = allowed_implementations.get(name)
     if expected_implementation is None:
         raise SkillRegistryError(
-            "MVP 当前只支持 motion_plan_skill、script_skill 和 "
-            "control_end_effector_skill"
+            "MVP 当前只支持 motion_plan_skill、script_skill、"
+            "control_end_effector_skill 和 force_control_skill"
         )
     implementation_value = read_optional_string(
         config,

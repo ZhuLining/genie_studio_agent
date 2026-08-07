@@ -5,12 +5,14 @@ from fixtures import (
     VALID_CODE_CHAIN_YAML,
     VALID_END_EFFECTOR_CODE_FLOW_YAML,
     VALID_END_EFFECTOR_YAML,
+    VALID_FORCE_CONTROL_YAML,
     VALID_LOOP_TIMER_YAML,
     VALID_RIGHT_ARM_YAML,
 )
 from gsa_taskflow_executor.taskflow.parser import (
     TaskflowParseError,
     parse_end_effector_params,
+    parse_force_control_params,
     parse_motion_plan_params,
     parse_script_params,
     parse_taskflow_yaml,
@@ -143,6 +145,60 @@ def test_parse_end_effector_skill_params_accepts_post_wait_seconds() -> None:
     params = parse_end_effector_params(taskflow.worker_nodes[0].params_template, "params_template")
 
     assert params.post_wait_seconds == 0.5
+
+
+def test_parse_force_control_skill_params() -> None:
+    taskflow = parse_taskflow_yaml(VALID_FORCE_CONTROL_YAML)
+    worker = taskflow.worker_nodes[0]
+    params = parse_force_control_params(worker.params_template, "params_template")
+
+    assert worker.skill_name == "force_control_skill"
+    assert params.method == "move_until_force"
+    assert params.arm == "left_arm"
+    assert params.delta_xyz == (0.0, 0.0, 1.0)
+    assert params.force_threshold == 10
+    assert params.timeout_s == 50
+    assert params.control_hz == 50
+    assert params.step == 0.01
+
+
+def test_parse_force_control_smooth_move_ignores_threshold() -> None:
+    taskflow = parse_taskflow_yaml(
+        VALID_FORCE_CONTROL_YAML.replace("method: move_until_force", "method: smooth_move")
+        .replace("      force_threshold: 10\n", "      force_threshold: null\n")
+    )
+    params = parse_force_control_params(taskflow.worker_nodes[0].params_template, "params_template")
+
+    assert params.method == "smooth_move"
+    assert params.force_threshold is None
+
+
+def test_reject_force_control_invalid_method() -> None:
+    with pytest.raises(TaskflowParseError, match="method 只支持"):
+        parse_taskflow_yaml(
+            VALID_FORCE_CONTROL_YAML.replace("method: move_until_force", "method: while_force")
+        )
+
+
+def test_reject_force_control_zero_delta_xyz() -> None:
+    with pytest.raises(TaskflowParseError, match="不能全为 0"):
+        parse_taskflow_yaml(
+            VALID_FORCE_CONTROL_YAML.replace(
+                """      delta_xyz:
+        - 0
+        - 0
+        - 1""",
+                """      delta_xyz:
+        - 0
+        - 0
+        - 0""",
+            )
+        )
+
+
+def test_reject_force_control_step_outside_range() -> None:
+    with pytest.raises(TaskflowParseError, match="step 必须在 0.001 到 0.05 之间"):
+        parse_taskflow_yaml(VALID_FORCE_CONTROL_YAML.replace("step: 0.01", "step: 0.2"))
 
 
 def test_parse_loop_and_timer_nodes() -> None:
