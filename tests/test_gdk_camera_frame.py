@@ -25,13 +25,24 @@ class FakeImage:
         width: int = 2,
         height: int = 1,
         encoding: str = "JPEG",
-        data: bytes = b"\xff\xd8jpeg",
+        data: Any = b"\xff\xd8jpeg",
     ) -> None:
         self.width = width
         self.height = height
         self.encoding = encoding
         self.data = data
         self.timestamp_ns = 123
+
+
+class FakeArrayData:
+    def __init__(self, data: bytes) -> None:
+        self.data = data
+
+    def __bool__(self) -> bool:
+        raise ValueError("array truth value is ambiguous")
+
+    def tobytes(self) -> bytes:
+        return self.data
 
 
 class FakeCamera:
@@ -73,6 +84,7 @@ def test_gdk_camera_frame_snapshot_returns_jpeg_base64() -> None:
     result = run_gdk_camera_frame_snapshot(
         camera_id="hand_left_color",
         timeout_ms=1500,
+        warmup_seconds=0,
         import_module=fake_import_module,
     )
 
@@ -81,6 +93,7 @@ def test_gdk_camera_frame_snapshot_returns_jpeg_base64() -> None:
     assert result["gdkCameraType"] == "FakeHandLeftColor"
     assert result["mimeType"] == "image/jpeg"
     assert result["imageBase64"] == base64.b64encode(b"\xff\xd8hello").decode("ascii")
+    assert result["cameraWarmupSeconds"] == 0
     assert FakeCamera.requested == [("FakeHandLeftColor", 1500.0)]
     assert FakeCamera.close_called == 1
 
@@ -98,6 +111,7 @@ def test_gdk_camera_frame_snapshot_converts_rgb_to_bmp() -> None:
     result = run_gdk_camera_frame_snapshot(
         camera_id="head_color",
         timeout_ms=1000,
+        warmup_seconds=0,
         import_module=fake_import_module,
     )
 
@@ -117,6 +131,7 @@ def test_gdk_camera_frame_snapshot_rejects_unsupported_encoding() -> None:
     result = run_gdk_camera_frame_snapshot(
         camera_id="hand_left_color",
         timeout_ms=1500,
+        warmup_seconds=0,
         import_module=fake_import_module,
     )
 
@@ -133,6 +148,7 @@ def test_gdk_camera_frame_snapshot_returns_busy_when_session_active() -> None:
         result = run_gdk_camera_frame_snapshot(
             camera_id="hand_left_color",
             timeout_ms=1500,
+            warmup_seconds=0,
             import_module=fake_import_module,
             session_manager=manager,
         )
@@ -142,3 +158,18 @@ def test_gdk_camera_frame_snapshot_returns_busy_when_session_active() -> None:
     assert result["available"] is False
     assert result["busy"] is True
     assert result["activePurpose"] == "motion"
+
+
+def test_gdk_camera_frame_snapshot_accepts_array_like_image_data() -> None:
+    reset_fake_camera(FakeImage(data=FakeArrayData(b"\xff\xd8array")))
+
+    result = run_gdk_camera_frame_snapshot(
+        camera_id="hand_left_color",
+        timeout_ms=1500,
+        warmup_seconds=0,
+        import_module=fake_import_module,
+    )
+
+    assert result["available"] is True
+    assert result["mimeType"] == "image/jpeg"
+    assert result["imageBase64"] == base64.b64encode(b"\xff\xd8array").decode("ascii")

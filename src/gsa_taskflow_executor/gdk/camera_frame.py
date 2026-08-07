@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import importlib
+import time
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -12,6 +13,7 @@ from .subprocess_runtime import run_gdk_subprocess
 
 ACTION_GET_CAMERA_FRAME = "get_camera_frame"
 DEFAULT_CAMERA_TIMEOUT_MS = 1500
+DEFAULT_CAMERA_WARMUP_SECONDS = 3.0
 SUBPROCESS_TIMEOUT_MARGIN_SECONDS = 2.0
 CAMERA_ENCODING_UNSUPPORTED = "CAMERA_ENCODING_UNSUPPORTED"
 
@@ -30,6 +32,7 @@ def run_gdk_camera_frame_snapshot(
     camera_id: str = "hand_left_color",
     timeout_ms: int = DEFAULT_CAMERA_TIMEOUT_MS,
     *,
+    warmup_seconds: float = DEFAULT_CAMERA_WARMUP_SECONDS,
     import_module: Callable[[str], Any] = importlib.import_module,
     session_manager: GdkSessionManager | None = None,
 ) -> dict[str, object]:
@@ -51,6 +54,7 @@ def run_gdk_camera_frame_snapshot(
         return run_gdk_camera_frame_snapshot_in_process(
             camera_id=camera_id,
             timeout_ms=timeout_ms,
+            warmup_seconds=warmup_seconds,
             import_module=import_module,
             session_manager=session_manager,
         )
@@ -75,7 +79,7 @@ def run_gdk_camera_frame_snapshot(
             backend=GDK_BACKEND,
             timeout_seconds=build_subprocess_timeout_seconds(timeout_ms),
             child_target=camera_frame_child,
-            child_args=(camera_id, timeout_ms),
+            child_args=(camera_id, timeout_ms, warmup_seconds),
             safety_gate={"enabled": False, "confirmed": True, "reason": "read_only_camera_frame"},
         )
         result["gdk_parent_lock"] = lease.to_payload()
@@ -86,6 +90,7 @@ def run_gdk_camera_frame_snapshot_in_process(
     *,
     camera_id: str,
     timeout_ms: int,
+    warmup_seconds: float = DEFAULT_CAMERA_WARMUP_SECONDS,
     import_module: Callable[[str], Any] = importlib.import_module,
     session_manager: GdkSessionManager | None = None,
 ) -> dict[str, object]:
@@ -123,13 +128,19 @@ def run_gdk_camera_frame_snapshot_in_process(
             agibot_gdk=lease.agibot_gdk,
             camera_id=camera_id,
             timeout_ms=timeout_ms,
+            warmup_seconds=warmup_seconds,
         )
         result["gdk_init"] = lease.init_result
         result["gdk_session"] = lease.to_payload()
         return result
 
 
-def camera_frame_child(result_queue: Any, camera_id: str, timeout_ms: int) -> None:
+def camera_frame_child(
+    result_queue: Any,
+    camera_id: str,
+    timeout_ms: int,
+    warmup_seconds: float,
+) -> None:
     agibot_gdk = None
     gdk_initialized = False
     init_result: dict[str, object] = {"called": False, "success": True, "return": None}
@@ -150,6 +161,7 @@ def camera_frame_child(result_queue: Any, camera_id: str, timeout_ms: int) -> No
                 agibot_gdk=agibot_gdk,
                 camera_id=camera_id,
                 timeout_ms=timeout_ms,
+                warmup_seconds=warmup_seconds,
             )
     except Exception as error:
         result = unavailable_result("import_or_initialize_gdk", error, camera_id=camera_id)
@@ -166,26 +178,41 @@ def collect_camera_frame(
     agibot_gdk: Any,
     camera_id: str,
     timeout_ms: int,
+    warmup_seconds: float = DEFAULT_CAMERA_WARMUP_SECONDS,
 ) -> dict[str, object]:
     camera = None
     try:
         gdk_camera_type = resolve_gdk_camera_type(agibot_gdk, camera_id)
+        gdk_camera_type_name = read_camera_type_name(gdk_camera_type)
         camera = agibot_gdk.Camera()
+        if warmup_seconds > 0:
+            # 真机 GDK 示例明确要求 Camera() 后等待初始化；否则首帧常返回失败。
+            time.sleep(warmup_seconds)
         image = camera.get_latest_image(gdk_camera_type, float(timeout_ms))
         if image is None:
             return unavailable_result(
                 "get_latest_image",
                 RuntimeError("camera.get_latest_image() returned None"),
                 camera_id=camera_id,
-                extra={"gdkCameraType": read_camera_type_name(gdk_camera_type)},
+                extra={
+                    "gdkCameraType": gdk_camera_type_name,
+                    "cameraWarmupSeconds": warmup_seconds,
+                },
             )
-        return build_camera_frame_snapshot(
+        result = build_camera_frame_snapshot(
             image,
             camera_id=camera_id,
-            gdk_camera_type=read_camera_type_name(gdk_camera_type),
+            gdk_camera_type=gdk_camera_type_name,
         )
+        result["cameraWarmupSeconds"] = warmup_seconds
+        return result
     except Exception as error:
-        return unavailable_result("get_latest_image", error, camera_id=camera_id)
+        return unavailable_result(
+            "get_latest_image",
+            error,
+            camera_id=camera_id,
+            extra={"cameraWarmupSeconds": warmup_seconds},
+        )
     finally:
         if camera is not None:
             close_camera = getattr(camera, "close_camera", None)
@@ -375,6 +402,11 @@ def image_data_to_bytes(value: Any) -> bytes:
         return bytes(value)
     if isinstance(value, memoryview):
         return value.tobytes()
+    tobytes = getattr(value, "tobytes", None)
+    if callable(tobytes):
+        raw = tobytes()
+        if isinstance(raw, bytes):
+            return raw
     try:
         return bytes(value)
     except Exception as error:
