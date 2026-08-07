@@ -80,7 +80,7 @@ def test_resolve_gdk_camera_type_maps_left_hand_alias() -> None:
 
 
 def test_subprocess_timeout_includes_camera_warmup() -> None:
-    assert build_subprocess_timeout_seconds(1500, warmup_seconds=3.0) == 6.5
+    assert build_subprocess_timeout_seconds(3000, warmup_seconds=3.0) == 12.0
 
 
 def test_gdk_camera_frame_snapshot_returns_jpeg_base64() -> None:

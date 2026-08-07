@@ -2,9 +2,14 @@ from __future__ import annotations
 
 import base64
 import importlib
+import json
+import os
+import tempfile
 import time
 from collections.abc import Callable, Mapping
+from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from .control_probe import initialize_gdk, release_gdk, utc_now_iso
 from .readonly import GDK_BACKEND, GDK_MODULE_NAME, to_jsonable
@@ -12,9 +17,9 @@ from .session import GdkSessionImportError, GdkSessionInitError, GdkSessionManag
 from .subprocess_runtime import run_gdk_subprocess
 
 ACTION_GET_CAMERA_FRAME = "get_camera_frame"
-DEFAULT_CAMERA_TIMEOUT_MS = 1500
+DEFAULT_CAMERA_TIMEOUT_MS = 3000
 DEFAULT_CAMERA_WARMUP_SECONDS = 3.0
-SUBPROCESS_TIMEOUT_MARGIN_SECONDS = 2.0
+SUBPROCESS_TIMEOUT_MARGIN_SECONDS = 6.0
 CAMERA_ENCODING_UNSUPPORTED = "CAMERA_ENCODING_UNSUPPORTED"
 
 CAMERA_TYPE_ATTRS: dict[str, tuple[str, ...]] = {
@@ -72,21 +77,30 @@ def run_gdk_camera_frame_snapshot(
     if lease is None:
         return busy_result(active_purpose=manager.active_purpose, camera_id=camera_id)
 
+    progress_path = build_camera_child_progress_path()
     with lease:
-        result = run_gdk_subprocess(
-            operation="camera_frame",
-            action=ACTION_GET_CAMERA_FRAME,
-            backend=GDK_BACKEND,
-            timeout_seconds=build_subprocess_timeout_seconds(
-                timeout_ms,
-                warmup_seconds=warmup_seconds,
-            ),
-            child_target=camera_frame_child,
-            child_args=(camera_id, timeout_ms, warmup_seconds),
-            safety_gate={"enabled": False, "confirmed": True, "reason": "read_only_camera_frame"},
-        )
-        result["gdk_parent_lock"] = lease.to_payload()
-        return result
+        try:
+            result = run_gdk_subprocess(
+                operation="camera_frame",
+                action=ACTION_GET_CAMERA_FRAME,
+                backend=GDK_BACKEND,
+                timeout_seconds=build_subprocess_timeout_seconds(
+                    timeout_ms,
+                    warmup_seconds=warmup_seconds,
+                ),
+                child_target=camera_frame_child,
+                child_args=(camera_id, timeout_ms, warmup_seconds, str(progress_path)),
+                safety_gate={
+                    "enabled": False,
+                    "confirmed": True,
+                    "reason": "read_only_camera_frame",
+                },
+            )
+            attach_camera_child_progress(result, progress_path)
+            result["gdk_parent_lock"] = lease.to_payload()
+            return result
+        finally:
+            remove_camera_child_progress(progress_path)
 
 
 def run_gdk_camera_frame_snapshot_in_process(
@@ -143,14 +157,23 @@ def camera_frame_child(
     camera_id: str,
     timeout_ms: int,
     warmup_seconds: float,
+    progress_path: str | None = None,
 ) -> None:
     agibot_gdk = None
     gdk_initialized = False
     init_result: dict[str, object] = {"called": False, "success": True, "return": None}
     result: dict[str, object]
     try:
+        write_camera_child_progress(progress_path, "child_started", camera_id=camera_id)
         agibot_gdk = importlib.import_module(GDK_MODULE_NAME)
+        write_camera_child_progress(progress_path, "agibot_gdk_imported", camera_id=camera_id)
         init_result = initialize_gdk(agibot_gdk)
+        write_camera_child_progress(
+            progress_path,
+            "gdk_initialized",
+            camera_id=camera_id,
+            gdk_init=init_result,
+        )
         if init_result.get("called") is True and init_result.get("success") is not True:
             result = unavailable_result(
                 "gdk_init",
@@ -165,14 +188,19 @@ def camera_frame_child(
                 camera_id=camera_id,
                 timeout_ms=timeout_ms,
                 warmup_seconds=warmup_seconds,
+                progress_path=progress_path,
             )
     except Exception as error:
         result = unavailable_result("import_or_initialize_gdk", error, camera_id=camera_id)
     finally:
         result.setdefault("gdk_init", init_result)
         if agibot_gdk is not None and gdk_initialized:
+            write_camera_child_progress(progress_path, "gdk_release_started", camera_id=camera_id)
             result["gdk_release"] = release_gdk(agibot_gdk)
+            write_camera_child_progress(progress_path, "gdk_release_finished", camera_id=camera_id)
         result.setdefault("gdk_release", {"called": False, "success": True, "return": None})
+        attach_camera_child_progress(result, Path(progress_path) if progress_path else None)
+        write_camera_child_progress(progress_path, "result_put_started", camera_id=camera_id)
         result_queue.put(result)
 
 
@@ -182,16 +210,42 @@ def collect_camera_frame(
     camera_id: str,
     timeout_ms: int,
     warmup_seconds: float = DEFAULT_CAMERA_WARMUP_SECONDS,
+    progress_path: str | None = None,
 ) -> dict[str, object]:
     camera = None
     try:
         gdk_camera_type = resolve_gdk_camera_type(agibot_gdk, camera_id)
         gdk_camera_type_name = read_camera_type_name(gdk_camera_type)
+        write_camera_child_progress(
+            progress_path,
+            "camera_type_resolved",
+            camera_id=camera_id,
+            gdk_camera_type=gdk_camera_type_name,
+        )
         camera = agibot_gdk.Camera()
+        write_camera_child_progress(progress_path, "camera_created", camera_id=camera_id)
         if warmup_seconds > 0:
             # 真机 GDK 示例明确要求 Camera() 后等待初始化；否则首帧常返回失败。
+            write_camera_child_progress(
+                progress_path,
+                "camera_warmup_started",
+                camera_id=camera_id,
+                warmup_seconds=warmup_seconds,
+            )
             time.sleep(warmup_seconds)
+            write_camera_child_progress(
+                progress_path,
+                "camera_warmup_finished",
+                camera_id=camera_id,
+            )
+        write_camera_child_progress(
+            progress_path,
+            "get_latest_image_started",
+            camera_id=camera_id,
+            timeout_ms=timeout_ms,
+        )
         image = camera.get_latest_image(gdk_camera_type, float(timeout_ms))
+        write_camera_child_progress(progress_path, "get_latest_image_returned", camera_id=camera_id)
         if image is None:
             return unavailable_result(
                 "get_latest_image",
@@ -208,6 +262,7 @@ def collect_camera_frame(
             gdk_camera_type=gdk_camera_type_name,
         )
         result["cameraWarmupSeconds"] = warmup_seconds
+        write_camera_child_progress(progress_path, "frame_encoded", camera_id=camera_id)
         return result
     except Exception as error:
         return unavailable_result(
@@ -220,7 +275,17 @@ def collect_camera_frame(
         if camera is not None:
             close_camera = getattr(camera, "close_camera", None)
             if callable(close_camera):
+                write_camera_child_progress(
+                    progress_path,
+                    "close_camera_started",
+                    camera_id=camera_id,
+                )
                 close_camera()
+                write_camera_child_progress(
+                    progress_path,
+                    "close_camera_finished",
+                    camera_id=camera_id,
+                )
 
 
 def build_camera_frame_snapshot(
@@ -380,6 +445,59 @@ def build_subprocess_timeout_seconds(
         1.0,
         max(0.0, warmup_seconds) + timeout_ms / 1000.0 + SUBPROCESS_TIMEOUT_MARGIN_SECONDS,
     )
+
+
+def build_camera_child_progress_path() -> Path:
+    return Path(tempfile.gettempdir()) / f"gsa_camera_frame_{uuid4().hex}.json"
+
+
+def write_camera_child_progress(
+    progress_path: str | None,
+    stage: str,
+    **payload: object,
+) -> None:
+    if not progress_path:
+        return
+    progress = {
+        "stage": stage,
+        "pid": os.getpid(),
+        "updatedAt": utc_now_iso(),
+        **payload,
+    }
+    try:
+        Path(progress_path).write_text(
+            json.dumps(to_jsonable(progress), ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except Exception:
+        # 进度文件只用于现场诊断，不能影响相机只读主流程。
+        return
+
+
+def attach_camera_child_progress(
+    result: dict[str, object],
+    progress_path: Path | None,
+) -> None:
+    progress = read_camera_child_progress(progress_path)
+    if progress is not None:
+        result["cameraChildProgress"] = progress
+
+
+def read_camera_child_progress(progress_path: Path | None) -> dict[str, object] | None:
+    if progress_path is None or not progress_path.exists():
+        return None
+    try:
+        decoded = json.loads(progress_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return decoded if isinstance(decoded, dict) else None
+
+
+def remove_camera_child_progress(progress_path: Path) -> None:
+    try:
+        progress_path.unlink(missing_ok=True)
+    except Exception:
+        return
 
 
 def should_use_in_process_runtime(

@@ -128,7 +128,7 @@ def test_parse_camera_frame_request_defaults_camera_and_timeout() -> None:
     assert request.request_id == "req-camera"
     assert request.reply_topic == "robot/camera/response"
     assert request.camera_id == "hand_left_color"
-    assert request.timeout_ms == 1500
+    assert request.timeout_ms == 3000
 
 
 def test_handle_camera_frame_request_publishes_success_response() -> None:
@@ -163,7 +163,7 @@ def test_handle_camera_frame_request_publishes_success_response() -> None:
     assert payload["ok"] is True
     assert payload["executorAid"] == "aid-1"
     assert payload["data"]["cameraId"] == "hand_left_color"
-    assert payload["data"]["timeoutMs"] == 1500
+    assert payload["data"]["timeoutMs"] == 3000
 
 
 def test_handle_robot_state_request_dispatches_camera_frame_by_topic() -> None:
@@ -206,3 +206,20 @@ def test_build_camera_frame_response_maps_busy_snapshot_to_robot_busy() -> None:
     assert response["type"] == "get_camera_frame"
     assert response["error"]["code"] == "ROBOT_BUSY"
     assert response["error"]["message"] == "GDK 正在执行控制动作，相机图像读取已拒绝"
+
+
+def test_build_camera_frame_response_preserves_subprocess_timeout_error() -> None:
+    response = build_camera_frame_response(
+        request_id="req-camera-timeout",
+        executor_aid="aid-1",
+        snapshot={
+            "available": False,
+            "error_code": "GDK_OPERATION_TIMEOUT",
+            "error_msg": "GDK operation get_camera_frame exceeded timeout 6.500s",
+        },
+    )
+
+    assert response["ok"] is False
+    assert response["type"] == "get_camera_frame"
+    assert response["error"]["code"] == "GDK_OPERATION_TIMEOUT"
+    assert response["error"]["message"] == "GDK operation get_camera_frame exceeded timeout 6.500s"
