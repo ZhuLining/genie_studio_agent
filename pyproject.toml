@@ -13,6 +13,7 @@ authors = [
   { name = "GSA Taskflow Executor Team" }
 ]
 dependencies = [
+  "numpy>=1.24,<3.0",
   "paho-mqtt>=2.0,<3.0",
   "pydantic>=2.0,<3.0",
   "pydantic-settings>=2.0,<3.0",
