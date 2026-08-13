@@ -25,8 +25,11 @@ from gsa_taskflow_executor.taskflow.skill_params import (
 
 from .control_probe import (
     CONTROL_GROUP_DUAL_ARM,
+    CONTROL_GROUP_LEFT_ARM,
+    CONTROL_GROUP_RIGHT_ARM,
     DUAL_ARM_JOINTS,
     LEFT_ARM_JOINTS,
+    RIGHT_ARM_JOINTS,
     JointSnapshot,
     assert_joint_within_limit,
     assert_positions_within_limits,
@@ -229,14 +232,14 @@ def execute_abs_joint_targets(
     *,
     agibot_gdk: Any | None = None,
 ) -> dict[str, object]:
-    """执行所有 ABS_JOINT targets：先 arm（双机械臂），再 waist。"""
+    """执行所有 ABS_JOINT targets：先 arm，再 waist。"""
     targets_by_part = {
         target.body_part: read_abs_joint_action_data(target)
         for target in motion_params.targets
     }
     executed_groups: list[dict[str, object]] = []
 
-    # 双机械臂通过 move_arm_joint 同时执行
+    # 机械臂统一走 move_arm_joint，但单臂/双臂对应不同 control_group 与入参维度。
     arm_targets = {
         body_part: targets_by_part[body_part]
         for body_part in ("left_arm", "right_arm")
@@ -294,28 +297,24 @@ def execute_arm_abs_joint_targets(
     *,
     agibot_gdk: Any | None = None,
 ) -> dict[str, object]:
-    """通过 move_arm_joint 执行双机械臂运动。采集前后快照，校验控制模式。"""
+    """通过 move_arm_joint 执行机械臂运动。采集前后快照，校验控制模式。"""
     origin = collect_dual_arm_snapshot(robot)
     ensure_supported_move_control_mode(origin.motion_status, agibot_gdk=agibot_gdk)
-    target_positions = list(origin.positions)
-
-    # 合并左右臂目标位置
-    if "left_arm" in targets_by_part:
-        target_positions[: len(LEFT_ARM_JOINTS)] = [
-            float(value) for value in targets_by_part["left_arm"]
-        ]
-    if "right_arm" in targets_by_part:
-        target_positions[len(LEFT_ARM_JOINTS) :] = [
-            float(value) for value in targets_by_part["right_arm"]
-        ]
 
     limits = robot.get_joint_limits()
     if not isinstance(limits, Mapping):
         raise TypeError("robot.get_joint_limits() did not return a mapping")
-    assert_positions_within_limits(limits, target_positions)
 
-    velocities = [velocity] * len(DUAL_ARM_JOINTS)
-    move_return = robot.move_arm_joint(target_positions, velocities, CONTROL_GROUP_DUAL_ARM)
+    target_positions, velocities, control_group, joint_order, interface_mode = (
+        build_arm_move_command(
+            targets_by_part=targets_by_part,
+            origin_positions=origin.positions,
+            velocity=velocity,
+        )
+    )
+    assert_arm_target_positions_within_limits(limits, joint_order, target_positions)
+
+    move_return = robot.move_arm_joint(target_positions, velocities, control_group)
     if not is_zero_error(move_return):
         raise RuntimeError(f"move_arm_joint returned {move_return!r}")
 
@@ -324,8 +323,10 @@ def execute_arm_abs_joint_targets(
         "body_part": "arms",
         "requested_body_parts": list(targets_by_part.keys()),
         "method": "move_arm_joint",
-        "control_group": CONTROL_GROUP_DUAL_ARM,
-        "joint_order": list(DUAL_ARM_JOINTS),
+        "control_group": control_group,
+        "control_group_semantics": "0=left_arm_7d, 1=right_arm_7d, 2=dual_arm_14d",
+        "interface_mode": interface_mode,
+        "joint_order": list(joint_order),
         "positions_len": len(target_positions),
         "velocities_len": len(velocities),
         "velocities": velocities,
@@ -338,6 +339,78 @@ def execute_arm_abs_joint_targets(
         "move_return": to_jsonable(move_return),
         "raw": snapshot_raw(origin),
     }
+
+
+def build_arm_move_command(
+    *,
+    targets_by_part: Mapping[str, Sequence[float]],
+    origin_positions: Sequence[float],
+    velocity: float,
+) -> tuple[list[float], list[float], int, Sequence[str], str]:
+    """构造 move_arm_joint 入参。
+
+    真机验证结论：
+    - 单左臂：7 维 positions/velocities + control_group=0
+    - 单右臂：7 维 positions/velocities + control_group=1
+    - 双臂同步：14 维 positions/velocities + control_group=2
+
+    只有同时包含左右臂目标时才合并 origin 快照；单臂目标直接走 7 维接口，避免
+    把未请求的一侧也纳入控制命令。
+    """
+    has_left = "left_arm" in targets_by_part
+    has_right = "right_arm" in targets_by_part
+
+    if has_left and not has_right:
+        target_positions = [float(value) for value in targets_by_part["left_arm"]]
+        return (
+            target_positions,
+            [velocity] * len(LEFT_ARM_JOINTS),
+            CONTROL_GROUP_LEFT_ARM,
+            LEFT_ARM_JOINTS,
+            "single_left_arm_7d",
+        )
+
+    if has_right and not has_left:
+        target_positions = [float(value) for value in targets_by_part["right_arm"]]
+        return (
+            target_positions,
+            [velocity] * len(RIGHT_ARM_JOINTS),
+            CONTROL_GROUP_RIGHT_ARM,
+            RIGHT_ARM_JOINTS,
+            "single_right_arm_7d",
+        )
+
+    target_positions = list(origin_positions)
+    if has_left:
+        target_positions[: len(LEFT_ARM_JOINTS)] = [
+            float(value) for value in targets_by_part["left_arm"]
+        ]
+    if has_right:
+        target_positions[len(LEFT_ARM_JOINTS) :] = [
+            float(value) for value in targets_by_part["right_arm"]
+        ]
+    return (
+        target_positions,
+        [velocity] * len(DUAL_ARM_JOINTS),
+        CONTROL_GROUP_DUAL_ARM,
+        DUAL_ARM_JOINTS,
+        "dual_arm_14d",
+    )
+
+
+def assert_arm_target_positions_within_limits(
+    limits: Mapping[str, object],
+    joint_order: Sequence[str],
+    target_positions: Sequence[float],
+) -> None:
+    """按本次 move_arm_joint 的实际 joint_order 做限位校验。"""
+    if len(joint_order) == len(DUAL_ARM_JOINTS):
+        assert_positions_within_limits(limits, target_positions)
+        return
+    if len(target_positions) != len(joint_order):
+        raise RuntimeError(f"expected {len(joint_order)} positions, got {len(target_positions)}")
+    for joint_name, position in zip(joint_order, target_positions, strict=True):
+        assert_joint_within_limit(limits, joint_name, float(position))
 
 
 def execute_waist_abs_joint_target(
