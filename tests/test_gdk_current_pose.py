@@ -3,10 +3,6 @@ from __future__ import annotations
 from typing import Any
 
 from gsa_taskflow_executor.gdk.current_pose import run_gdk_current_pose_snapshot
-from gsa_taskflow_executor.gdk.recovery import (
-    current_gdk_recovery_requirement,
-    mark_gdk_recovery_required,
-)
 from gsa_taskflow_executor.gdk.session import GdkSessionManager
 
 LEFT_ARM = [
@@ -37,8 +33,6 @@ WAIST = [
 
 
 class FakeMotionStatus:
-    mode = 1
-    control_mode = 1
     error_code = 0
     error_msg = ""
 
@@ -97,31 +91,11 @@ def test_current_pose_snapshot_matches_desktop_contract() -> None:
     assert result["groups"]["right_arm"]["positions"] == [0.08, 0.09, 0.1, 0.11, 0.12, 0.13, 0.14]
     assert result["groups"]["waist"]["positions"] == [0.15, 0.16, 0.17, 0.18, 0.19]
     assert result["groups"]["waist"]["joints"][0]["limit"] == {"min": -3.14, "max": 3.14}
-    assert result["motionStatus"] == {
-        "mode": 1,
-        "controlMode": 1,
-        "errorCode": 0,
-        "errorMsg": "",
-    }
+    assert result["motionStatus"] == {"errorCode": 0, "errorMsg": ""}
     assert result["wholeBodyStatus"] == {"left_arm_error": 0, "right_arm_error": 0}
     assert FakeGdk.init_called == 1
     assert result["gdk_session"]["policy"] == "process_managed_session"
     assert result["gdk_session"]["purpose"] == "current_pose"
-
-
-def test_current_pose_snapshot_confirms_gdk_recovery() -> None:
-    FakeGdk.reset()
-    mark_gdk_recovery_required(
-        operation="taskflow_abs_joint",
-        reason="worker_timeout",
-        source_result={"error_code": "GDK_OPERATION_TIMEOUT"},
-    )
-
-    result = run_gdk_current_pose_snapshot(import_module=lambda _name: FakeGdk)
-
-    assert result["available"] is True
-    assert result["gdk_recovery"]["confirmed"] is True
-    assert current_gdk_recovery_requirement() is None
 
 
 def test_current_pose_snapshot_reports_import_failure() -> None:

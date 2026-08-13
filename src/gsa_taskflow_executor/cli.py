@@ -1,16 +1,3 @@
-"""gsa-taskflow-executor CLI 入口。
-
---listen 模式下的数据流::
-
-    MQTT Broker → MqttGateway(paho 网络循环)
-      ├─ taskflow 消息 → taskflow_queue(单 worker FIFO) → process_taskflow_message()
-      │    解析 YAML → 校验技能白名单 → TaskflowScheduler.run() → 上报状态
-      ├─ cancel 消息 → handle_taskflow_cancel_message() (绕过队列，直接中断)
-      └─ robot_state 消息 → robot_state_queue(独立 worker) → 位姿/相机帧/标定/采集
-
-taskflow 和 robot_state 分队列避免只读查询被长动作阻塞；cancel 单独 topic 绕过 FIFO。
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -20,7 +7,6 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .gdk.camera_calibration import run_gdk_camera_calibration_snapshot
 from .gdk.camera_capture import CameraCaptureService
 from .gdk.camera_frame import run_gdk_camera_frame_snapshot
 from .gdk.control_probe import ALLOWED_ACTIONS, run_gdk_control_probe
@@ -28,35 +14,20 @@ from .gdk.current_pose import run_gdk_current_pose_snapshot
 from .gdk.motion_runtime import TASKFLOW_ABS_JOINT_CONFIRMATION
 from .gdk.readonly import run_gdk_readonly_probe
 from .gdk.session import GdkSessionManager
-from .gdk.worker_runtime import (
-    cancel_default_gdk_worker_command,
-    diagnostics_default_gdk_worker,
-    shutdown_default_gdk_worker,
-)
+from .gdk.worker_runtime import shutdown_default_gdk_worker
 from .mqtt.gateway import MqttGateway, MqttGatewayError, TaskflowMessage
 from .mqtt.message_queue import MqttMessageQueueError, MqttMessageWorkerQueue
 from .mqtt.robot_state import (
-    CAMERA_CALIBRATION_REQUEST_TYPE,
     CAMERA_CAPTURE_START_REQUEST_TYPE,
     CAMERA_CAPTURE_STOP_REQUEST_TYPE,
     CAMERA_FRAME_REQUEST_TYPE,
     handle_robot_state_request,
 )
-from .mqtt.status_reporter import StatusSequence, TaskflowStatusReporter
+from .mqtt.status_reporter import TaskflowStatusReporter
 from .runtime.config import ConfigError, ExecutorSettings, build_env_source
-from .runtime.diagnostics import (
-    build_health_check_payload,
-    build_runtime_diagnostics_payload,
-    health_check_exit_code,
-)
 from .runtime.event_log import JsonlEventWriter, RuntimeEvent, configure_stdout_logging
-from .runtime.payload_sanitizer import summarize_variables
 from .skills.registry import SkillRegistry, SkillRegistryError
 from .skills.runtime import SkillRuntime
-from .taskflow.control import (
-    TaskflowExecutionController,
-    parse_taskflow_cancel_request,
-)
 from .taskflow.parser import (
     MOTION_SPEED_MAX,
     MOTION_SPEED_MIN,
@@ -65,11 +36,12 @@ from .taskflow.parser import (
 )
 from .taskflow.scheduler import SkillRuntimeNodeRunner, TaskflowScheduleError, TaskflowScheduler
 
+TASKFLOW_MESSAGE_QUEUE_MAXSIZE = 16
+ROBOT_STATE_MESSAGE_QUEUE_MAXSIZE = 8
 RobotStatePublisher = Callable[[str, Mapping[str, Any]], None]
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """构建 CLI 参数解析器。"""
     parser = argparse.ArgumentParser(
         prog="gsa-taskflow-executor",
         description="GDK taskflow executor for self-developed GSA workflows.",
@@ -100,16 +72,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print resolved skill registry and exit.",
     )
     parser.add_argument(
-        "--health-check",
-        "--diagnostics",
-        dest="health_check",
-        action="store_true",
-        help=(
-            "Run read-only executor diagnostics, including MQTT status roundtrip, "
-            "and exit with non-zero status on hard failures."
-        ),
-    )
-    parser.add_argument(
         "--gdk-readonly-probe",
         action="store_true",
         help="Run a one-shot read-only agibot_gdk probe and exit without robot control.",
@@ -131,16 +93,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """主入口。支持两类模式：
-
-    1. 一次性诊断模式（--print-config / --print-skills / --gdk-*-probe / --write-sample-log）
-    2. --listen 长连接模式：连接 MQTT broker，处理 taskflow/取消/robot_state 消息
-    """
     parser = build_parser()
     args = parser.parse_args(argv)
     logger = configure_stdout_logging()
 
-    # 加载配置和技能白名单（所有模式共用）
     try:
         runtime_env = build_env_source(env_file=args.env_file)
         settings = ExecutorSettings.from_env(env=runtime_env)
@@ -151,8 +107,6 @@ def main(argv: list[str] | None = None) -> int:
         skill_registry = SkillRegistry.from_settings(settings)
     except SkillRegistryError as error:
         parser.error(str(error))
-
-    # ---- 一次性诊断模式 ----
 
     if args.print_config:
         print(
@@ -167,19 +121,6 @@ def main(argv: list[str] | None = None) -> int:
     if args.print_skills:
         print(json.dumps(skill_registry.summary(), ensure_ascii=False, indent=2))
         return 0
-
-    if args.health_check:
-        gdk_session = GdkSessionManager()
-        payload = build_health_check_payload(
-            settings=settings,
-            runtime_env=runtime_env,
-            skill_registry_summary=skill_registry.summary(),
-            version=__version__,
-            gdk_session_diagnostics=gdk_session.diagnostics(),
-            gdk_worker_diagnostics=diagnostics_default_gdk_worker(),
-        )
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
-        return health_check_exit_code(payload)
 
     if args.gdk_readonly_probe:
         writer = JsonlEventWriter.from_settings(settings)
@@ -222,10 +163,7 @@ def main(argv: list[str] | None = None) -> int:
         logger.info("sample runtime event written to %s", path)
         return 0
 
-    # ---- --listen 长连接模式 ----
-
     if args.listen:
-        # 共享基础设施（listen 生命周期内复用）
         writer = JsonlEventWriter.from_settings(settings)
         gdk_session = GdkSessionManager()
         camera_capture_service = CameraCaptureService(
@@ -239,44 +177,15 @@ def main(argv: list[str] | None = None) -> int:
             environ=runtime_env,
             gdk_session_manager=gdk_session,
         )
-        # 单调递增序列号，保证桌面端即使 MQTT 乱序也能正确排序状态
-        status_sequence = StatusSequence()
-        # 执行控制器：跟踪当前活跃 taskflow，处理取消请求
-        execution_controller = TaskflowExecutionController(
-            cancel_gdk_command=cancel_default_gdk_worker_command,
-        )
         gateway: MqttGateway
-        taskflow_queue: MqttMessageWorkerQueue
-        robot_state_queue: MqttMessageWorkerQueue
-
-        def build_listen_diagnostics() -> dict[str, object]:
-            """listen 运行态只读快照；不触发 GDK 初始化或控制。"""
-            return build_runtime_diagnostics_payload(
-                settings=settings,
-                queue_snapshots=[
-                    taskflow_queue.snapshot(),
-                    robot_state_queue.snapshot(),
-                ],
-                execution_diagnostics=execution_controller.diagnostics(),
-                gdk_session_diagnostics=gdk_session.diagnostics(),
-                gdk_worker_diagnostics=diagnostics_default_gdk_worker(),
-            )
-
-        # ==== taskflow worker 线程回调 ====
 
         def process_taskflow_message(message: TaskflowMessage) -> None:
-            """解析 → 校验 → 调度 → 执行一个 taskflow YAML 消息。
-
-            运行在 taskflow worker 线程内（非 paho 回调），长 GDK 操作不阻塞 MQTT 网络循环。
-            """
+            # 这里是真正执行 Taskflow 的 worker 线程路径；不要在 paho on_message 中直接调用。
             logger.info("taskflow YAML payload:\n%s", message.payload)
             reporter = TaskflowStatusReporter(
                 settings=settings,
                 publish_status=gateway.publish_status,
-                status_sequence=status_sequence,
             )
-
-            # 1. 解析 YAML
             try:
                 taskflow = parse_taskflow_yaml(message.payload)
             except TaskflowParseError as error:
@@ -292,7 +201,6 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 return
 
-            # 2. 校验技能白名单
             try:
                 skill_registry.validate_taskflow(taskflow)
             except SkillRegistryError as error:
@@ -330,20 +238,8 @@ def main(argv: list[str] | None = None) -> int:
                     payload=summary,
                 )
             )
-
-            # 3-6. 执行（finally 保证 finish_execution 一定调用，防止控制器状态残留）
+            reporter.publish_execution_started(taskflow)
             try:
-                execution_controller.start_execution(taskflow.app_execution_id)
-                writer.write(
-                    RuntimeEvent(
-                        event_type="executor_runtime_diagnostics",
-                        message="taskflow execution started diagnostics snapshot",
-                        app_execution_id=taskflow.app_execution_id,
-                        topic=message.topic,
-                        payload={"diagnostics": build_listen_diagnostics()},
-                    )
-                )
-                reporter.publish_execution_started(taskflow)
                 schedule = TaskflowScheduler(
                     taskflow,
                     node_runner=SkillRuntimeNodeRunner(
@@ -352,10 +248,6 @@ def main(argv: list[str] | None = None) -> int:
                         runtime=skill_runtime,
                     ),
                     node_event_handler=reporter.publish_node_event,
-                    # 每个调度步长协作式检查取消；检测到取消时调度器提前返回 CANCELED
-                    cancel_checker=lambda: execution_controller.current_cancellation(
-                        taskflow.app_execution_id,
-                    ),
                 ).run()
             except TaskflowScheduleError as error:
                 logger.error("taskflow schedule failed: %s", error)
@@ -373,10 +265,7 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 )
                 return
-            finally:
-                execution_controller.finish_execution(taskflow.app_execution_id)
 
-            # 发布最终状态和变量快照
             reporter.publish_execution_finished(schedule)
             schedule_summary = schedule.summary()
             logger.info(
@@ -397,31 +286,17 @@ def main(argv: list[str] | None = None) -> int:
             )
             writer.write(
                 RuntimeEvent(
-                    event_type="executor_runtime_diagnostics",
-                    message="taskflow execution finished diagnostics snapshot",
+                    event_type="variable_store_snapshot",
+                    message="variable store snapshot after skill runtime schedule",
                     app_execution_id=taskflow.app_execution_id,
                     topic=message.topic,
-                    payload={"diagnostics": build_listen_diagnostics()},
+                    payload={"variables": schedule.variables},
                 )
             )
-            writer.write(
-                RuntimeEvent(
-                    event_type="variable_store_summary",
-                    message="variable store summary after skill runtime schedule",
-                    app_execution_id=taskflow.app_execution_id,
-                    topic=message.topic,
-                    payload={"variables": summarize_variables(schedule.variables)},
-                )
-            )
-
-        # ==== robot_state worker 线程回调 ====
 
         def process_robot_state_message(message: TaskflowMessage) -> None:
-            """处理机器人只读状态查询（位姿、相机帧、标定、采集启停）。
-
-            使用独立 worker 队列，不被 taskflow 长动作阻塞。GDK 访问仍由 session 锁互斥；
-            相机请求在控制动作持锁时直接返回 ROBOT_BUSY，不等待。
-            """
+            # 机器人只读请求放入单独 worker，避免被 Taskflow FIFO 队列排在长动作之后。
+            # 具体 GDK 访问再由 session 锁互斥；相机请求忙时直接拒绝，不等待控制动作。
             handle_robot_state_request(
                 message,
                 settings=settings,
@@ -440,50 +315,38 @@ def main(argv: list[str] | None = None) -> int:
                     timeout_ms=timeout_ms,
                     session_manager=gdk_session,
                 ),
-                collect_camera_calibration=(
-                    lambda camera_ids, timeout_ms, include_extrinsics:
-                    run_gdk_camera_calibration_snapshot(
-                        camera_ids=camera_ids,
-                        timeout_ms=timeout_ms,
-                        include_extrinsics=include_extrinsics,
-                        session_manager=gdk_session,
-                    )
-                ),
                 start_camera_capture=camera_capture_service.start,
                 stop_camera_capture=camera_capture_service.stop,
             )
 
-        # taskflow 执行队列（单 worker FIFO）
+        # taskflow_queue 保持 MVP 单任务串行；
+        # 长时间 move_* 调用只阻塞该 worker，不阻塞 MQTT 网络循环。
         taskflow_queue = MqttMessageWorkerQueue(
             name="taskflow-execution-worker",
             handler=process_taskflow_message,
-            maxsize=settings.taskflow_queue_maxsize,
-            queue_full_policy=settings.taskflow_queue_full_policy,
+            maxsize=TASKFLOW_MESSAGE_QUEUE_MAXSIZE,
             logger=logger,
             event_writer=writer,
         )
-        # robot_state 查询队列（独立 worker，与控制执行互斥由 session 锁保证）
+        # robot_state_queue 让 get_current_pose/get_camera_frame 请求脱离 paho 回调；
+        # 相机取帧同样是 GDK 只读能力，但必须和控制动作互斥。
         robot_state_queue = MqttMessageWorkerQueue(
             name="robot-state-worker",
             handler=process_robot_state_message,
-            maxsize=settings.robot_state_queue_maxsize,
-            queue_full_policy=settings.robot_state_queue_full_policy,
+            maxsize=ROBOT_STATE_MESSAGE_QUEUE_MAXSIZE,
             logger=logger,
             event_writer=writer,
         )
 
-        # ==== paho 回调（运行在 paho 网络线程，必须快速返回） ====
-
         def handle_taskflow_message(message: TaskflowMessage) -> None:
-            """paho 回调：taskflow 消息入队。队列满时立即发布 ERROR 状态。"""
             try:
+                # paho 回调只做入队和轻量日志，队列满时快速发布 ERROR。
                 queued_count = taskflow_queue.enqueue(message)
             except MqttMessageQueueError as error:
                 logger.error("taskflow message queue rejected message: %s", error)
                 TaskflowStatusReporter(
                     settings=settings,
                     publish_status=gateway.publish_status,
-                    status_sequence=status_sequence,
                 ).publish_execution_error(message=str(error))
                 writer.write(
                     RuntimeEvent(
@@ -491,7 +354,6 @@ def main(argv: list[str] | None = None) -> int:
                         level="error",
                         message=str(error),
                         topic=message.topic,
-                        payload={"diagnostics": build_listen_diagnostics()},
                     )
                 )
                 return
@@ -502,68 +364,9 @@ def main(argv: list[str] | None = None) -> int:
                 queued_count,
             )
 
-        def handle_taskflow_cancel_message(message: TaskflowMessage) -> None:
-            """paho 回调：取消请求不经过 taskflow FIFO，直接中断当前执行。
-
-            执行控制器在每个调度步长协作式检查取消，同时向 GDK worker 子进程发 kill 信号。
-            """
-            reporter = TaskflowStatusReporter(
-                settings=settings,
-                publish_status=gateway.publish_status,
-                status_sequence=status_sequence,
-            )
-            try:
-                request = parse_taskflow_cancel_request(
-                    topic=message.topic,
-                    payload=message.payload,
-                    topic_filter=settings.taskflow_cancel_topic_filter,
-                )
-            except ValueError as error:
-                logger.error("invalid taskflow cancel request: %s", error)
-                reporter.publish_execution_error(message=str(error))
-                writer.write(
-                    RuntimeEvent(
-                        event_type="taskflow_cancel_parse_error",
-                        level="error",
-                        message=str(error),
-                        topic=message.topic,
-                    )
-                )
-                return
-
-            result = execution_controller.request_cancel(request)
-            raw_cancel_app_execution_id = result.get("app_execution_id")
-            cancel_app_execution_id = (
-                raw_cancel_app_execution_id
-                if isinstance(raw_cancel_app_execution_id, str)
-                else None
-            )
-            writer.write(
-                RuntimeEvent(
-                    event_type="taskflow_cancel_requested",
-                    level="info" if result.get("accepted") is True else "warning",
-                    message="taskflow cancel request handled",
-                    app_execution_id=cancel_app_execution_id,
-                    topic=message.topic,
-                    payload={"cancel": result},
-                )
-            )
-            # 取消成功且进入 CANCELING 状态时通知客户端
-            if result.get("accepted") is True and result.get("state") == "CANCELING":
-                if cancel_app_execution_id is not None:
-                    gdk_cancel_result = result.get("gdk_cancel_result")
-                    reporter.publish_execution_canceling(
-                        app_execution_id=cancel_app_execution_id,
-                        request_id=request.request_id,
-                        reason=request.reason,
-                        gdk_cancel_result=gdk_cancel_result
-                        if isinstance(gdk_cancel_result, Mapping)
-                        else None,
-                    )
-
         def handle_robot_state_message(message: TaskflowMessage) -> None:
-            """paho 回调：robot_state 消息入队。队列满时发布 QUEUE_UNAVAILABLE 错误。"""
             try:
+                # 当前位姿请求同样只入队，避免只读 GDK 查询卡住后续 MQTT 消息分发。
                 queued_count = robot_state_queue.enqueue(message)
             except MqttMessageQueueError as error:
                 logger.error("robot state queue rejected message: %s", error)
@@ -584,7 +387,6 @@ def main(argv: list[str] | None = None) -> int:
                         level="error",
                         message=str(error),
                         topic=message.topic,
-                        payload={"diagnostics": build_listen_diagnostics()},
                     )
                 )
                 return
@@ -595,34 +397,22 @@ def main(argv: list[str] | None = None) -> int:
                 queued_count,
             )
 
-        # 启动 MQTT gateway 和 worker 线程
         gateway = MqttGateway(
             settings=settings,
             on_taskflow_message=handle_taskflow_message,
             on_robot_state_message=handle_robot_state_message,
-            on_taskflow_cancel_message=handle_taskflow_cancel_message,
             logger=logger,
             event_writer=writer,
         )
         taskflow_queue.start()
         robot_state_queue.start()
-        writer.write(
-            RuntimeEvent(
-                event_type="executor_runtime_diagnostics",
-                message="executor runtime diagnostics snapshot",
-                payload={"diagnostics": build_listen_diagnostics()},
-            )
-        )
-
         try:
-            gateway.run_forever()  # 阻塞直到 MQTT 断连或致命错误
+            gateway.run_forever()
         except MqttGatewayError as error:
             parser.error(str(error))
         finally:
-            # 优雅关闭：先停队列，再释放 GDK 资源（顺序重要）
             taskflow_queue.stop()
             robot_state_queue.stop()
-
             camera_capture_shutdown = camera_capture_service.shutdown()
             writer.write(
                 RuntimeEvent(
@@ -674,19 +464,12 @@ def publish_robot_state_queue_error(
     publish_response: RobotStatePublisher,
     error_message: str,
 ) -> None:
-    """队列满时，按原消息 topic 匹配对应的 response topic 回传 QUEUE_UNAVAILABLE 错误。
-
-    确保桌面端显示明确错误而非超时。
-    """
-    # 默认位姿响应；根据入站 topic 覆写
+    # 队列不可用时仍尽量按对应 response 协议回包，客户端可以展示明确错误。
     response_topic = settings.robot_current_pose_response_topic
     response_type = "get_current_pose"
     if message.topic == settings.robot_camera_frame_request_topic:
         response_topic = settings.robot_camera_frame_response_topic
         response_type = CAMERA_FRAME_REQUEST_TYPE
-    elif message.topic == settings.robot_camera_calibration_request_topic:
-        response_topic = settings.robot_camera_calibration_response_topic
-        response_type = CAMERA_CALIBRATION_REQUEST_TYPE
     elif message.topic == settings.robot_camera_capture_start_request_topic:
         response_topic = settings.robot_camera_capture_start_response_topic
         response_type = CAMERA_CAPTURE_START_REQUEST_TYPE
@@ -710,7 +493,6 @@ def publish_robot_state_queue_error(
 
 
 def read_request_id(payload: str) -> str:
-    """从 JSON payload 提取 requestId 或 request_id 字段。失败返回空字符串。"""
     try:
         decoded = json.loads(payload)
     except json.JSONDecodeError:
@@ -729,7 +511,6 @@ def build_print_config_payload(
     settings: ExecutorSettings,
     runtime_env: Mapping[str, str],
 ) -> dict[str, Any]:
-    """构建 --print-config 诊断输出，附加安全门状态和运动速度限制。"""
     payload: dict[str, Any] = settings.to_dict()
     payload["taskflow_gdk_safety_gate"] = {
         "enabled": runtime_env.get("ENABLE_GDK_CONTROL") == "1",

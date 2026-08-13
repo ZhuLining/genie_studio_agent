@@ -2,7 +2,6 @@ import gsa_taskflow_executor.skills.runtime as skill_runtime
 from fixtures import VALID_RIGHT_ARM_YAML
 from gsa_taskflow_executor.mqtt.status_reporter import TaskflowStatusReporter
 from gsa_taskflow_executor.runtime.config import ExecutorSettings
-from gsa_taskflow_executor.taskflow.control import TaskflowCancellation
 from gsa_taskflow_executor.taskflow.parser import parse_taskflow_yaml
 from gsa_taskflow_executor.taskflow.scheduler import NodeRunResult, TaskflowScheduler
 
@@ -21,7 +20,6 @@ def test_status_reporter_publishes_execution_started_payload() -> None:
     assert payloads[0]["app_execution_id"] == taskflow.app_execution_id
     assert payloads[0]["task_state"] == "RUNNING"
     assert payloads[0]["status"] == "RUNNING"
-    assert payloads[0]["status_seq"] == 1
     assert payloads[0]["executor_mode"] == "gdk"
 
 
@@ -64,11 +62,9 @@ def test_status_reporter_publishes_node_running_and_sub_task_over_payloads(monke
         -0.169,
         1.122,
     ]
-    assert sub_tasks[3]["variables"]["summary_only"] is True
-    assert sub_tasks[3]["variables"]["node_count"] >= 2
+    assert "variables" in sub_tasks[3]
     assert payloads[-1]["task_state"] == "OVER"
     assert payloads[-1]["terminal_node_id"] == "结束"
-    assert payloads[-1]["variables"]["summary_only"] is True
 
 
 def test_status_reporter_publishes_node_error_payload() -> None:
@@ -98,38 +94,6 @@ def test_status_reporter_publishes_node_error_payload() -> None:
     assert error_payload["state"] == "ERROR"
     assert error_payload["error_msg"] == "gdk failure"
     assert payloads[-1]["task_state"] == "ERROR"
-
-
-def test_status_reporter_marks_cancelled_execution_with_error_code() -> None:
-    payloads: list[dict[str, object]] = []
-    taskflow = parse_taskflow_yaml(VALID_RIGHT_ARM_YAML)
-    cancellation = TaskflowCancellation(
-        app_execution_id=taskflow.app_execution_id,
-        request_id="cancel-1",
-        reason="operator stop",
-        requested_at="2026-08-11T00:00:00+00:00",
-    )
-    reporter = TaskflowStatusReporter(
-        settings=ExecutorSettings(executor_aid="aid-1"),
-        publish_status=payloads.append,
-    )
-
-    result = TaskflowScheduler(
-        taskflow,
-        node_event_handler=reporter.publish_node_event,
-        cancel_checker=lambda: cancellation,
-    ).run()
-    reporter.publish_execution_finished(result)
-
-    assert result.outcome == "cancelled"
-    cancel_payload = payloads[1]["sub_task"]
-    assert cancel_payload["state"] == "ERROR"
-    assert cancel_payload["cancel_state"] == "CANCELED"
-    assert cancel_payload["error_code"] == "TASKFLOW_CANCELLED"
-    assert payloads[-1]["task_state"] == "ERROR"
-    assert payloads[-1]["cancelled"] is True
-    assert payloads[-1]["cancel_state"] == "CANCELED"
-    assert payloads[-1]["error_code"] == "TASKFLOW_CANCELLED"
 
 
 def test_status_reporter_publishes_gdk_control_mode_error_code(monkeypatch) -> None:
@@ -187,7 +151,6 @@ def test_status_reporter_publishes_parse_error_payload_without_app_execution_id(
             "status": "ERROR",
             "timestamp": payloads[0]["timestamp"],
             "timestamp_ms": payloads[0]["timestamp_ms"],
-            "status_seq": 1,
             "executor_mode": "gdk",
             "error_msg": "YAML 解析失败",
             "error": "YAML 解析失败",

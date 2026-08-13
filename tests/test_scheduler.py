@@ -9,10 +9,8 @@ from fixtures import (
     VALID_LOOP_TIMER_YAML,
     VALID_RIGHT_ARM_YAML,
 )
-from gsa_taskflow_executor.taskflow.control import TaskflowCancellation
-from gsa_taskflow_executor.taskflow.parser import TaskflowParseError, parse_taskflow_yaml
+from gsa_taskflow_executor.taskflow.parser import parse_taskflow_yaml
 from gsa_taskflow_executor.taskflow.scheduler import (
-    OUTPUT_CONTRACT_VIOLATION_CODE,
     NodeExecutionEvent,
     NodeRunResult,
     TaskflowScheduleError,
@@ -37,38 +35,6 @@ def test_gdk_scheduler_walks_linear_taskflow(monkeypatch) -> None:
     assert result.summary()["step_count"] == 3
     assert result.variables["位姿调整-位控"]["detail"]["status"] == "success"
     assert result.variables["位姿调整-位控"]["detail"]["mode"] == "gdk"
-
-
-def test_scheduler_treats_explicit_end_node_as_terminal_without_node_runner() -> None:
-    taskflow = parse_taskflow_yaml(
-        """
-start_node: 开始
-app_execution_id: explicit-end-run
-nodes:
-  - id: 开始
-    type: assign
-    assignments: {}
-  - id: 正常结束
-    type: end
-transitions:
-  - from: 开始
-    outcome: success
-    to: 正常结束
-"""
-    )
-    called_nodes: list[str] = []
-
-    def runner(node, _variable_store):
-        called_nodes.append(node.node_id)
-        return NodeRunResult(outcome="success")
-
-    result = TaskflowScheduler(taskflow, node_runner=runner).run()
-
-    assert result.outcome == "success"
-    assert result.terminal_node_id == "正常结束"
-    assert result.visited_node_ids == ("开始", "正常结束")
-    assert called_nodes == ["开始"]
-    assert result.variables["正常结束"]["detail"]["terminal"] is True
 
 
 def test_gdk_scheduler_walks_mixed_code_and_motion_taskflow(monkeypatch) -> None:
@@ -116,51 +82,6 @@ def test_scheduler_stops_on_node_error() -> None:
     assert result.visited_node_ids == ("开始", "位姿调整-位控")
 
 
-def test_scheduler_stops_on_cooperative_cancellation() -> None:
-    taskflow = parse_taskflow_yaml(VALID_RIGHT_ARM_YAML)
-    cancellation = TaskflowCancellation(
-        app_execution_id=taskflow.app_execution_id,
-        request_id="cancel-1",
-        reason="operator stop",
-        requested_at="2026-08-11T00:00:00+00:00",
-    )
-
-    result = TaskflowScheduler(
-        taskflow,
-        cancel_checker=lambda: cancellation,
-    ).run()
-
-    assert result.outcome == "cancelled"
-    assert result.terminal_node_id == "开始"
-    assert result.visited_node_ids == ("开始",)
-    assert result.variables["开始"]["detail"]["status"] == "cancelled"
-    assert result.variables["开始"]["detail"]["error_code"] == "TASKFLOW_CANCELLED"
-
-
-def test_scheduler_maps_gdk_cancel_error_to_cancelled(monkeypatch) -> None:
-    monkeypatch.setattr(
-        skill_runtime,
-        "run_gdk_motion_plan_abs_joint",
-        lambda _motion_params, **_kwargs: {
-            "available": False,
-            "executed": False,
-            "error_code": "GDK_OPERATION_CANCELLED",
-            "error_msg": "cancelled",
-        },
-    )
-    taskflow = parse_taskflow_yaml(VALID_RIGHT_ARM_YAML)
-
-    result = TaskflowScheduler(taskflow).run()
-
-    assert result.outcome == "cancelled"
-    assert result.terminal_node_id == "位姿调整-位控"
-    assert result.visited_node_ids == ("开始", "位姿调整-位控")
-    assert result.variables["位姿调整-位控"]["detail"]["status"] == "cancelled"
-    assert result.variables["位姿调整-位控"]["detail"]["error_code"] == (
-        "GDK_OPERATION_CANCELLED"
-    )
-
-
 def test_scheduler_resolves_variable_references_before_worker(monkeypatch) -> None:
     monkeypatch.setattr(
         skill_runtime,
@@ -203,57 +124,6 @@ def test_scheduler_resolves_variable_references_before_worker(monkeypatch) -> No
         -0.169,
         1.122,
     ]
-
-
-def test_scheduler_rejects_missing_output_contract_path(monkeypatch) -> None:
-    monkeypatch.setattr(
-        skill_runtime,
-        "run_gdk_motion_plan_abs_joint",
-        lambda _motion_params, **_kwargs: {"available": True, "executed": True},
-    )
-    yaml_payload = VALID_RIGHT_ARM_YAML.replace(
-        "$.variables.位姿调整-位控.detail",
-        "$.variables.位姿调整-位控.detail.outputs.missing_value",
-    )
-    taskflow = parse_taskflow_yaml(yaml_payload)
-
-    result = TaskflowScheduler(taskflow).run()
-
-    assert result.outcome == "error"
-    assert result.terminal_node_id == "位姿调整-位控"
-    assert result.visited_node_ids == ("开始", "位姿调整-位控")
-    worker_detail = result.variables["位姿调整-位控"]["detail"]
-    assert worker_detail["status"] == "error"
-    assert worker_detail["error_code"] == OUTPUT_CONTRACT_VIOLATION_CODE
-    assert worker_detail["error_stage"] == "output_contract"
-    assert worker_detail["missing_paths"] == [
-        "$.variables.位姿调整-位控.detail.outputs.missing_value"
-    ]
-    assert "结束" not in result.variables
-
-
-def test_scheduler_skips_output_contract_validation_for_failed_node() -> None:
-    yaml_payload = VALID_RIGHT_ARM_YAML.replace(
-        "$.variables.位姿调整-位控.detail",
-        "$.variables.位姿调整-位控.detail.outputs.missing_value",
-    )
-    taskflow = parse_taskflow_yaml(yaml_payload)
-
-    def runner(node, _variable_store):
-        if node.node_id == "位姿调整-位控":
-            return NodeRunResult(
-                outcome="error",
-                detail={"error": "worker failed", "error_code": "WORKER_FAILED"},
-            )
-        return NodeRunResult(outcome="success")
-
-    result = TaskflowScheduler(taskflow, node_runner=runner).run()
-
-    assert result.outcome == "error"
-    worker_detail = result.variables["位姿调整-位控"]["detail"]
-    assert worker_detail["error_code"] == "WORKER_FAILED"
-    assert worker_detail["error"] == "worker failed"
-    assert "missing_paths" not in worker_detail
 
 
 def test_scheduler_code_nodes_pass_declared_outputs_downstream() -> None:
@@ -316,35 +186,6 @@ def test_scheduler_timer_and_count_loop_execute_in_order() -> None:
         "success",
         "success",
     ]
-
-
-def test_scheduler_timer_can_be_interrupted_by_cancellation() -> None:
-    taskflow = parse_taskflow_yaml(VALID_LOOP_TIMER_YAML)
-    cancellation = TaskflowCancellation(
-        app_execution_id=taskflow.app_execution_id,
-        request_id="cancel-timer",
-        reason="operator stop",
-        requested_at="2026-08-11T00:00:00+00:00",
-    )
-    cancel_enabled = False
-
-    def checker() -> TaskflowCancellation | None:
-        return cancellation if cancel_enabled else None
-
-    def sleep(_duration: float) -> None:
-        nonlocal cancel_enabled
-        cancel_enabled = True
-
-    result = TaskflowScheduler(
-        taskflow,
-        sleep=sleep,
-        cancel_checker=checker,
-    ).run()
-
-    assert result.outcome == "cancelled"
-    assert result.terminal_node_id == "定时器"
-    assert result.visited_node_ids == ("开始", "定时器")
-    assert result.variables["定时器"]["detail"]["timer_interrupted"] is True
 
 
 def test_scheduler_loop_failure_marks_parent_loop_error() -> None:
@@ -488,9 +329,10 @@ def test_scheduler_rejects_cycle(monkeypatch) -> None:
     outcome: success
     to: 开始""",
     )
+    taskflow = parse_taskflow_yaml(yaml_payload)
 
-    with pytest.raises(TaskflowParseError, match="start_node 不能有入边"):
-        parse_taskflow_yaml(yaml_payload)
+    with pytest.raises(TaskflowScheduleError, match="循环执行节点"):
+        TaskflowScheduler(taskflow).run()
 
 
 def test_scheduler_rejects_duplicate_success_transition() -> None:
@@ -502,8 +344,10 @@ def test_scheduler_rejects_duplicate_success_transition() -> None:
     to: 结束
 """
     )
-    with pytest.raises(TaskflowParseError, match="transition 不唯一"):
-        parse_taskflow_yaml(yaml_payload)
+    taskflow = parse_taskflow_yaml(yaml_payload)
+
+    with pytest.raises(TaskflowScheduleError, match="transition 不唯一"):
+        TaskflowScheduler(taskflow).run()
 
 
 def test_scheduler_rejects_max_steps() -> None:

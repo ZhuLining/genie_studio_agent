@@ -1,11 +1,3 @@
-"""MQTT gateway — paho-mqtt 封装，负责连接、订阅、发布和消息路由。
-
-_on_message 在 paho 网络线程回调，按 topic 路由:
-- robot_state topics → handle_robot_state_message → robot_state_queue
-- cancel topic → handle_taskflow_cancel_message (直接处理，不经过队列)
-- 其他 → handle_message → taskflow_queue
-"""
-
 from __future__ import annotations
 
 import json
@@ -23,15 +15,9 @@ from gsa_taskflow_executor.runtime.event_log import (
     RuntimeEvent,
     configure_stdout_logging,
 )
-from gsa_taskflow_executor.runtime.payload_sanitizer import (
-    PayloadSanitizerConfig,
-    payload_preview,
-    sanitize_event_payload,
-)
 
 TaskflowMessageHandler = Callable[["TaskflowMessage"], None]
 RobotStateMessageHandler = Callable[["TaskflowMessage"], None]
-TaskflowCancelMessageHandler = Callable[["TaskflowMessage"], None]
 
 
 class MqttGatewayError(RuntimeError):
@@ -57,7 +43,6 @@ class MqttGateway:
         settings: ExecutorSettings,
         on_taskflow_message: TaskflowMessageHandler,
         on_robot_state_message: RobotStateMessageHandler | None = None,
-        on_taskflow_cancel_message: TaskflowCancelMessageHandler | None = None,
         logger: logging.Logger | None = None,
         event_writer: JsonlEventWriter | None = None,
         mqtt_module: Any | None = None,
@@ -65,12 +50,10 @@ class MqttGateway:
         self.settings = settings
         self.on_taskflow_message = on_taskflow_message
         self.on_robot_state_message = on_robot_state_message
-        self.on_taskflow_cancel_message = on_taskflow_cancel_message
         self.logger = logger or configure_stdout_logging()
         self.event_writer = event_writer
         self._mqtt_module = mqtt_module
         self._client: Any | None = None
-        self._payload_sanitizer_config = PayloadSanitizerConfig.from_settings(settings)
 
     def connect(self) -> None:
         broker = urlparse(self.settings.mqtt_broker_url)
@@ -117,10 +100,8 @@ class MqttGateway:
     def run_forever(self) -> None:
         self.connect()
         self.logger.info(
-            "listening taskflow YAML on %s, cancel topic %s, status topic %s, "
-            "robot state request topics %s",
+            "listening taskflow YAML on %s, status topic %s, robot state request topics %s",
             self.settings.taskflow_input_topic,
-            self.settings.taskflow_cancel_topic_filter,
             self.settings.status_topic,
             ", ".join(self.settings.robot_state_request_topics),
         )
@@ -137,36 +118,15 @@ class MqttGateway:
             raise MqttGatewayError("MQTT 尚未连接，不能发布状态")
 
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-        terminal = is_terminal_status_payload(payload)
-        qos = (
-            self.settings.mqtt_terminal_status_qos
-            if terminal
-            else self.settings.mqtt_status_qos
-        )
-        retain = self.settings.mqtt_terminal_status_retain if terminal else False
-        result = publish_mqtt(
-            self._client,
-            self.settings.status_topic,
-            body,
-            qos=qos,
-            retain=retain,
-        )
-        if terminal and qos > 0:
-            wait_for_publish(result, timeout=self.settings.mqtt_terminal_status_wait_timeout)
+        # This method is usually called from paho's on_message callback. Waiting for publish
+        # there can deadlock the network loop, so status publishing is intentionally async.
+        self._client.publish(self.settings.status_topic, body, qos=0)
         self.record_event(
             RuntimeEvent(
                 event_type="mqtt_status_published",
                 message="status payload published",
                 topic=self.settings.status_topic,
-                payload={
-                    "payload": sanitize_event_payload(
-                        dict(payload),
-                        config=self._payload_sanitizer_config,
-                    ),
-                    "qos": qos,
-                    "retain": retain,
-                    "terminal": terminal,
-                },
+                payload={"payload": payload},
             )
         )
 
@@ -188,12 +148,7 @@ class MqttGateway:
                 event_type=event_type,
                 message=message,
                 topic=topic,
-                payload={
-                    "payload": sanitize_event_payload(
-                        dict(payload),
-                        config=self._payload_sanitizer_config,
-                    )
-                },
+                payload={"payload": payload},
             )
         )
 
@@ -215,10 +170,7 @@ class MqttGateway:
                 topic=received.topic,
                 payload={
                     "payload_bytes": received.payload_bytes,
-                    "payload_preview": payload_preview(
-                        received.payload,
-                        config=self._payload_sanitizer_config,
-                    ),
+                    "payload_preview": received.payload[:2000],
                 },
             )
         )
@@ -230,50 +182,6 @@ class MqttGateway:
             self.record_event(
                 RuntimeEvent(
                     event_type="taskflow_yaml_handler_error",
-                    level="error",
-                    message=str(error),
-                    topic=received.topic,
-                )
-            )
-            raise
-
-    def handle_taskflow_cancel_message(self, topic: str, payload: bytes) -> None:
-        received = TaskflowMessage(
-            topic=topic,
-            payload=payload.decode("utf-8"),
-            received_at=datetime.now(timezone.utc).isoformat(),
-        )
-        self.logger.info(
-            "received taskflow cancel topic=%s bytes=%s",
-            received.topic,
-            received.payload_bytes,
-        )
-        self.record_event(
-            RuntimeEvent(
-                event_type="taskflow_cancel_received",
-                message="taskflow cancel request received",
-                topic=received.topic,
-                payload={
-                    "payload_bytes": received.payload_bytes,
-                    "payload_preview": payload_preview(
-                        received.payload,
-                        config=self._payload_sanitizer_config,
-                    ),
-                },
-            )
-        )
-
-        if self.on_taskflow_cancel_message is None:
-            self.logger.warning("taskflow cancel handler is not configured")
-            return
-
-        try:
-            self.on_taskflow_cancel_message(received)
-        except Exception as error:
-            self.logger.exception("taskflow cancel handler failed")
-            self.record_event(
-                RuntimeEvent(
-                    event_type="taskflow_cancel_handler_error",
                     level="error",
                     message=str(error),
                     topic=received.topic,
@@ -299,10 +207,7 @@ class MqttGateway:
                 topic=received.topic,
                 payload={
                     "payload_bytes": received.payload_bytes,
-                    "payload_preview": payload_preview(
-                        received.payload,
-                        config=self._payload_sanitizer_config,
-                    ),
+                    "payload_preview": received.payload[:1000],
                 },
             )
         )
@@ -340,12 +245,6 @@ class MqttGateway:
         if is_success_reason_code(reason_code):
             self.logger.info("MQTT connected, subscribing %s", self.settings.taskflow_input_topic)
             client.subscribe(self.settings.taskflow_input_topic, qos=0)
-            if self.on_taskflow_cancel_message is not None:
-                self.logger.info(
-                    "MQTT connected, subscribing %s",
-                    self.settings.taskflow_cancel_topic_filter,
-                )
-                client.subscribe(self.settings.taskflow_cancel_topic_filter, qos=0)
             if self.on_robot_state_message is not None:
                 for topic in self.settings.robot_state_request_topics:
                     self.logger.info("MQTT connected, subscribing %s", topic)
@@ -411,15 +310,6 @@ class MqttGateway:
         ):
             self.handle_robot_state_message(message.topic, message.payload)
             return
-        if (
-            self.on_taskflow_cancel_message is not None
-            and mqtt_topic_matches_filter(
-                self.settings.taskflow_cancel_topic_filter,
-                message.topic,
-            )
-        ):
-            self.handle_taskflow_cancel_message(message.topic, message.payload)
-            return
         self.handle_message(message.topic, message.payload)
 
 
@@ -463,47 +353,6 @@ def is_success_reason_code(reason_code: Any) -> bool:
         return str(reason_code).lower() in {"0", "success"}
 
 
-def mqtt_topic_matches_filter(topic_filter: str, topic: str) -> bool:
-    filter_parts = topic_filter.split("/")
-    topic_parts = topic.split("/")
-    for index, filter_part in enumerate(filter_parts):
-        if filter_part == "#":
-            return index == len(filter_parts) - 1
-        if index >= len(topic_parts):
-            return False
-        if filter_part == "+":
-            continue
-        if filter_part != topic_parts[index]:
-            return False
-    return len(topic_parts) == len(filter_parts)
-
-
-def is_terminal_status_payload(payload: Mapping[str, Any]) -> bool:
-    task_state = str(payload.get("task_state") or payload.get("status") or "").upper()
-    if task_state in {"OVER", "CANCELED"}:
-        return True
-    if "terminal_node_id" in payload:
-        return True
-    return task_state == "ERROR" and "sub_task" not in payload
-
-
-def publish_mqtt(
-    client: Any,
-    topic: str,
-    payload: str,
-    *,
-    qos: int,
-    retain: bool,
-) -> Any:
-    try:
-        return client.publish(topic, payload, qos=qos, retain=retain)
-    except TypeError:
-        return client.publish(topic, payload, qos=qos)
-
-
-def wait_for_publish(result: Any, *, timeout: float | None = None) -> None:
+def wait_for_publish(result: Any) -> None:
     if hasattr(result, "wait_for_publish"):
-        try:
-            result.wait_for_publish(timeout=timeout)
-        except TypeError:
-            result.wait_for_publish()
+        result.wait_for_publish()

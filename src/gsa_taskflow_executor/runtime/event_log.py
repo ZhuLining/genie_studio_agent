@@ -1,9 +1,3 @@
-"""运行时事件日志。
-
-RuntimeEvent + JsonlEventWriter 将结构化事件写入 {log_dir}/executions/{YYYYMMDD}.jsonl。
-configure_stdout_logging() 配置应用级 logger。
-"""
-
 from __future__ import annotations
 
 import json
@@ -15,7 +9,6 @@ from threading import Lock
 from typing import Any
 
 from .config import ExecutorSettings
-from .payload_sanitizer import PayloadSanitizerConfig, sanitize_event_payload
 
 LOGGER_NAME = "gsa_taskflow_executor"
 
@@ -40,41 +33,20 @@ class RuntimeEvent:
 class JsonlEventWriter:
     """Append-only JSONL event writer used for execution replay and debugging."""
 
-    def __init__(
-        self,
-        execution_log_dir: Path,
-        sanitizer_config: PayloadSanitizerConfig | None = None,
-    ) -> None:
+    def __init__(self, execution_log_dir: Path) -> None:
         self.execution_log_dir = execution_log_dir
         self._lock = Lock()
-        self.sanitizer_config = sanitizer_config or PayloadSanitizerConfig()
         self.execution_log_dir.mkdir(parents=True, exist_ok=True)
 
     @classmethod
     def from_settings(cls, settings: ExecutorSettings) -> JsonlEventWriter:
-        return cls(
-            settings.execution_log_dir,
-            sanitizer_config=PayloadSanitizerConfig.from_settings(settings),
-        )
+        return cls(settings.execution_log_dir)
 
     def write(self, event: RuntimeEvent) -> Path:
         target = self.execution_log_dir / f"{datetime.now(timezone.utc):%Y%m%d}.jsonl"
-        safe_event = RuntimeEvent(
-            event_type=event.event_type,
-            level=event.level,
-            message=event.message,
-            app_execution_id=event.app_execution_id,
-            node_id=event.node_id,
-            topic=event.topic,
-            payload=sanitize_event_payload(
-                event.payload,
-                config=self.sanitizer_config,
-            ),
-            timestamp=event.timestamp,
-        )
         with self._lock:
             with target.open("a", encoding="utf-8") as file:
-                file.write(safe_event.to_json_line())
+                file.write(event.to_json_line())
                 file.write("\n")
         return target
 

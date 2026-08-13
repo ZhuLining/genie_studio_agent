@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import os
 import time
-from threading import Thread
 from typing import Any
 
-from gsa_taskflow_executor.gdk.recovery import GDK_OPERATION_CANCELLED_CODE
 from gsa_taskflow_executor.gdk.subprocess_runtime import (
     GDK_OPERATION_TIMEOUT_CODE,
     GDK_SUBPROCESS_POLICY,
@@ -195,46 +193,3 @@ def test_gdk_worker_timeout_kills_process_and_next_command_restarts() -> None:
     assert timed_out["subprocess"]["terminated"] is True
     assert restarted["executed"] is True
     assert restarted["subprocess"]["worker_started"] is True
-
-
-def test_gdk_worker_cancel_active_command_returns_cancelled_result() -> None:
-    manager = GdkWorkerProcessManager(
-        worker_target=selective_worker,
-        terminate_grace_seconds=0.1,
-    )
-    results: list[dict[str, object]] = []
-
-    def run_sleep_command() -> None:
-        results.append(
-            manager.run_command(
-                kind="sleep",
-                payload={},
-                action="unit_sleep",
-                backend="test",
-                timeout_seconds=5.0,
-                safety_gate={"enabled": True, "confirmed": True},
-            )
-        )
-
-    thread = Thread(target=run_sleep_command)
-    thread.start()
-    try:
-        deadline = time.monotonic() + 2.0
-        while time.monotonic() < deadline:
-            with manager._lock:
-                active_command_id = manager._active_command_id
-            if active_command_id is not None:
-                break
-            time.sleep(0.01)
-
-        cancel_result = manager.cancel_active_command("operator stop")
-        thread.join(timeout=2.0)
-    finally:
-        manager.shutdown(timeout_seconds=0.5)
-
-    assert cancel_result["called"] is True
-    assert thread.is_alive() is False
-    assert results[0]["executed"] is False
-    assert results[0]["error_code"] == GDK_OPERATION_CANCELLED_CODE
-    assert results[0]["subprocess"]["terminated"] is True
-    assert results[0]["subprocess"]["timed_out"] is False

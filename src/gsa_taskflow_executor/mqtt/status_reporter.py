@@ -1,42 +1,16 @@
-"""MQTT 状态上报。
-
-TaskflowStatusReporter 发布 RUNNING/OVER/ERROR 状态载荷到 MQTT status topic。
-StatusSequence 生成单调递增序列号，保证桌面端即使 MQTT 乱序也能正确排序。
-"""
-
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from copy import deepcopy
 from datetime import datetime, timezone
-from threading import Lock
 from typing import Any, Literal
 
 from gsa_taskflow_executor.runtime.config import ExecutorSettings
-from gsa_taskflow_executor.runtime.payload_sanitizer import (
-    PayloadSanitizerConfig,
-    sanitize_status_payload,
-)
-from gsa_taskflow_executor.taskflow.control import TASKFLOW_CANCELLED_CODE
-from gsa_taskflow_executor.taskflow.models import TaskflowDefinition
+from gsa_taskflow_executor.taskflow.parser import TaskflowDefinition
 from gsa_taskflow_executor.taskflow.scheduler import NodeExecutionEvent, ScheduleResult
 
 TaskflowRuntimeState = Literal["RUNNING", "OVER", "ERROR"]
 StatusPublisher = Callable[[Mapping[str, Any]], None]
-
-
-class StatusSequence:
-    """线程安全状态序号；MQTT 重连或乱序时客户端可据此丢弃旧状态。"""
-
-    def __init__(self) -> None:
-        self._lock = Lock()
-        self._next_value = 1
-
-    def next(self) -> int:
-        with self._lock:
-            value = self._next_value
-            self._next_value += 1
-            return value
 
 
 class TaskflowStatusReporter:
@@ -46,12 +20,9 @@ class TaskflowStatusReporter:
         self,
         settings: ExecutorSettings,
         publish_status: StatusPublisher,
-        status_sequence: StatusSequence | None = None,
     ) -> None:
         self.settings = settings
         self.publish_status = publish_status
-        self.status_sequence = status_sequence or StatusSequence()
-        self.payload_sanitizer_config = PayloadSanitizerConfig.from_settings(settings)
 
     def publish_execution_started(self, definition: TaskflowDefinition) -> None:
         self.publish_status(
@@ -80,53 +51,17 @@ class TaskflowStatusReporter:
 
     def publish_execution_finished(self, result: ScheduleResult) -> None:
         task_state: TaskflowRuntimeState = "OVER" if result.outcome == "success" else "ERROR"
-        extra: dict[str, Any] = {
-            "terminal_node_id": result.terminal_node_id,
-            "visited_node_ids": list(result.visited_node_ids),
-            "step_count": len(result.events),
-            "variables": deepcopy(result.variables),
-        }
-        if result.outcome == "cancelled":
-            extra.update(
-                {
-                    "cancelled": True,
-                    "cancel_state": "CANCELED",
-                    "error_code": TASKFLOW_CANCELLED_CODE,
-                    "error_msg": "Taskflow cancelled",
-                    "error": "Taskflow cancelled",
-                }
-            )
         self.publish_status(
             self.build_base_payload(
                 app_execution_id=result.app_execution_id,
                 task_state=task_state,
                 timestamp=utc_now_iso(),
-                extra=extra,
-            )
-        )
-
-    def publish_execution_canceling(
-        self,
-        *,
-        app_execution_id: str,
-        request_id: str,
-        reason: str,
-        gdk_cancel_result: Mapping[str, object] | None = None,
-    ) -> None:
-        extra: dict[str, Any] = {
-            "cancelled": True,
-            "cancel_state": "CANCELING",
-            "cancel_request_id": request_id,
-            "cancel_reason": reason,
-        }
-        if gdk_cancel_result is not None:
-            extra["gdk_cancel_result"] = deepcopy(dict(gdk_cancel_result))
-        self.publish_status(
-            self.build_base_payload(
-                app_execution_id=app_execution_id,
-                task_state="RUNNING",
-                timestamp=utc_now_iso(),
-                extra=extra,
+                extra={
+                    "terminal_node_id": result.terminal_node_id,
+                    "visited_node_ids": list(result.visited_node_ids),
+                    "step_count": len(result.events),
+                    "variables": deepcopy(result.variables),
+                },
             )
         )
 
@@ -159,14 +94,13 @@ class TaskflowStatusReporter:
             "status": task_state,
             "timestamp": timestamp,
             "timestamp_ms": iso_to_timestamp_ms(timestamp),
-            "status_seq": self.status_sequence.next(),
             "executor_mode": self.settings.executor_mode,
         }
         if app_execution_id:
             payload["app_execution_id"] = app_execution_id
         if extra:
             payload.update(deepcopy(dict(extra)))
-        return sanitize_status_payload(payload, config=self.payload_sanitizer_config)
+        return payload
 
 
 def build_sub_task_payload(
@@ -199,16 +133,6 @@ def build_sub_task_payload(
         error_stage = read_string_field(event.result.detail, "error_stage")
         if error_stage:
             payload["error_stage"] = error_stage
-        if event.result.detail is not None:
-            for key in (
-                "cancelled",
-                "cancel_state",
-                "cancel_reason",
-                "cancel_request_id",
-                "cancel_requested_at",
-            ):
-                if key in event.result.detail:
-                    payload[key] = deepcopy(event.result.detail[key])
     if event.variables is not None:
         payload["variables"] = deepcopy(event.variables)
     return payload

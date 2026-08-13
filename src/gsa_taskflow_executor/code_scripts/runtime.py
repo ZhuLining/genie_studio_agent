@@ -1,11 +1,3 @@
-"""代码脚本执行运行时。
-
-只接受白名单（CODE_SCRIPT_DEFINITIONS）内的脚本模块，不接受任意 Python 文件路径。
-GDK 脚本走 worker 子进程；非 GDK 脚本在 executor 进程内执行。
-
-run_code_script() 是主入口: 查白名单 → load_script_runner → 安全门/恢复门 → 执行。
-"""
-
 from __future__ import annotations
 
 import importlib
@@ -14,10 +6,6 @@ from collections.abc import Callable, Mapping
 from typing import Any, cast
 
 from gsa_taskflow_executor.gdk.motion_runtime import TASKFLOW_ABS_JOINT_CONFIRMATION
-from gsa_taskflow_executor.gdk.recovery import (
-    maybe_mark_gdk_recovery_required,
-    recovery_refused_payload,
-)
 from gsa_taskflow_executor.gdk.session import (
     PROCESS_MANAGED_RELEASE_RESULT,
     GdkSessionImportError,
@@ -28,7 +16,7 @@ from gsa_taskflow_executor.gdk.subprocess_runtime import (
     GDK_PARENT_LOCK_POLICY,
     run_code_script_in_subprocess,
 )
-from gsa_taskflow_executor.taskflow.models import ScriptParams
+from gsa_taskflow_executor.taskflow.parser import ScriptParams
 
 from .api import CodeScriptContext, refused_result, unavailable_result
 from .registry import CODE_SCRIPT_DEFINITIONS, CodeScriptDefinition
@@ -47,8 +35,9 @@ def run_code_script(
     inputs: Mapping[str, object] | None = None,
     import_module: ModuleImporter = importlib.import_module,
 ) -> dict[str, object]:
-    """执行代码脚本（主入口）。查白名单 → 加载脚本模块 → 按需走 GDK worker。"""
-    del runner, python_executable  # 兼容旧签名，不接受任意路径
+    # 兼容旧调用签名，但代码节点只按 registry 白名单 import 固定模块。
+    # 不接受任意 Python 文件路径，也不启动子进程。
+    del runner, python_executable
 
     definition = CODE_SCRIPT_DEFINITIONS.get(script_params.script_id)
     if definition is None:
@@ -62,7 +51,7 @@ def run_code_script(
 
     script_runner = load_script_runner(definition, import_module=import_module)
     if isinstance(script_runner, dict):
-        return script_runner  # 加载失败，返回错误 dict
+        return script_runner
 
     runtime_inputs = inputs or {}
     if definition.requires_gdk_control:
@@ -75,7 +64,6 @@ def run_code_script(
             inputs=runtime_inputs,
         )
 
-    # 非 GDK 脚本：在 executor 进程内直接执行
     context = CodeScriptContext(
         script_id=definition.script_id,
         description=definition.description,
@@ -98,7 +86,6 @@ def load_script_runner(
     *,
     import_module: ModuleImporter,
 ) -> CodeScriptRunner | dict[str, object]:
-    """从白名单模块加载 run() 函数。失败返回错误 dict。"""
     try:
         module = import_module(definition.module)
     except Exception as error:
@@ -131,15 +118,10 @@ def run_gdk_code_script(
     session_manager: GdkSessionManager | None,
     inputs: Mapping[str, object],
 ) -> dict[str, object]:
-    """执行 GDK 代码脚本：安全门 → 恢复门 → worker 子进程（或测试模式进程内）。"""
     env = environ if environ is not None else os.environ
     gate_result = check_code_script_safety_gate(definition.script_id, env)
     if gate_result is not None:
         return gate_result
-
-    recovery_result = build_recovery_refused_result(definition.script_id, env)
-    if recovery_result is not None:
-        return recovery_result
 
     if should_use_in_process_runtime(session_manager):
         return run_gdk_code_script_in_process(
@@ -151,7 +133,8 @@ def run_gdk_code_script(
             inputs=inputs,
         )
 
-    # 父进程只做白名单和互斥，GDK 调用在常驻 worker 子进程完成
+    # 代码节点中的 GDK 脚本仍属于真机控制；父进程只做白名单和互斥。
+    # 具体 GDK 调用交给常驻 worker，正常路径复用初始化，timeout 时杀 worker 兜底。
     manager = session_manager or GdkSessionManager()
     try:
         lease = manager.acquire(
@@ -185,10 +168,6 @@ def run_gdk_code_script(
             environ=env,
             safety_gate=confirmed_code_script_safety_gate(),
         )
-        maybe_mark_gdk_recovery_required(
-            result,
-            operation=f"code_script:{definition.script_id}",
-        )
         result["gdk_parent_lock"] = {
             **lease.to_payload(),
             "policy": GDK_PARENT_LOCK_POLICY,
@@ -205,7 +184,6 @@ def run_gdk_code_script_in_process(
     session_manager: GdkSessionManager | None,
     inputs: Mapping[str, object],
 ) -> dict[str, object]:
-    """进程内执行 GDK 代码脚本（测试模式）。"""
     manager = session_manager or GdkSessionManager()
     try:
         lease = manager.acquire(
@@ -292,15 +270,10 @@ def run_gdk_code_script_in_process(
         result.setdefault("gdk_init", lease.init_result)
         result.setdefault("gdk_release", dict(PROCESS_MANAGED_RELEASE_RESULT))
         result.setdefault("gdk_session", lease.to_payload())
-        maybe_mark_gdk_recovery_required(
-            result,
-            operation=f"code_script:{definition.script_id}",
-        )
         return result
 
 
 def should_use_in_process_runtime(session_manager: GdkSessionManager | None) -> bool:
-    """测试 fixture 注入 mock session_manager 时走进程内路径。"""
     return (
         session_manager is not None
         and session_manager.import_module is not importlib.import_module
@@ -324,7 +297,6 @@ def run_script_safely(
     safety_gate_enabled: bool,
     safety_confirmed: bool,
 ) -> dict[str, object]:
-    """安全执行脚本：捕获异常并返回标准化结果。校验返回值必须为 dict。"""
     try:
         result = script_runner(inputs, context)
     except Exception as error:
@@ -354,7 +326,6 @@ def check_code_script_safety_gate(
     script_id: str,
     env: Mapping[str, str],
 ) -> dict[str, object] | None:
-    """检查 GDK 脚本安全门。"""
     if env.get("ENABLE_GDK_CONTROL") != "1":
         return refused_result(
             script_id=script_id,
@@ -372,24 +343,3 @@ def check_code_script_safety_gate(
             safety_confirmed=False,
         )
     return None
-
-
-def build_recovery_refused_result(
-    script_id: str,
-    env: Mapping[str, str],
-) -> dict[str, object] | None:
-    """检查恢复门。"""
-    recovery_result = recovery_refused_payload(env)
-    if recovery_result is None:
-        return None
-    return refused_result(
-        script_id=script_id,
-        stage="gdk_recovery_required",
-        message=str(recovery_result["error_msg"]),
-        extra={
-            **recovery_result,
-            "safety_gate": confirmed_code_script_safety_gate(),
-        },
-        safety_gate_enabled=True,
-        safety_confirmed=True,
-    )

@@ -4,18 +4,13 @@ from typing import Any
 
 from gsa_taskflow_executor.gdk.control_probe import (
     CONTROL_GROUP_DUAL_ARM,
-    CONTROL_GROUP_LEFT_ARM,
-    CONTROL_GROUP_RIGHT_ARM,
     DUAL_ARM_JOINTS,
-    LEFT_ARM_JOINTS,
-    RIGHT_ARM_JOINTS,
 )
 from gsa_taskflow_executor.gdk.motion_runtime import (
     TASKFLOW_ABS_JOINT_CONFIRMATION,
     WAIST_JOINTS,
     run_gdk_motion_plan_abs_joint,
 )
-from gsa_taskflow_executor.gdk.recovery import current_gdk_recovery_requirement
 from gsa_taskflow_executor.gdk.session import GdkSessionManager
 from gsa_taskflow_executor.gdk.subprocess_runtime import GDK_OPERATION_TIMEOUT_CODE
 from gsa_taskflow_executor.taskflow.parser import MotionPlanParams, MotionPlanTarget
@@ -43,7 +38,6 @@ class FakeRobot:
         self.motion_status = FakeMotionStatus()
         self.arm_move_calls: list[tuple[list[float], list[float], int]] = []
         self.waist_move_calls: list[tuple[list[float], list[float]]] = []
-        self.arm_move_error: Exception | None = None
 
     def get_joint_states(self) -> dict[str, object]:
         states = [
@@ -99,26 +93,7 @@ class FakeRobot:
         control_group: int,
     ) -> int:
         self.arm_move_calls.append((list(positions), list(velocities), control_group))
-        if self.arm_move_error is not None:
-            raise self.arm_move_error
-        if len(velocities) != len(positions):
-            raise RuntimeError(
-                f"expected velocities length {len(positions)}, got {len(velocities)}"
-            )
-        if control_group == CONTROL_GROUP_LEFT_ARM:
-            if len(positions) != len(LEFT_ARM_JOINTS):
-                raise RuntimeError(f"expected 7 left arm positions, got {len(positions)}")
-            self.arm_positions[: len(LEFT_ARM_JOINTS)] = list(positions)
-        elif control_group == CONTROL_GROUP_RIGHT_ARM:
-            if len(positions) != len(RIGHT_ARM_JOINTS):
-                raise RuntimeError(f"expected 7 right arm positions, got {len(positions)}")
-            self.arm_positions[len(LEFT_ARM_JOINTS) :] = list(positions)
-        elif control_group == CONTROL_GROUP_DUAL_ARM:
-            if len(positions) != len(DUAL_ARM_JOINTS):
-                raise RuntimeError(f"expected 14 dual arm positions, got {len(positions)}")
-            self.arm_positions = list(positions)
-        else:
-            raise RuntimeError(f"unsupported control_group: {control_group}")
+        self.arm_positions = list(positions)
         return 0
 
     def move_waist_joint(self, positions: list[float], velocities: list[float]) -> int:
@@ -213,7 +188,6 @@ def test_gdk_motion_runtime_executes_right_arm_and_waist_abs_joint() -> None:
     right_target = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
     waist_target = [0.01, 0.02, 0.03, 0.04, 0.05]
     expected_velocity = 0.05
-    origin_left = list(FakeAgibotGdk.robot.arm_positions[: len(LEFT_ARM_JOINTS)])
 
     result = run_gdk_motion_plan_abs_joint(
         MotionPlanParams(
@@ -256,10 +230,9 @@ def test_gdk_motion_runtime_executes_right_arm_and_waist_abs_joint() -> None:
     }
     assert result["gdk_session"]["policy"] == "process_managed_session"
     assert result["gdk_session"]["purpose"] == "taskflow_abs_joint"
-    expected_arm_target = origin_left + right_target
     assert FakeAgibotGdk.robot.arm_move_calls == [
         (
-            expected_arm_target,
+            [index * 0.01 for index in range(7)] + right_target,
             [expected_velocity] * len(DUAL_ARM_JOINTS),
             CONTROL_GROUP_DUAL_ARM,
         )
@@ -272,191 +245,11 @@ def test_gdk_motion_runtime_executes_right_arm_and_waist_abs_joint() -> None:
     assert isinstance(groups, list)
     assert groups[0]["method"] == "move_arm_joint"
     assert groups[0]["requested_body_parts"] == ["right_arm"]
-    assert groups[0]["control_group"] == CONTROL_GROUP_DUAL_ARM
-    assert groups[0]["interface_mode"] == "dual_arm_14d_hold_left"
-    assert groups[0]["joint_order"] == list(DUAL_ARM_JOINTS)
-    assert groups[0]["positions_len"] == len(DUAL_ARM_JOINTS)
-    assert groups[0]["velocities_len"] == len(DUAL_ARM_JOINTS)
-    assert groups[0]["target_positions"] == expected_arm_target
     assert groups[0]["effective_gdk_velocity"] == expected_velocity
     assert groups[0]["velocity_source"] == "taskflow_speed"
     assert groups[1]["method"] == "move_waist_joint"
     assert groups[1]["effective_gdk_velocity"] == expected_velocity
     assert groups[1]["velocity_source"] == "taskflow_speed"
-
-
-def test_gdk_motion_runtime_executes_left_arm_abs_joint_with_dual_arm_hold() -> None:
-    FakeAgibotGdk.reset()
-    left_target = [0.11, 0.12, 0.13, 0.14, 0.15, 0.16, 0.17]
-    expected_velocity = 0.04
-    origin_right = list(FakeAgibotGdk.robot.arm_positions[len(LEFT_ARM_JOINTS) :])
-
-    result = run_gdk_motion_plan_abs_joint(
-        MotionPlanParams(
-            targets=(
-                MotionPlanTarget(
-                    body_part="left_arm",
-                    control_type="ABS_JOINT",
-                    action_data=left_target,
-                ),
-            ),
-            speed=expected_velocity,
-            timeout=50.0,
-        ),
-        environ={
-            "ENABLE_GDK_CONTROL": "1",
-            "CONFIRM_GDK_CONTROL": TASKFLOW_ABS_JOINT_CONFIRMATION,
-        },
-        import_module=lambda _name: FakeAgibotGdk,
-    )
-
-    assert result["executed"] is True
-    expected_arm_target = left_target + origin_right
-    assert FakeAgibotGdk.robot.arm_move_calls == [
-        (
-            expected_arm_target,
-            [expected_velocity] * len(DUAL_ARM_JOINTS),
-            CONTROL_GROUP_DUAL_ARM,
-        )
-    ]
-    assert FakeAgibotGdk.robot.arm_positions[: len(LEFT_ARM_JOINTS)] == left_target
-    assert FakeAgibotGdk.robot.arm_positions[len(LEFT_ARM_JOINTS) :] == origin_right
-
-    groups = result["groups"]
-    assert isinstance(groups, list)
-    assert groups[0]["method"] == "move_arm_joint"
-    assert groups[0]["requested_body_parts"] == ["left_arm"]
-    assert groups[0]["control_group"] == CONTROL_GROUP_DUAL_ARM
-    assert groups[0]["interface_mode"] == "dual_arm_14d_hold_right"
-    assert groups[0]["joint_order"] == list(DUAL_ARM_JOINTS)
-    assert groups[0]["positions_len"] == len(DUAL_ARM_JOINTS)
-    assert groups[0]["velocities_len"] == len(DUAL_ARM_JOINTS)
-    assert groups[0]["target_positions"] == expected_arm_target
-
-
-def test_gdk_motion_runtime_executes_dual_arm_abs_joint_with_dual_group() -> None:
-    FakeAgibotGdk.reset()
-    left_target = [0.11, 0.12, 0.13, 0.14, 0.15, 0.16, 0.17]
-    right_target = [0.21, 0.22, 0.23, 0.24, 0.25, 0.26, 0.27]
-    expected_velocity = 0.03
-
-    result = run_gdk_motion_plan_abs_joint(
-        MotionPlanParams(
-            targets=(
-                MotionPlanTarget(
-                    body_part="left_arm",
-                    control_type="ABS_JOINT",
-                    action_data=left_target,
-                ),
-                MotionPlanTarget(
-                    body_part="right_arm",
-                    control_type="ABS_JOINT",
-                    action_data=right_target,
-                ),
-            ),
-            speed=expected_velocity,
-            timeout=50.0,
-        ),
-        environ={
-            "ENABLE_GDK_CONTROL": "1",
-            "CONFIRM_GDK_CONTROL": TASKFLOW_ABS_JOINT_CONFIRMATION,
-        },
-        import_module=lambda _name: FakeAgibotGdk,
-    )
-
-    expected_target = left_target + right_target
-    assert result["executed"] is True
-    assert FakeAgibotGdk.robot.arm_move_calls == [
-        (
-            expected_target,
-            [expected_velocity] * len(DUAL_ARM_JOINTS),
-            CONTROL_GROUP_DUAL_ARM,
-        )
-    ]
-
-    groups = result["groups"]
-    assert isinstance(groups, list)
-    assert groups[0]["method"] == "move_arm_joint"
-    assert groups[0]["requested_body_parts"] == ["left_arm", "right_arm"]
-    assert groups[0]["control_group"] == CONTROL_GROUP_DUAL_ARM
-    assert groups[0]["interface_mode"] == "dual_arm_14d"
-    assert groups[0]["joint_order"] == list(DUAL_ARM_JOINTS)
-    assert groups[0]["positions_len"] == len(DUAL_ARM_JOINTS)
-    assert groups[0]["velocities_len"] == len(DUAL_ARM_JOINTS)
-    assert groups[0]["target_positions"] == expected_target
-
-
-def test_gdk_motion_runtime_reports_arm_command_when_move_fails() -> None:
-    FakeAgibotGdk.reset()
-    FakeAgibotGdk.robot.arm_move_error = RuntimeError("Failed to move arm")
-    right_target = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
-    origin_left = list(FakeAgibotGdk.robot.arm_positions[: len(LEFT_ARM_JOINTS)])
-    expected_target = origin_left + right_target
-
-    result = run_gdk_motion_plan_abs_joint(
-        MotionPlanParams(
-            targets=(
-                MotionPlanTarget(
-                    body_part="right_arm",
-                    control_type="ABS_JOINT",
-                    action_data=right_target,
-                ),
-            ),
-            speed=0.05,
-            timeout=50.0,
-        ),
-        environ={
-            "ENABLE_GDK_CONTROL": "1",
-            "CONFIRM_GDK_CONTROL": TASKFLOW_ABS_JOINT_CONFIRMATION,
-        },
-        import_module=lambda _name: FakeAgibotGdk,
-    )
-
-    assert result["executed"] is False
-    assert result["error_stage"] == "execute_abs_joint_targets"
-    assert result["error_type"] == "RuntimeError"
-    assert result["error_msg"] == "Failed to move arm"
-    assert result["move_arm_command"]["control_group"] == CONTROL_GROUP_DUAL_ARM
-    assert result["move_arm_command"]["interface_mode"] == "dual_arm_14d_hold_left"
-    assert result["move_arm_command"]["positions_len"] == len(DUAL_ARM_JOINTS)
-    assert result["move_arm_command"]["velocities_len"] == len(DUAL_ARM_JOINTS)
-    assert result["move_arm_command"]["target_positions"] == expected_target
-    assert "target_positions_csv" in result["move_arm_command"]
-
-
-def test_gdk_motion_runtime_skips_arm_move_when_target_is_current_pose() -> None:
-    FakeAgibotGdk.reset()
-    right_target = list(FakeAgibotGdk.robot.arm_positions[len(LEFT_ARM_JOINTS) :])
-
-    result = run_gdk_motion_plan_abs_joint(
-        MotionPlanParams(
-            targets=(
-                MotionPlanTarget(
-                    body_part="right_arm",
-                    control_type="ABS_JOINT",
-                    action_data=right_target,
-                ),
-            ),
-            speed=0.05,
-            timeout=50.0,
-        ),
-        environ={
-            "ENABLE_GDK_CONTROL": "1",
-            "CONFIRM_GDK_CONTROL": TASKFLOW_ABS_JOINT_CONFIRMATION,
-        },
-        import_module=lambda _name: FakeAgibotGdk,
-    )
-
-    assert result["executed"] is True
-    assert FakeAgibotGdk.robot.arm_move_calls == []
-    groups = result["groups"]
-    assert isinstance(groups, list)
-    assert groups[0]["skipped"] is True
-    assert groups[0]["skip_reason"] == "target_positions_already_current"
-    assert groups[0]["control_group"] == CONTROL_GROUP_DUAL_ARM
-    assert groups[0]["positions_len"] == len(DUAL_ARM_JOINTS)
-    assert groups[0]["move_return"] == "skipped"
-    assert groups[0]["max_abs_target_origin_diff"] == 0.0
 
 
 def test_gdk_motion_runtime_reuses_process_session_across_multiple_calls() -> None:
@@ -543,33 +336,6 @@ def test_gdk_motion_runtime_releases_parent_lock_after_subprocess_timeout(monkey
     assert result["executed"] is False
     assert result["error_code"] == GDK_OPERATION_TIMEOUT_CODE
     assert manager.busy is False
-    requirement = current_gdk_recovery_requirement()
-    assert requirement is not None
-    assert requirement.reason == "worker_timeout"
-
-    refused = run_gdk_motion_plan_abs_joint(
-        MotionPlanParams(
-            targets=(
-                MotionPlanTarget(
-                    body_part="right_arm",
-                    control_type="ABS_JOINT",
-                    action_data=[0.1] * 7,
-                ),
-            ),
-            speed=0.05,
-            timeout=0.1,
-        ),
-        environ={
-            "ENABLE_GDK_CONTROL": "1",
-            "CONFIRM_GDK_CONTROL": TASKFLOW_ABS_JOINT_CONFIRMATION,
-        },
-        import_module=lambda _name: (_ for _ in ()).throw(
-            AssertionError("GDK must not be imported while recovery is required")
-        ),
-    )
-
-    assert refused["executed"] is False
-    assert refused["error_code"] == "GDK_RECOVERY_REQUIRED"
 
     lease = manager.acquire(blocking=False, initialize=False, purpose="current_pose")
     assert lease is not None

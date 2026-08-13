@@ -1,8 +1,3 @@
-"""独立 E2E 探针 CLI（gsa-taskflow-e2e）。
-
-发布示例 taskflow YAML 到 MQTT 并等待状态回调，用于集成测试。
-"""
-
 from __future__ import annotations
 
 import argparse

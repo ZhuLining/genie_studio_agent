@@ -1,10 +1,3 @@
-"""技能注册表 — 白名单管理的技能定义。
-
-内置 4 种技能: motion_plan_skill, script_skill, control_end_effector_skill, force_control_skill。
-支持从 YAML 文件扩展（通过 ExecutorSettings.skill_registry_file）。
-validate_taskflow() 校验每个 worker 节点的 skill_name 在白名单内且参数 schema 合法。
-"""
-
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -16,11 +9,9 @@ from typing import Any, Literal, cast
 import yaml
 
 from gsa_taskflow_executor.runtime.config import ExecutorSettings
-from gsa_taskflow_executor.taskflow.models import (
+from gsa_taskflow_executor.taskflow.parser import (
     TaskflowDefinition,
     TaskflowParseError,
-)
-from gsa_taskflow_executor.taskflow.skill_params import (
     parse_end_effector_params,
     parse_force_control_params,
     parse_motion_plan_params,

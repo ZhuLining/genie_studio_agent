@@ -15,18 +15,16 @@ from gsa_taskflow_executor.gdk.end_effector_runtime import (
     GDK_END_EFFECTOR_TYPE_UNSUPPORTED,
     MULTI_JOINT_END_EFFECTOR_TYPES,
     SINGLE_JOINT_END_EFFECTOR_RANGES,
-    build_end_effector_move_command,
     build_gdk_joint_states,
-    build_positions_layout,
+    build_positions_for_opening,
     extract_actual_openness,
     read_end_state,
+    resolve_end_effector_type,
 )
 from gsa_taskflow_executor.gdk.readonly import GDK_BACKEND, to_jsonable
-from gsa_taskflow_executor.taskflow.models import (
+from gsa_taskflow_executor.taskflow.parser import (
     EndEffectorParams,
     TaskflowParseError,
-)
-from gsa_taskflow_executor.taskflow.skill_params import (
     parse_end_effector_params,
 )
 
@@ -39,22 +37,12 @@ def run(inputs: Mapping[str, object], context: CodeScriptContext) -> dict[str, o
     agibot_gdk = context.require_agibot_gdk()
     robot = context.require_robot()
     before_end_state = read_end_state(robot)
-    command_result = build_end_effector_move_command(end_effector_params, before_end_state)
-    if isinstance(command_result, dict):
-        return refused_result(
-            script_id=context.script_id,
-            stage=str(command_result.get("error_stage", "validate_end_effector_type")),
-            message=str(command_result.get("error_msg", "末端控制参数无效")),
-            extra={
-                "backend": "executor_file_gdk_script",
-                "end_effector_result": deepcopy(command_result),
-            },
-            safety_gate_enabled=True,
-            safety_confirmed=True,
-        )
-    command = command_result
-
-    if command.end_effector_type is None:
+    end_effector_type = resolve_end_effector_type(
+        end_effector_params.end_effector_type,
+        end_effector_params.target_end,
+        before_end_state,
+    )
+    if end_effector_type is None:
         return refused_result(
             script_id=context.script_id,
             stage="resolve_end_effector_type",
@@ -68,20 +56,24 @@ def run(inputs: Mapping[str, object], context: CodeScriptContext) -> dict[str, o
             },
         )
 
-    if command.positions is None:
+    positions = build_positions_for_opening(
+        end_effector_type,
+        end_effector_params.opening,
+    )
+    if positions is None:
         return refused_result(
             script_id=context.script_id,
             stage="validate_end_effector_type",
             message=(
                 "当前开合度 0~1 映射仅支持 omnipicker/dahuan/ctek90d；"
-                f"{command.end_effector_type} 需要补充多关节映射后再开放"
+                f"{end_effector_type} 需要补充多关节映射后再开放"
             ),
             safety_gate_enabled=True,
             safety_confirmed=True,
             extra={
                 "error_code": GDK_END_EFFECTOR_TYPE_UNSUPPORTED,
                 "target_end": end_effector_params.target_end,
-                "end_effector_type": command.end_effector_type,
+                "end_effector_type": end_effector_type,
                 "supported_end_effector_types": sorted(SINGLE_JOINT_END_EFFECTOR_RANGES),
                 "known_multi_joint_end_effector_types": sorted(MULTI_JOINT_END_EFFECTOR_TYPES),
                 "before_end_state": to_jsonable(before_end_state),
@@ -93,8 +85,8 @@ def run(inputs: Mapping[str, object], context: CodeScriptContext) -> dict[str, o
     joint_states = build_gdk_joint_states(
         agibot_gdk,
         group=end_effector_params.target_end,
-        target_type=command.end_effector_type,
-        positions=command.positions,
+        target_type=end_effector_type,
+        positions=positions,
     )
     move_return = robot.move_ee_pos(joint_states)
     if not is_zero_error(move_return):
@@ -105,22 +97,17 @@ def run(inputs: Mapping[str, object], context: CodeScriptContext) -> dict[str, o
     actual_openness_source = "gdk_after_end_state"
     if actual_openness is None:
         # 真机 get_end_state() 字段形态仍需继续现场归档；解析不到时保留请求值用于下游联调。
-        actual_openness = command.requested_openings
+        actual_openness = [end_effector_params.opening]
         actual_openness_source = "requested_opening_fallback"
 
     end_effector_detail = {
         "target_end": end_effector_params.target_end,
-        "end_effector_type": command.end_effector_type,
+        "end_effector_type": end_effector_type,
         "opening": end_effector_params.opening,
-        "left_opening": command.left_opening,
-        "right_opening": command.right_opening,
-        "left_end_effector_type": command.left_end_effector_type,
-        "right_end_effector_type": command.right_end_effector_type,
         "actual_openness": deepcopy(actual_openness),
         "actual_openness_source": actual_openness_source,
-        "target_positions": command.positions,
-        "positions_len": len(command.positions),
-        "positions_layout": build_positions_layout(end_effector_params.target_end),
+        "target_positions": positions,
+        "positions_len": len(positions),
         "move_return": to_jsonable(move_return),
     }
     return success_result(
@@ -129,11 +116,9 @@ def run(inputs: Mapping[str, object], context: CodeScriptContext) -> dict[str, o
         inputs=inputs,
         outputs={
             "opening": end_effector_params.opening,
-            "left_opening": command.left_opening,
-            "right_opening": command.right_opening,
             "actual_openness": deepcopy(actual_openness),
             "target_end": end_effector_params.target_end,
-            "end_effector_type": command.end_effector_type,
+            "end_effector_type": end_effector_type,
             "end_effector_result": deepcopy(end_effector_detail),
         },
         backend=GDK_BACKEND,
@@ -145,24 +130,18 @@ def run(inputs: Mapping[str, object], context: CodeScriptContext) -> dict[str, o
             "method": "move_ee_pos",
             "target_end": end_effector_params.target_end,
             "group": end_effector_params.target_end,
-            "end_effector_type": command.end_effector_type,
-            "target_type": command.end_effector_type,
+            "end_effector_type": end_effector_type,
+            "target_type": end_effector_type,
             "opening": end_effector_params.opening,
-            "left_opening": command.left_opening,
-            "right_opening": command.right_opening,
-            "left_end_effector_type": command.left_end_effector_type,
-            "right_end_effector_type": command.right_end_effector_type,
             "actual_openness": deepcopy(actual_openness),
             "actual_openness_source": actual_openness_source,
-            "target_positions": command.positions,
-            "positions_len": len(command.positions),
-            "positions_layout": build_positions_layout(end_effector_params.target_end),
+            "target_positions": positions,
+            "positions_len": len(positions),
             "joint_states": {
                 "group": end_effector_params.target_end,
-                "target_type": command.end_effector_type,
-                "nums": len(command.positions),
-                "positions": command.positions,
-                "positions_layout": build_positions_layout(end_effector_params.target_end),
+                "target_type": end_effector_type,
+                "nums": len(positions),
+                "positions": positions,
             },
             "move_return": to_jsonable(move_return),
             "raw": {
@@ -190,20 +169,12 @@ def build_end_effector_params_from_inputs(
 
     target_end = inputs.get("target_end", "left_tool")
     end_effector_type = inputs.get("end_effector_type", "")
-    left_end_effector_type = inputs.get("left_end_effector_type", "")
-    right_end_effector_type = inputs.get("right_end_effector_type", "")
-    left_opening = read_number_input(inputs, "left_opening")
-    right_opening = read_number_input(inputs, "right_opening")
     try:
         return parse_end_effector_params(
             {
                 "target_end": target_end,
                 "end_effector_type": end_effector_type,
-                "left_end_effector_type": left_end_effector_type,
-                "right_end_effector_type": right_end_effector_type,
                 "opening": opening,
-                "left_opening": left_opening,
-                "right_opening": right_opening,
                 "timeout": context.timeout,
             },
             "code_move_end_effector",
