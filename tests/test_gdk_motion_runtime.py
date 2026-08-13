@@ -210,6 +210,7 @@ def test_gdk_motion_runtime_executes_right_arm_and_waist_abs_joint() -> None:
     right_target = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
     waist_target = [0.01, 0.02, 0.03, 0.04, 0.05]
     expected_velocity = 0.05
+    origin_left = list(FakeAgibotGdk.robot.arm_positions[: len(LEFT_ARM_JOINTS)])
 
     result = run_gdk_motion_plan_abs_joint(
         MotionPlanParams(
@@ -252,11 +253,12 @@ def test_gdk_motion_runtime_executes_right_arm_and_waist_abs_joint() -> None:
     }
     assert result["gdk_session"]["policy"] == "process_managed_session"
     assert result["gdk_session"]["purpose"] == "taskflow_abs_joint"
+    expected_arm_target = origin_left + right_target
     assert FakeAgibotGdk.robot.arm_move_calls == [
         (
-            right_target,
-            [expected_velocity] * len(RIGHT_ARM_JOINTS),
-            CONTROL_GROUP_RIGHT_ARM,
+            expected_arm_target,
+            [expected_velocity] * len(DUAL_ARM_JOINTS),
+            CONTROL_GROUP_DUAL_ARM,
         )
     ]
     assert FakeAgibotGdk.robot.waist_move_calls == [
@@ -267,12 +269,12 @@ def test_gdk_motion_runtime_executes_right_arm_and_waist_abs_joint() -> None:
     assert isinstance(groups, list)
     assert groups[0]["method"] == "move_arm_joint"
     assert groups[0]["requested_body_parts"] == ["right_arm"]
-    assert groups[0]["control_group"] == CONTROL_GROUP_RIGHT_ARM
-    assert groups[0]["interface_mode"] == "single_right_arm_7d"
-    assert groups[0]["joint_order"] == list(RIGHT_ARM_JOINTS)
-    assert groups[0]["positions_len"] == len(RIGHT_ARM_JOINTS)
-    assert groups[0]["velocities_len"] == len(RIGHT_ARM_JOINTS)
-    assert groups[0]["target_positions"] == right_target
+    assert groups[0]["control_group"] == CONTROL_GROUP_DUAL_ARM
+    assert groups[0]["interface_mode"] == "dual_arm_14d_hold_left"
+    assert groups[0]["joint_order"] == list(DUAL_ARM_JOINTS)
+    assert groups[0]["positions_len"] == len(DUAL_ARM_JOINTS)
+    assert groups[0]["velocities_len"] == len(DUAL_ARM_JOINTS)
+    assert groups[0]["target_positions"] == expected_arm_target
     assert groups[0]["effective_gdk_velocity"] == expected_velocity
     assert groups[0]["velocity_source"] == "taskflow_speed"
     assert groups[1]["method"] == "move_waist_joint"
@@ -280,7 +282,7 @@ def test_gdk_motion_runtime_executes_right_arm_and_waist_abs_joint() -> None:
     assert groups[1]["velocity_source"] == "taskflow_speed"
 
 
-def test_gdk_motion_runtime_executes_left_arm_abs_joint_with_single_arm_group() -> None:
+def test_gdk_motion_runtime_executes_left_arm_abs_joint_with_dual_arm_hold() -> None:
     FakeAgibotGdk.reset()
     left_target = [0.11, 0.12, 0.13, 0.14, 0.15, 0.16, 0.17]
     expected_velocity = 0.04
@@ -306,11 +308,12 @@ def test_gdk_motion_runtime_executes_left_arm_abs_joint_with_single_arm_group() 
     )
 
     assert result["executed"] is True
+    expected_arm_target = left_target + origin_right
     assert FakeAgibotGdk.robot.arm_move_calls == [
         (
-            left_target,
-            [expected_velocity] * len(LEFT_ARM_JOINTS),
-            CONTROL_GROUP_LEFT_ARM,
+            expected_arm_target,
+            [expected_velocity] * len(DUAL_ARM_JOINTS),
+            CONTROL_GROUP_DUAL_ARM,
         )
     ]
     assert FakeAgibotGdk.robot.arm_positions[: len(LEFT_ARM_JOINTS)] == left_target
@@ -320,12 +323,12 @@ def test_gdk_motion_runtime_executes_left_arm_abs_joint_with_single_arm_group() 
     assert isinstance(groups, list)
     assert groups[0]["method"] == "move_arm_joint"
     assert groups[0]["requested_body_parts"] == ["left_arm"]
-    assert groups[0]["control_group"] == CONTROL_GROUP_LEFT_ARM
-    assert groups[0]["interface_mode"] == "single_left_arm_7d"
-    assert groups[0]["joint_order"] == list(LEFT_ARM_JOINTS)
-    assert groups[0]["positions_len"] == len(LEFT_ARM_JOINTS)
-    assert groups[0]["velocities_len"] == len(LEFT_ARM_JOINTS)
-    assert groups[0]["target_positions"] == left_target
+    assert groups[0]["control_group"] == CONTROL_GROUP_DUAL_ARM
+    assert groups[0]["interface_mode"] == "dual_arm_14d_hold_right"
+    assert groups[0]["joint_order"] == list(DUAL_ARM_JOINTS)
+    assert groups[0]["positions_len"] == len(DUAL_ARM_JOINTS)
+    assert groups[0]["velocities_len"] == len(DUAL_ARM_JOINTS)
+    assert groups[0]["target_positions"] == expected_arm_target
 
 
 def test_gdk_motion_runtime_executes_dual_arm_abs_joint_with_dual_group() -> None:

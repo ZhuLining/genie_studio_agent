@@ -25,11 +25,8 @@ from gsa_taskflow_executor.taskflow.skill_params import (
 
 from .control_probe import (
     CONTROL_GROUP_DUAL_ARM,
-    CONTROL_GROUP_LEFT_ARM,
-    CONTROL_GROUP_RIGHT_ARM,
     DUAL_ARM_JOINTS,
     LEFT_ARM_JOINTS,
-    RIGHT_ARM_JOINTS,
     JointSnapshot,
     assert_joint_within_limit,
     assert_positions_within_limits,
@@ -239,7 +236,8 @@ def execute_abs_joint_targets(
     }
     executed_groups: list[dict[str, object]] = []
 
-    # 机械臂统一走 move_arm_joint，但单臂/双臂对应不同 control_group 与入参维度。
+    # 机械臂统一走已验证的 14 维 control_group=2 路径。单臂业务语义仍然保留：
+    # 未请求的一侧用动作前快照保持，避免默认依赖现场尚未充分复验的 7 维单臂接口。
     arm_targets = {
         body_part: targets_by_part[body_part]
         for body_part in ("left_arm", "right_arm")
@@ -349,36 +347,12 @@ def build_arm_move_command(
 ) -> tuple[list[float], list[float], int, Sequence[str], str]:
     """构造 move_arm_joint 入参。
 
-    真机验证结论：
-    - 单左臂：7 维 positions/velocities + control_group=0
-    - 单右臂：7 维 positions/velocities + control_group=1
-    - 双臂同步：14 维 positions/velocities + control_group=2
-
-    只有同时包含左右臂目标时才合并 origin 快照；单臂目标直接走 7 维接口，避免
-    把未请求的一侧也纳入控制命令。
+    默认使用真机主链路已反复验证的 14 维接口。即便 workflow 只请求单臂，
+    也会把另一侧填入动作前当前位姿，用 GDK `control_group=2` 一次下发。
+    这样对调度层仍是“单臂目标”，对 GDK 边界则避开 7 维单臂接口的现场兼容风险。
     """
     has_left = "left_arm" in targets_by_part
     has_right = "right_arm" in targets_by_part
-
-    if has_left and not has_right:
-        target_positions = [float(value) for value in targets_by_part["left_arm"]]
-        return (
-            target_positions,
-            [velocity] * len(LEFT_ARM_JOINTS),
-            CONTROL_GROUP_LEFT_ARM,
-            LEFT_ARM_JOINTS,
-            "single_left_arm_7d",
-        )
-
-    if has_right and not has_left:
-        target_positions = [float(value) for value in targets_by_part["right_arm"]]
-        return (
-            target_positions,
-            [velocity] * len(RIGHT_ARM_JOINTS),
-            CONTROL_GROUP_RIGHT_ARM,
-            RIGHT_ARM_JOINTS,
-            "single_right_arm_7d",
-        )
 
     target_positions = list(origin_positions)
     if has_left:
@@ -394,8 +368,19 @@ def build_arm_move_command(
         [velocity] * len(DUAL_ARM_JOINTS),
         CONTROL_GROUP_DUAL_ARM,
         DUAL_ARM_JOINTS,
-        "dual_arm_14d",
+        build_dual_arm_interface_mode(has_left=has_left, has_right=has_right),
     )
+
+
+def build_dual_arm_interface_mode(*, has_left: bool, has_right: bool) -> str:
+    """描述 14 维命令里的业务目标；未请求侧由快照保持。"""
+    if has_left and has_right:
+        return "dual_arm_14d"
+    if has_left:
+        return "dual_arm_14d_hold_right"
+    if has_right:
+        return "dual_arm_14d_hold_left"
+    return "dual_arm_14d_hold_current"
 
 
 def assert_arm_target_positions_within_limits(
