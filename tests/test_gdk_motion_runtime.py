@@ -43,6 +43,7 @@ class FakeRobot:
         self.motion_status = FakeMotionStatus()
         self.arm_move_calls: list[tuple[list[float], list[float], int]] = []
         self.waist_move_calls: list[tuple[list[float], list[float]]] = []
+        self.arm_move_error: Exception | None = None
 
     def get_joint_states(self) -> dict[str, object]:
         states = [
@@ -98,6 +99,8 @@ class FakeRobot:
         control_group: int,
     ) -> int:
         self.arm_move_calls.append((list(positions), list(velocities), control_group))
+        if self.arm_move_error is not None:
+            raise self.arm_move_error
         if len(velocities) != len(positions):
             raise RuntimeError(
                 f"expected velocities length {len(positions)}, got {len(velocities)}"
@@ -381,6 +384,44 @@ def test_gdk_motion_runtime_executes_dual_arm_abs_joint_with_dual_group() -> Non
     assert groups[0]["positions_len"] == len(DUAL_ARM_JOINTS)
     assert groups[0]["velocities_len"] == len(DUAL_ARM_JOINTS)
     assert groups[0]["target_positions"] == expected_target
+
+
+def test_gdk_motion_runtime_reports_arm_command_when_move_fails() -> None:
+    FakeAgibotGdk.reset()
+    FakeAgibotGdk.robot.arm_move_error = RuntimeError("Failed to move arm")
+    right_target = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
+    origin_left = list(FakeAgibotGdk.robot.arm_positions[: len(LEFT_ARM_JOINTS)])
+    expected_target = origin_left + right_target
+
+    result = run_gdk_motion_plan_abs_joint(
+        MotionPlanParams(
+            targets=(
+                MotionPlanTarget(
+                    body_part="right_arm",
+                    control_type="ABS_JOINT",
+                    action_data=right_target,
+                ),
+            ),
+            speed=0.05,
+            timeout=50.0,
+        ),
+        environ={
+            "ENABLE_GDK_CONTROL": "1",
+            "CONFIRM_GDK_CONTROL": TASKFLOW_ABS_JOINT_CONFIRMATION,
+        },
+        import_module=lambda _name: FakeAgibotGdk,
+    )
+
+    assert result["executed"] is False
+    assert result["error_stage"] == "execute_abs_joint_targets"
+    assert result["error_type"] == "RuntimeError"
+    assert result["error_msg"] == "Failed to move arm"
+    assert result["move_arm_command"]["control_group"] == CONTROL_GROUP_DUAL_ARM
+    assert result["move_arm_command"]["interface_mode"] == "dual_arm_14d_hold_left"
+    assert result["move_arm_command"]["positions_len"] == len(DUAL_ARM_JOINTS)
+    assert result["move_arm_command"]["velocities_len"] == len(DUAL_ARM_JOINTS)
+    assert result["move_arm_command"]["target_positions"] == expected_target
+    assert "target_positions_csv" in result["move_arm_command"]
 
 
 def test_gdk_motion_runtime_reuses_process_session_across_multiple_calls() -> None:

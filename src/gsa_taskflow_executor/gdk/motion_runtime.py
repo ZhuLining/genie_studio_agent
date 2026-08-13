@@ -76,6 +76,20 @@ class UnsupportedGdkControlModeError(RuntimeError):
         self.unsupported_fields = [dict(field) for field in unsupported_fields]
 
 
+class GdkArmMoveCommandError(RuntimeError):
+    """move_arm_joint 失败时保留下发参数，便于现场排障。"""
+
+    def __init__(
+        self,
+        *,
+        original_error: Exception,
+        command: Mapping[str, object],
+    ) -> None:
+        super().__init__(str(original_error))
+        self.original_error = original_error
+        self.command = dict(command)
+
+
 def run_gdk_motion_plan_abs_joint(
     motion_params: MotionPlanParams,
     *,
@@ -312,9 +326,29 @@ def execute_arm_abs_joint_targets(
     )
     assert_arm_target_positions_within_limits(limits, joint_order, target_positions)
 
-    move_return = robot.move_arm_joint(target_positions, velocities, control_group)
+    command_diagnostic = build_arm_move_command_diagnostic(
+        targets_by_part=targets_by_part,
+        target_positions=target_positions,
+        velocities=velocities,
+        control_group=control_group,
+        joint_order=joint_order,
+        interface_mode=interface_mode,
+        velocity=velocity,
+        origin_positions=origin.positions,
+    )
+    try:
+        move_return = robot.move_arm_joint(target_positions, velocities, control_group)
+    except Exception as error:
+        raise GdkArmMoveCommandError(
+            original_error=error,
+            command=command_diagnostic,
+        ) from error
     if not is_zero_error(move_return):
-        raise RuntimeError(f"move_arm_joint returned {move_return!r}")
+        command_diagnostic["move_return"] = to_jsonable(move_return)
+        raise GdkArmMoveCommandError(
+            original_error=RuntimeError(f"move_arm_joint returned {move_return!r}"),
+            command=command_diagnostic,
+        )
 
     after = collect_dual_arm_snapshot(robot)
     return {
@@ -381,6 +415,45 @@ def build_dual_arm_interface_mode(*, has_left: bool, has_right: bool) -> str:
     if has_right:
         return "dual_arm_14d_hold_left"
     return "dual_arm_14d_hold_current"
+
+
+def build_arm_move_command_diagnostic(
+    *,
+    targets_by_part: Mapping[str, Sequence[float]],
+    target_positions: Sequence[float],
+    velocities: Sequence[float],
+    control_group: int,
+    joint_order: Sequence[str],
+    interface_mode: str,
+    velocity: float,
+    origin_positions: Sequence[float],
+) -> dict[str, object]:
+    """构建轻量诊断；CSV 字符串能穿过 status 深度限制，便于现场直接查看。"""
+    deltas = [
+        round(float(target) - float(origin), 9)
+        for target, origin in zip(target_positions, origin_positions, strict=True)
+    ]
+    return {
+        "method": "move_arm_joint",
+        "requested_body_parts": list(targets_by_part.keys()),
+        "control_group": control_group,
+        "control_group_semantics": "0=left_arm_7d, 1=right_arm_7d, 2=dual_arm_14d",
+        "interface_mode": interface_mode,
+        "joint_order": list(joint_order),
+        "positions_len": len(target_positions),
+        "velocities_len": len(velocities),
+        "effective_gdk_velocity": velocity,
+        "target_positions": [float(value) for value in target_positions],
+        "origin_positions": [float(value) for value in origin_positions],
+        "position_deltas": deltas,
+        "target_positions_csv": format_float_csv(target_positions),
+        "origin_positions_csv": format_float_csv(origin_positions),
+        "position_deltas_csv": format_float_csv(deltas),
+    }
+
+
+def format_float_csv(values: Sequence[float]) -> str:
+    return ",".join(f"{float(value):.9g}" for value in values)
 
 
 def assert_arm_target_positions_within_limits(
@@ -727,15 +800,16 @@ def refused_result(
 
 def unavailable_result(stage: str, error: Exception) -> dict[str, object]:
     """构建 unavailable 结果（GDK 异常）。executed=False, available=False。"""
-    return {
+    original_error = getattr(error, "original_error", error)
+    payload: dict[str, object] = {
         "available": False,
         "executed": False,
         "backend": GDK_BACKEND,
         "action": ACTION_TASKFLOW_ABS_JOINT,
         "collected_at": utc_now_iso(),
         "error_stage": stage,
-        "error_type": type(error).__name__,
-        "error_msg": str(error),
+        "error_type": type(original_error).__name__,
+        "error_msg": str(original_error),
         "safety_gate": {
             "enabled": True,
             "confirmed": True,
@@ -743,3 +817,7 @@ def unavailable_result(stage: str, error: Exception) -> dict[str, object]:
         },
         "raw": {},
     }
+    command = getattr(error, "command", None)
+    if isinstance(command, Mapping):
+        payload["move_arm_command"] = dict(command)
+    return payload
