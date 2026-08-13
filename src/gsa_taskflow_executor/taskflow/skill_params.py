@@ -47,6 +47,7 @@ DEFAULT_END_EFFECTOR_TIMEOUT = 20.0
 DEFAULT_FORCE_CONTROL_TIMEOUT = 50.0
 
 # 末端执行器默认值
+DEFAULT_END_EFFECTOR_OPENING = 0.5
 DEFAULT_END_EFFECTOR_POST_WAIT_SECONDS = 1.0  # 动作完成后的稳定等待
 
 # 力控默认参数
@@ -83,6 +84,10 @@ END_EFFECTOR_TARGET_ALIASES = {
     "right_end": "right_tool",
     "right_tool": "right_tool",
     "右末端": "right_tool",
+    "dual": "dual_tool",
+    "both": "dual_tool",
+    "dual_tool": "dual_tool",
+    "双末端": "dual_tool",
 }
 
 SCRIPT_IDS = CODE_SCRIPT_IDS
@@ -275,7 +280,30 @@ def parse_end_effector_params(params: YamlMapping, path: str) -> EndEffectorPara
         params.get("end_effector_type", params.get("target_type")),
         f"{path}.end_effector_type",
     )
-    opening = read_end_effector_opening(params.get("opening"), f"{path}.opening")
+    left_end_effector_type = read_optional_string(
+        params.get("left_end_effector_type", params.get("left_target_type")),
+        f"{path}.left_end_effector_type",
+    )
+    right_end_effector_type = read_optional_string(
+        params.get("right_end_effector_type", params.get("right_target_type")),
+        f"{path}.right_end_effector_type",
+    )
+    opening = read_end_effector_opening(
+        params.get("opening"),
+        f"{path}.opening",
+        required=False,
+    )
+    left_opening = read_end_effector_opening(
+        params.get("left_opening"),
+        f"{path}.left_opening",
+        required=False,
+    )
+    right_opening = read_end_effector_opening(
+        params.get("right_opening"),
+        f"{path}.right_opening",
+        required=False,
+    )
+    opening = opening if opening is not None else DEFAULT_END_EFFECTOR_OPENING
     timeout = read_positive_number_with_default(
         params.get("timeout"),
         f"{path}.timeout",
@@ -292,6 +320,10 @@ def parse_end_effector_params(params: YamlMapping, path: str) -> EndEffectorPara
         opening=opening,
         timeout=timeout,
         post_wait_seconds=post_wait_seconds,
+        left_end_effector_type=left_end_effector_type,
+        right_end_effector_type=right_end_effector_type,
+        left_opening=left_opening,
+        right_opening=right_opening,
     )
 
 
@@ -428,18 +460,20 @@ def is_blank_script_mapping_row(mapping: YamlMapping, keys: tuple[str, ...]) -> 
 
 
 def read_end_effector_target(params: YamlMapping, path: str) -> str:
-    """解析 target_end 别名（如 left → left_tool，左末端 → left_tool）。"""
+    """解析 target_end 别名（如 left → left_tool，双末端 → dual_tool）。"""
 
     raw = read_required_string(params, "target_end", path)
     target = END_EFFECTOR_TARGET_ALIASES.get(raw)
     if target is None:
-        raise TaskflowParseError(f"{path}.target_end 只支持 left_tool/right_tool")
+        raise TaskflowParseError(f"{path}.target_end 只支持 left_tool/right_tool/dual_tool")
     return target
 
 
-def read_end_effector_opening(value: Any, path: str) -> float:
+def read_end_effector_opening(value: Any, path: str, *, required: bool = True) -> float | None:
     """读取末端开度值，范围 [0, 1]。0 = 闭合，1 = 全开。"""
 
+    if value is None and not required:
+        return None
     number = to_float(value, path)
     if number < 0 or number > 1:
         raise TaskflowParseError(f"{path} 必须在 0 到 1 之间")

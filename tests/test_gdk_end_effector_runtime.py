@@ -6,6 +6,7 @@ import pytest
 
 from gsa_taskflow_executor.gdk.end_effector_runtime import (
     ACTION_TASKFLOW_END_EFFECTOR,
+    GDK_END_EFFECTOR_TYPE_MISMATCH,
     GDK_END_EFFECTOR_TYPE_UNKNOWN,
     GDK_END_EFFECTOR_TYPE_UNSUPPORTED,
     run_gdk_end_effector_control,
@@ -144,6 +145,65 @@ def test_end_effector_runtime_executes_single_joint_type() -> None:
     assert [state.position for state in joint_states.states] == pytest.approx([-0.3925])
 
 
+def test_end_effector_runtime_executes_dual_tool_with_left_then_right_positions() -> None:
+    FakeAgibotGdk.reset()
+
+    result = run_gdk_end_effector_control(
+        EndEffectorParams(
+            target_end="dual_tool",
+            end_effector_type="omnipicker",
+            opening=0.5,
+            timeout=20.0,
+            post_wait_seconds=0.0,
+            left_opening=0.25,
+            right_opening=0.75,
+        ),
+        environ=confirmed_env(),
+        import_module=lambda _name: FakeAgibotGdk,
+    )
+
+    assert result["executed"] is True
+    assert result["target_end"] == "dual_tool"
+    assert result["group"] == "dual_tool"
+    assert result["target_positions"] == pytest.approx([-0.19625, -0.58875])
+    assert result["positions_len"] == 2
+    assert result["positions_layout"] == "left_tool_then_right_tool"
+    assert result["actual_openness"] == pytest.approx([0.25, 0.75])
+    assert result["left_opening"] == pytest.approx(0.25)
+    assert result["right_opening"] == pytest.approx(0.75)
+
+    [joint_states] = FakeAgibotGdk.robot.move_calls
+    assert joint_states.group == "dual_tool"
+    assert joint_states.target_type == "omnipicker"
+    assert joint_states.nums == 2
+    assert [state.position for state in joint_states.states] == pytest.approx(
+        [-0.19625, -0.58875]
+    )
+
+
+def test_end_effector_runtime_refuses_dual_tool_type_mismatch() -> None:
+    FakeAgibotGdk.reset()
+
+    result = run_gdk_end_effector_control(
+        EndEffectorParams(
+            target_end="dual_tool",
+            end_effector_type=None,
+            opening=0.5,
+            timeout=20.0,
+            post_wait_seconds=0.0,
+            left_end_effector_type="omnipicker",
+            right_end_effector_type="dahuan",
+        ),
+        environ=confirmed_env(),
+        import_module=lambda _name: FakeAgibotGdk,
+    )
+
+    assert result["executed"] is False
+    assert result["error_code"] == GDK_END_EFFECTOR_TYPE_MISMATCH
+    assert result["error_stage"] == "validate_end_effector_type"
+    assert FakeAgibotGdk.robot.move_calls == []
+
+
 def test_end_effector_runtime_prefers_actual_openness_from_after_state() -> None:
     FakeAgibotGdk.reset()
     FakeAgibotGdk.robot.after_end_state = {
@@ -167,6 +227,36 @@ def test_end_effector_runtime_prefers_actual_openness_from_after_state() -> None
 
     assert result["executed"] is True
     assert result["actual_openness"] == pytest.approx([0.62])
+    assert result["actual_openness_source"] == "gdk_after_end_state"
+
+
+def test_end_effector_runtime_prefers_dual_actual_openness_from_after_state() -> None:
+    FakeAgibotGdk.reset()
+    FakeAgibotGdk.robot.after_end_state = {
+        "left_tool": {
+            "target_type": "omnipicker",
+            "actual_openness": [0.62],
+        },
+        "right_tool": {
+            "target_type": "omnipicker",
+            "actual_openness": [0.58],
+        },
+    }
+
+    result = run_gdk_end_effector_control(
+        EndEffectorParams(
+            target_end="dual_tool",
+            end_effector_type="omnipicker",
+            opening=0.5,
+            timeout=20.0,
+            post_wait_seconds=0.0,
+        ),
+        environ=confirmed_env(),
+        import_module=lambda _name: FakeAgibotGdk,
+    )
+
+    assert result["executed"] is True
+    assert result["actual_openness"] == pytest.approx([0.62, 0.58])
     assert result["actual_openness_source"] == "gdk_after_end_state"
 
 

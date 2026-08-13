@@ -170,6 +170,27 @@ def test_parse_end_effector_skill_params_accepts_post_wait_seconds() -> None:
     assert params.post_wait_seconds == 0.5
 
 
+def test_parse_end_effector_skill_params_accepts_dual_tool_aliases() -> None:
+    params = parse_end_effector_params(
+        {
+            "target_end": "双末端",
+            "left_end_effector_type": "omnipicker",
+            "right_end_effector_type": "omnipicker",
+            "opening": 0.5,
+            "left_opening": 0.25,
+            "right_opening": 0.75,
+            "timeout": 20,
+        },
+        "params_template",
+    )
+
+    assert params.target_end == "dual_tool"
+    assert params.left_end_effector_type == "omnipicker"
+    assert params.right_end_effector_type == "omnipicker"
+    assert params.left_opening == pytest.approx(0.25)
+    assert params.right_opening == pytest.approx(0.75)
+
+
 def test_parse_force_control_skill_params() -> None:
     taskflow = parse_taskflow_yaml(VALID_FORCE_CONTROL_YAML)
     worker = taskflow.worker_nodes[0]

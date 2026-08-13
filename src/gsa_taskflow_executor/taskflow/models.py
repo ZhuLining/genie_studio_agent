@@ -80,6 +80,10 @@ class EndEffectorParams:
     opening: float
     timeout: float
     post_wait_seconds: float = 1.0
+    left_end_effector_type: str | None = None
+    right_end_effector_type: str | None = None
+    left_opening: float | None = None
+    right_opening: float | None = None
 
 
 @dataclass(frozen=True)
