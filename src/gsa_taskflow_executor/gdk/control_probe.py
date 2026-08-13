@@ -1,3 +1,9 @@
+"""GDK 控制探针 — 手动控制操作和关节状态工具函数。
+
+提供 hold_current、nudge_left_j7、nudge_right_j7 等现场测试命令，
+以及关节快照采集、限位校验、位置差计算等运动规划的共享工具。
+"""
+
 from __future__ import annotations
 
 import importlib

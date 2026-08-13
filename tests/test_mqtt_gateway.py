@@ -15,19 +15,27 @@ from gsa_taskflow_executor.runtime.event_log import JsonlEventWriter
 class FakePublishResult:
     def __init__(self) -> None:
         self.waited = False
+        self.timeout: float | None = None
 
-    def wait_for_publish(self) -> None:
+    def wait_for_publish(self, timeout: float | None = None) -> None:
         self.waited = True
+        self.timeout = timeout
 
 
 class FakeClient:
     def __init__(self) -> None:
-        self.published: list[tuple[str, str, int]] = []
+        self.published: list[tuple[str, str, int, bool]] = []
         self.publish_results: list[FakePublishResult] = []
         self.subscribed: list[tuple[str, int]] = []
 
-    def publish(self, topic: str, payload: str, qos: int = 0) -> FakePublishResult:
-        self.published.append((topic, payload, qos))
+    def publish(
+        self,
+        topic: str,
+        payload: str,
+        qos: int = 0,
+        retain: bool = False,
+    ) -> FakePublishResult:
+        self.published.append((topic, payload, qos, retain))
         result = FakePublishResult()
         self.publish_results.append(result)
         return result
@@ -51,6 +59,12 @@ def test_handle_message_calls_handler_and_writes_jsonl(tmp_path) -> None:
     event = json.loads(event_file.read_text(encoding="utf-8").splitlines()[0])
     assert event["event_type"] == "taskflow_yaml_received"
     assert event["topic"] == "gsa/self/taskflow_yaml"
+    assert event["payload"]["payload_preview"] == {
+        "preview": "start_node: 开始\n",
+        "characters": len("start_node: 开始\n"),
+        "bytes": len("start_node: 开始\n".encode()),
+        "truncated": False,
+    }
 
 
 def test_publish_status_uses_status_topic(tmp_path) -> None:
@@ -64,11 +78,36 @@ def test_publish_status_uses_status_topic(tmp_path) -> None:
 
     gateway.publish_status({"task_state": "running"})
 
-    [(topic, payload, qos)] = client.published
+    [(topic, payload, qos, retain)] = client.published
     assert topic == "gsa/self/aid-1/status"
     assert json.loads(payload) == {"task_state": "running"}
     assert qos == 0
+    assert retain is False
     assert client.publish_results[0].waited is False
+
+
+def test_publish_terminal_status_waits_for_qos_ack(tmp_path) -> None:
+    client = FakeClient()
+    gateway = MqttGateway(
+        settings=ExecutorSettings(
+            executor_aid="aid-1",
+            mqtt_terminal_status_qos=1,
+            mqtt_terminal_status_wait_timeout=1.25,
+        ),
+        on_taskflow_message=lambda _message: None,
+        event_writer=JsonlEventWriter(tmp_path),
+    )
+    gateway._client = client
+
+    gateway.publish_status({"task_state": "OVER", "terminal_node_id": "结束"})
+
+    [(topic, payload, qos, retain)] = client.published
+    assert topic == "gsa/self/aid-1/status"
+    assert json.loads(payload)["terminal_node_id"] == "结束"
+    assert qos == 1
+    assert retain is False
+    assert client.publish_results[0].waited is True
+    assert client.publish_results[0].timeout == 1.25
 
 
 def test_publish_status_requires_connection() -> None:
@@ -91,10 +130,11 @@ def test_publish_json_uses_given_topic() -> None:
 
     gateway.publish_json("gsa/self/robot/state/get_current_pose/response", {"ok": True})
 
-    [(topic, payload, qos)] = client.published
+    [(topic, payload, qos, retain)] = client.published
     assert topic == "gsa/self/robot/state/get_current_pose/response"
     assert json.loads(payload) == {"ok": True}
     assert qos == 0
+    assert retain is False
 
 
 def test_robot_state_message_uses_independent_handler() -> None:
@@ -129,8 +169,25 @@ def test_on_connect_subscribes_robot_state_topic_when_handler_configured() -> No
         ("gsa/self/taskflow_yaml", 0),
         ("gsa/self/robot/state/get_current_pose/request", 0),
         ("gsa/self/robot/state/get_camera_frame/request", 0),
+        ("gsa/self/robot/state/get_camera_calibration/request", 0),
         ("gsa/self/robot/state/camera_capture/start/request", 0),
         ("gsa/self/robot/state/camera_capture/stop/request", 0),
+    ]
+
+
+def test_on_connect_subscribes_cancel_topic_when_handler_configured() -> None:
+    client = FakeClient()
+    gateway = MqttGateway(
+        settings=ExecutorSettings(),
+        on_taskflow_message=lambda _message: None,
+        on_taskflow_cancel_message=lambda _message: None,
+    )
+
+    gateway._on_connect(client, None, None, 0)
+
+    assert client.subscribed == [
+        ("gsa/self/taskflow_yaml", 0),
+        ("gsa/self/taskflow/+/cancel", 0),
     ]
 
 
@@ -153,6 +210,50 @@ def test_on_message_routes_camera_frame_topic_to_robot_state_handler() -> None:
     gateway._on_message(None, None, message)
 
     assert received_robot_state == ["gsa/self/robot/state/get_camera_frame/request"]
+
+
+def test_on_message_routes_camera_calibration_topic_to_robot_state_handler() -> None:
+    received_robot_state: list[str] = []
+    gateway = MqttGateway(
+        settings=ExecutorSettings(),
+        on_taskflow_message=lambda _message: None,
+        on_robot_state_message=lambda message: received_robot_state.append(message.topic),
+    )
+    message = type(
+        "Message",
+        (),
+        {
+            "topic": "gsa/self/robot/state/get_camera_calibration/request",
+            "payload": b'{"requestId":"req-calibration"}',
+        },
+    )()
+
+    gateway._on_message(None, None, message)
+
+    assert received_robot_state == ["gsa/self/robot/state/get_camera_calibration/request"]
+
+
+def test_on_message_routes_taskflow_cancel_topic_to_cancel_handler() -> None:
+    received_cancel_topics: list[str] = []
+    received_taskflows: list[str] = []
+    gateway = MqttGateway(
+        settings=ExecutorSettings(),
+        on_taskflow_message=lambda message: received_taskflows.append(message.topic),
+        on_taskflow_cancel_message=lambda message: received_cancel_topics.append(message.topic),
+    )
+    message = type(
+        "Message",
+        (),
+        {
+            "topic": "gsa/self/taskflow/run-1/cancel",
+            "payload": b'{"reason":"stop"}',
+        },
+    )()
+
+    gateway._on_message(None, None, message)
+
+    assert received_taskflows == []
+    assert received_cancel_topics == ["gsa/self/taskflow/run-1/cancel"]
 
 
 @pytest.mark.parametrize(

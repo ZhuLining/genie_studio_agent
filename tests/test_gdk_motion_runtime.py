@@ -11,6 +11,7 @@ from gsa_taskflow_executor.gdk.motion_runtime import (
     WAIST_JOINTS,
     run_gdk_motion_plan_abs_joint,
 )
+from gsa_taskflow_executor.gdk.recovery import current_gdk_recovery_requirement
 from gsa_taskflow_executor.gdk.session import GdkSessionManager
 from gsa_taskflow_executor.gdk.subprocess_runtime import GDK_OPERATION_TIMEOUT_CODE
 from gsa_taskflow_executor.taskflow.parser import MotionPlanParams, MotionPlanTarget
@@ -336,6 +337,33 @@ def test_gdk_motion_runtime_releases_parent_lock_after_subprocess_timeout(monkey
     assert result["executed"] is False
     assert result["error_code"] == GDK_OPERATION_TIMEOUT_CODE
     assert manager.busy is False
+    requirement = current_gdk_recovery_requirement()
+    assert requirement is not None
+    assert requirement.reason == "worker_timeout"
+
+    refused = run_gdk_motion_plan_abs_joint(
+        MotionPlanParams(
+            targets=(
+                MotionPlanTarget(
+                    body_part="right_arm",
+                    control_type="ABS_JOINT",
+                    action_data=[0.1] * 7,
+                ),
+            ),
+            speed=0.05,
+            timeout=0.1,
+        ),
+        environ={
+            "ENABLE_GDK_CONTROL": "1",
+            "CONFIRM_GDK_CONTROL": TASKFLOW_ABS_JOINT_CONFIRMATION,
+        },
+        import_module=lambda _name: (_ for _ in ()).throw(
+            AssertionError("GDK must not be imported while recovery is required")
+        ),
+    )
+
+    assert refused["executed"] is False
+    assert refused["error_code"] == "GDK_RECOVERY_REQUIRED"
 
     lease = manager.acquire(blocking=False, initialize=False, purpose="current_pose")
     assert lease is not None

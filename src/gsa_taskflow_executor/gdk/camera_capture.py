@@ -1,3 +1,9 @@
+"""GDK 相机连续采集服务。
+
+通过独立子进程按帧率连续采集相机图像，经 MQTT 发布到会话 topic。
+支持 start(session_id)/stop(session_id) 生命周期管理，同一时刻仅允许一个采集会话。
+"""
+
 from __future__ import annotations
 
 import json

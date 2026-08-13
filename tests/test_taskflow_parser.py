@@ -27,6 +27,29 @@ def test_parse_valid_right_arm_abs_joint_yaml() -> None:
     assert taskflow.node_ids == ("开始", "位姿调整-位控", "结束")
     assert len(taskflow.worker_nodes) == 1
     assert taskflow.summary()["transition_count"] == 2
+    assert taskflow.terminal_node_ids == ("结束",)
+
+
+def test_reject_multiple_terminal_nodes() -> None:
+    yaml_payload = """
+start_node: 开始
+app_execution_id: multi-end-run
+nodes:
+  - id: 开始
+    type: assign
+    assignments: {}
+  - id: 正常结束
+    type: end
+  - id: 跳过结束
+    type: end
+transitions:
+  - from: 开始
+    outcome: success
+    to: 正常结束
+"""
+
+    with pytest.raises(TaskflowParseError, match="只能包含一个结束节点"):
+        parse_taskflow_yaml(yaml_payload)
 
 
 def test_parse_motion_plan_params() -> None:
@@ -304,6 +327,46 @@ def test_reject_duplicate_node_id() -> None:
 def test_reject_transition_to_unknown_node() -> None:
     with pytest.raises(TaskflowParseError, match="transition.to 不存在"):
         parse_taskflow_yaml(VALID_RIGHT_ARM_YAML.replace("to: 结束", "to: 不存在"))
+
+
+def test_reject_explicit_end_node_with_outgoing_transition() -> None:
+    yaml_payload = """
+start_node: 开始
+app_execution_id: end-outgoing-run
+nodes:
+  - id: 开始
+    type: assign
+    assignments: {}
+  - id: 结束
+    type: end
+  - id: 后续
+    type: assign
+    assignments: {}
+transitions:
+  - from: 开始
+    outcome: success
+    to: 结束
+  - from: 结束
+    outcome: success
+    to: 后续
+"""
+
+    with pytest.raises(TaskflowParseError, match="end 节点不能有出边"):
+        parse_taskflow_yaml(yaml_payload)
+
+
+def test_reject_duplicate_success_transition_during_parse() -> None:
+    yaml_payload = (
+        VALID_RIGHT_ARM_YAML
+        + """
+  - from: 开始
+    outcome: success
+    to: 结束
+"""
+    )
+
+    with pytest.raises(TaskflowParseError, match="transition 不唯一"):
+        parse_taskflow_yaml(yaml_payload)
 
 
 def test_reject_non_abs_joint() -> None:

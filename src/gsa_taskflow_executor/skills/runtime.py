@@ -1,3 +1,19 @@
+"""技能运行时 — 将 taskflow 节点分发到 GDK 技能实现。
+
+SkillRuntime.run(node, context) 分发逻辑::
+
+    assign → AssignSkill（写入 VariableStore）
+    worker → SkillRegistry.require(skill_name) → GDK skill
+      ├─ motion_plan  → MotionPlanSkillGdk  → run_gdk_motion_plan_abs_joint()
+      ├─ script       → ScriptSkillGdk       → run_code_script()
+      ├─ end_effector → EndEffectorSkillGdk  → run_gdk_end_effector_control()
+      └─ force_control→ ForceControlSkillGdk → 硬阻断
+
+变量解析策略:
+- motion/end_effector: 整体 resolve params_template（$.variables.* → 实际值）
+- script: 只逐个 resolve input_mappings.variable_ref，保留 schema 结构
+"""
+
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
@@ -16,7 +32,7 @@ from gsa_taskflow_executor.skills.registry import (
     SkillRegistry,
     SkillRegistryError,
 )
-from gsa_taskflow_executor.taskflow.parser import (
+from gsa_taskflow_executor.taskflow.models import (
     EndEffectorParams,
     ForceControlParams,
     MotionPlanParams,
@@ -25,6 +41,8 @@ from gsa_taskflow_executor.taskflow.parser import (
     ScriptParams,
     TaskflowNode,
     TaskflowParseError,
+)
+from gsa_taskflow_executor.taskflow.skill_params import (
     parse_end_effector_params,
     parse_force_control_params,
     parse_motion_plan_params,
@@ -36,7 +54,10 @@ SkillOutcome = Literal["success", "error"]
 
 
 class SkillRuntimeError(RuntimeError):
-    """Raised when a node cannot be executed by the skill runtime."""
+    """技能执行失败。
+
+    detail 携带 error_code/error_stage/gdk_result，用于分类 error/cancelled。
+    """
 
     def __init__(
         self,
@@ -50,6 +71,7 @@ class SkillRuntimeError(RuntimeError):
 
 @dataclass(frozen=True)
 class SkillExecutionContext:
+    """技能执行上下文。"""
     app_execution_id: str
     variable_store: VariableStore
     mode: str = "gdk"
@@ -57,17 +79,27 @@ class SkillExecutionContext:
 
 @dataclass(frozen=True)
 class SkillResult:
+    """技能执行结果。"""
     outcome: SkillOutcome = "success"
     detail: dict[str, object] | None = None
     outputs: dict[str, object] | None = None
 
 
 class Skill(Protocol):
+    """技能接口。由各 GDK skill runtime 实现。"""
+
     def run(self, node: TaskflowNode, context: SkillExecutionContext) -> SkillResult:
-        """Execute one parsed taskflow node."""
+        ...
+
+
+# ============================================================
+# 技能实现
+# ============================================================
 
 
 class AssignSkill:
+    """assign 节点技能 — 将 assignments 写入 VariableStore。无 GDK 交互。"""
+
     def run(self, node: TaskflowNode, context: SkillExecutionContext) -> SkillResult:
         if node.node_type != "assign":
             raise SkillRuntimeError(f"assign runtime 收到非 assign 节点: {node.node_id}")
@@ -87,6 +119,11 @@ class AssignSkill:
 
 
 class MotionPlanSkillGdk:
+    """motion_plan_skill — ABS_JOINT 运动规划。
+
+    需要 environ（安全门 ENV）和 gdk_session_manager（GDK 生命周期）。
+    """
+
     def __init__(
         self,
         environ: Mapping[str, str] | None = None,
@@ -96,6 +133,7 @@ class MotionPlanSkillGdk:
         self.gdk_session_manager = gdk_session_manager
 
     def run(self, node: TaskflowNode, context: SkillExecutionContext) -> SkillResult:
+        """流程: resolve 变量引用 → 解析 MotionPlanParams → 调用 GDK → 构建 outputs。"""
         resolved_params = context.variable_store.resolve_value(node.params_template)
         if not isinstance(resolved_params, Mapping):
             raise SkillRuntimeError(f"{node.node_id}.params_template 解析后不是对象")
@@ -140,6 +178,12 @@ class MotionPlanSkillGdk:
 
 
 class ScriptSkillGdk:
+    """script_skill — 白名单脚本执行。
+
+    与 motion/end_effector 不同，input_mappings 不能整体 resolve——只逐个解析
+    variable_ref，否则会把 schema 字段（name/type）也替换成运行值。
+    """
+
     def __init__(
         self,
         environ: Mapping[str, str] | None = None,
@@ -149,8 +193,7 @@ class ScriptSkillGdk:
         self.gdk_session_manager = gdk_session_manager
 
     def run(self, node: TaskflowNode, context: SkillExecutionContext) -> SkillResult:
-        # 输入映射本身是变量引用声明，不能像运动参数一样整体 resolve；
-        # 只在执行前解析 mapping.variable_ref，避免把契约字段改成运行值。
+        """流程: 解析 ScriptParams → 逐个 resolve input variable_ref → 执行脚本 → 校验 outputs。"""
         raw_params = node.params_template
         if not isinstance(raw_params, Mapping):
             raise SkillRuntimeError(f"{node.node_id}.params_template 解析后不是对象")
@@ -210,6 +253,8 @@ class ScriptSkillGdk:
 
 
 class EndEffectorSkillGdk:
+    """control_end_effector_skill — 夹爪开合控制。"""
+
     def __init__(
         self,
         environ: Mapping[str, str] | None = None,
@@ -219,6 +264,10 @@ class EndEffectorSkillGdk:
         self.gdk_session_manager = gdk_session_manager
 
     def run(self, node: TaskflowNode, context: SkillExecutionContext) -> SkillResult:
+        """流程: resolve 变量引用 → 解析 EndEffectorParams → 调用 GDK → 构建 outputs。
+
+        actual_openness 可能与 requested 不同（物理限位）。
+        """
         resolved_params = context.variable_store.resolve_value(node.params_template)
         if not isinstance(resolved_params, Mapping):
             raise SkillRuntimeError(f"{node.node_id}.params_template 解析后不是对象")
@@ -248,6 +297,7 @@ class EndEffectorSkillGdk:
             params_template=resolved_params,
             end_effector_params=end_effector_params,
         )
+        # 实际开度可能不同于请求值
         actual_openness = end_effector_result.get("actual_openness")
         if not isinstance(actual_openness, list):
             actual_openness = [end_effector_params.opening]
@@ -276,6 +326,8 @@ class EndEffectorSkillGdk:
 
 
 class ForceControlSkillGdk:
+    """force_control_skill — 当前硬阻断。保留参数校验但执行总是拒绝。"""
+
     def run(self, node: TaskflowNode, context: SkillExecutionContext) -> SkillResult:
         resolved_params = context.variable_store.resolve_value(node.params_template)
         if not isinstance(resolved_params, Mapping):
@@ -295,7 +347,18 @@ class ForceControlSkillGdk:
         )
 
 
+# ============================================================
+# SkillRuntime — 中心分发器
+# ============================================================
+
+
 class SkillRuntime:
+    """将 taskflow 节点分发到对应技能实现。
+
+    持有 SkillRegistry（白名单）、预实例化的 GDK 技能对象。
+    run() 是 SkillRuntimeNodeRunner 调用的入口。
+    """
+
     def __init__(
         self,
         registry: SkillRegistry | None = None,
@@ -304,6 +367,7 @@ class SkillRuntime:
     ) -> None:
         self.registry = registry or SkillRegistry.default()
         self.assign_skill = AssignSkill()
+        # GDK 技能预实例化，共享 environ 和 session manager
         self.gdk_skills: dict[str, Skill] = {
             "motion_plan": MotionPlanSkillGdk(
                 environ=environ,
@@ -321,10 +385,13 @@ class SkillRuntime:
         }
 
     def run(self, node: TaskflowNode, context: SkillExecutionContext) -> SkillResult:
+        """分发: assign → AssignSkill, worker → registry 查 skill_name → resolve GDK 技能。"""
         if node.node_type == "assign":
             return self.assign_skill.run(node, context)
+
         if node.node_type != "worker":
             raise SkillRuntimeError(f"不支持的节点类型: {node.node_type}")
+
         if node.skill_name is None:
             raise SkillRuntimeError(f"worker 节点缺少 skill_name: {node.node_id}")
 
@@ -336,15 +403,22 @@ class SkillRuntime:
             raise SkillRuntimeError(str(error)) from error
 
     def resolve_skill(self, skill_definition: SkillDefinition) -> Skill:
+        """按 SkillDefinition.adapter 找到具体 Skill 实例。目前仅支持 gdk adapter。"""
         if skill_definition.adapter == "gdk":
             return self.resolve_gdk_skill(skill_definition)
         raise SkillRuntimeError(f"不支持的 skill adapter: {skill_definition.adapter}")
 
     def resolve_gdk_skill(self, skill_definition: SkillDefinition) -> Skill:
+        """按 implementation 名查找预实例化的 GDK 技能。"""
         skill = self.gdk_skills.get(skill_definition.implementation)
         if skill is None:
             raise SkillRuntimeError(f"不支持的 GDK skill 类型: {skill_definition.implementation}")
         return skill
+
+
+# ============================================================
+# 输出构建器 — 提取参数和结果字段，构造一致的 outputs dict
+# ============================================================
 
 
 def build_motion_plan_outputs(
@@ -355,6 +429,7 @@ def build_motion_plan_outputs(
     params_template: Mapping[str, Any],
     motion_params: MotionPlanParams,
 ) -> dict[str, object]:
+    """构建运动规划 outputs。"""
     motion_targets = [
         {
             "body_part": target.body_part,
@@ -385,6 +460,7 @@ def build_gdk_error_detail(
     message: str,
     gdk_result: Mapping[str, object],
 ) -> dict[str, object]:
+    """构建 GDK 错误 detail。提取 error_code/error_stage 供调度器分类。"""
     detail: dict[str, object] = {
         "error": message,
         "gdk_result": deepcopy(dict(gdk_result)),
@@ -398,12 +474,18 @@ def build_gdk_error_detail(
     return detail
 
 
+# ============================================================
+# 脚本输入/输出解析与校验
+# ============================================================
+
+
 def resolve_script_inputs(
     input_mappings: Sequence[ScriptInputMapping],
     variable_store: VariableStore,
     *,
     node_id: str,
 ) -> dict[str, object]:
+    """逐个 resolve input_mappings 的 variable_ref，类型校验。"""
     inputs: dict[str, object] = {}
     for mapping in input_mappings:
         value = variable_store.resolve(mapping.variable_ref)
@@ -428,6 +510,7 @@ def extract_declared_script_outputs(
     *,
     node_id: str,
 ) -> dict[str, object]:
+    """校验脚本声明的输出变量：必须存在且类型匹配。确保下游节点不会遇到意外类型。"""
     if not output_variables:
         return {}
 
@@ -470,6 +553,12 @@ def extract_declared_script_outputs(
 
 
 def value_matches_script_type(value: object, expected_type: str) -> bool:
+    """检查运行时值是否匹配声明的类型。
+
+    - integer 排除 bool（Python 中 bool 是 int 子类）
+    - number 排除 bool 且要求有限值
+    - array 排除 str/bytes/bytearray（它们也是 Sequence）
+    """
     if expected_type == "string":
         return isinstance(value, str)
     if expected_type == "integer":
@@ -496,6 +585,7 @@ def build_script_outputs(
     script_params: ScriptParams,
     inputs: Mapping[str, object],
 ) -> dict[str, object]:
+    """构建脚本执行 outputs。"""
     return {
         "app_execution_id": app_execution_id,
         "skill_name": skill_name,
@@ -530,6 +620,7 @@ def build_end_effector_outputs(
     params_template: Mapping[str, Any],
     end_effector_params: EndEffectorParams,
 ) -> dict[str, object]:
+    """构建末端控制 outputs。调用方额外补充 actual_openness 和 end_effector_type。"""
     return {
         "app_execution_id": app_execution_id,
         "skill_name": skill_name,
@@ -551,6 +642,7 @@ def build_force_control_outputs(
     params_template: Mapping[str, Any],
     force_params: ForceControlParams,
 ) -> dict[str, object]:
+    """构建力控 outputs（当前未被使用，力控硬阻断时抛异常）。"""
     return {
         "app_execution_id": app_execution_id,
         "skill_name": skill_name,

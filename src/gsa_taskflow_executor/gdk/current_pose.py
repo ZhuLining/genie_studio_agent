@@ -1,3 +1,9 @@
+"""GDK 当前关节位姿快照。
+
+通过只读 GDK 接口采集 arm/waist 关节位置、速度、力矩，含运动控制状态校验。
+支持恢复门确认（timeout/cancel 后必须成功采集位姿才能继续控制）。
+"""
+
 from __future__ import annotations
 
 import importlib
@@ -13,6 +19,7 @@ from .control_probe import (
 )
 from .motion_runtime import WAIST_JOINTS
 from .readonly import GDK_BACKEND, to_jsonable
+from .recovery import attach_gdk_recovery_payload, confirm_gdk_recovery_from_snapshot
 from .session import GdkSessionImportError, GdkSessionInitError, GdkSessionManager
 
 
@@ -106,6 +113,10 @@ def run_gdk_current_pose_snapshot(
 
         snapshot["gdk_init"] = lease.init_result
         snapshot["gdk_session"] = lease.to_payload()
+        attach_gdk_recovery_payload(
+            snapshot,
+            confirm_gdk_recovery_from_snapshot(snapshot),
+        )
         return snapshot
 
 
@@ -143,6 +154,8 @@ def build_current_pose_snapshot(
         },
         "nonzeroErrorJoints": build_nonzero_error_joints(state_items),
         "motionStatus": {
+            "mode": to_jsonable(getattr(motion_status, "mode", None)),
+            "controlMode": to_jsonable(getattr(motion_status, "control_mode", None)),
             "errorCode": to_jsonable(getattr(motion_status, "error_code", None)),
             "errorMsg": str(getattr(motion_status, "error_msg", "") or ""),
         },

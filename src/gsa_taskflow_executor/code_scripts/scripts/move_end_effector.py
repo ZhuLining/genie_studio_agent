@@ -22,9 +22,11 @@ from gsa_taskflow_executor.gdk.end_effector_runtime import (
     resolve_end_effector_type,
 )
 from gsa_taskflow_executor.gdk.readonly import GDK_BACKEND, to_jsonable
-from gsa_taskflow_executor.taskflow.parser import (
+from gsa_taskflow_executor.taskflow.models import (
     EndEffectorParams,
     TaskflowParseError,
+)
+from gsa_taskflow_executor.taskflow.skill_params import (
     parse_end_effector_params,
 )
 

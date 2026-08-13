@@ -1,8 +1,14 @@
+"""GDK 力控运行时（硬阻断）。
+
+力控 GDK API 在真机上未验证，所有调用直接返回 refused 结果。
+保留参数解析和校验逻辑，开放前只需移除硬阻断。
+"""
+
 from __future__ import annotations
 
 from copy import deepcopy
 
-from gsa_taskflow_executor.taskflow.parser import ForceControlParams
+from gsa_taskflow_executor.taskflow.models import ForceControlParams
 
 ACTION_TASKFLOW_FORCE_CONTROL = "taskflow_force_control"
 TASKFLOW_FORCE_CONTROL_CONFIRMATION = "TASKFLOW_FORCE_CONTROL"

@@ -1,3 +1,12 @@
+"""GDK 子进程运行时 — 在可 kill 的子进程中执行 GDK C 扩展调用。
+
+GDK 控制调用是同步 C 扩展，Python 线程超时无法安全中断。
+父进程维持 MQTT/调度器存活，子进程作为故障隔离边界。
+timeout 时 terminate → kill → 返回 timeout 结果。
+
+注: 此文件用于 camera/frame/probe 等一次性操作；常驻 control 操作已迁移到 worker_runtime。
+"""
+
 from __future__ import annotations
 
 import importlib
@@ -146,7 +155,7 @@ def run_code_script_in_subprocess(
 
 def motion_abs_joint_child(result_queue: Any, motion_params: object) -> None:
     from gsa_taskflow_executor.gdk import motion_runtime
-    from gsa_taskflow_executor.taskflow.parser import MotionPlanParams
+    from gsa_taskflow_executor.taskflow.models import MotionPlanParams
 
     agibot_gdk = None
     gdk_initialized = False
@@ -190,7 +199,7 @@ def motion_abs_joint_child(result_queue: Any, motion_params: object) -> None:
 
 def end_effector_child(result_queue: Any, end_effector_params: object) -> None:
     from gsa_taskflow_executor.gdk import end_effector_runtime
-    from gsa_taskflow_executor.taskflow.parser import EndEffectorParams
+    from gsa_taskflow_executor.taskflow.models import EndEffectorParams
 
     agibot_gdk = None
     gdk_initialized = False
@@ -241,7 +250,7 @@ def code_script_child(
     from gsa_taskflow_executor.code_scripts.api import CodeScriptContext, refused_result
     from gsa_taskflow_executor.code_scripts.registry import CODE_SCRIPT_DEFINITIONS
     from gsa_taskflow_executor.code_scripts.runtime import load_script_runner, run_script_safely
-    from gsa_taskflow_executor.taskflow.parser import ScriptParams
+    from gsa_taskflow_executor.taskflow.models import ScriptParams
 
     os.environ.update(dict(environ))
     typed_script_params = cast(ScriptParams, script_params)

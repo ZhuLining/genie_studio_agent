@@ -1,3 +1,9 @@
+"""GDK 相机单帧快照。
+
+通过子进程采集指定相机的单帧图像，BMP 编码后 base64 返回。
+支持进程内（测试模式）和子进程（生产模式）两种执行路径。
+"""
+
 from __future__ import annotations
 
 import base64

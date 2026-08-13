@@ -29,6 +29,14 @@ def test_default_status_topic() -> None:
         == "gsa/self/robot/state/get_camera_frame/response"
     )
     assert (
+        settings.robot_camera_calibration_request_topic
+        == "gsa/self/robot/state/get_camera_calibration/request"
+    )
+    assert (
+        settings.robot_camera_calibration_response_topic
+        == "gsa/self/robot/state/get_camera_calibration/response"
+    )
+    assert (
         settings.robot_camera_capture_start_request_topic
         == "gsa/self/robot/state/camera_capture/start/request"
     )
@@ -40,6 +48,20 @@ def test_default_status_topic() -> None:
         settings.robot_camera_capture_frame_topic_template
         == "gsa/self/robot/state/camera_capture/{sessionId}/frame"
     )
+    assert settings.taskflow_cancel_topic_filter == "gsa/self/taskflow/+/cancel"
+    assert settings.mqtt_status_qos == 0
+    assert settings.mqtt_terminal_status_qos == 1
+    assert settings.mqtt_terminal_status_retain is False
+    assert settings.mqtt_terminal_status_wait_timeout == 2.0
+    assert settings.taskflow_queue_maxsize == 16
+    assert settings.taskflow_queue_full_policy == "reject"
+    assert settings.robot_state_queue_maxsize == 8
+    assert settings.robot_state_queue_full_policy == "reject"
+    assert settings.diagnostics_mqtt_connect_timeout == 2.0
+    assert settings.payload_max_string_length == 512
+    assert settings.payload_max_collection_items == 20
+    assert settings.payload_max_depth == 6
+    assert settings.payload_include_full_variables is False
 
 
 def test_env_overrides(monkeypatch) -> None:
@@ -49,6 +71,8 @@ def test_env_overrides(monkeypatch) -> None:
     monkeypatch.setenv("ROBOT_CURRENT_POSE_RESPONSE_TOPIC", "robot/custom/response")
     monkeypatch.setenv("ROBOT_CAMERA_FRAME_REQUEST_TOPIC", "robot/camera/request")
     monkeypatch.setenv("ROBOT_CAMERA_FRAME_RESPONSE_TOPIC", "robot/camera/response")
+    monkeypatch.setenv("ROBOT_CAMERA_CALIBRATION_REQUEST_TOPIC", "robot/calibration/request")
+    monkeypatch.setenv("ROBOT_CAMERA_CALIBRATION_RESPONSE_TOPIC", "robot/calibration/response")
     monkeypatch.setenv("ROBOT_CAMERA_CAPTURE_START_REQUEST_TOPIC", "robot/capture/start")
     monkeypatch.setenv("ROBOT_CAMERA_CAPTURE_START_RESPONSE_TOPIC", "robot/capture/start/resp")
     monkeypatch.setenv("ROBOT_CAMERA_CAPTURE_STOP_REQUEST_TOPIC", "robot/capture/stop")
@@ -57,6 +81,20 @@ def test_env_overrides(monkeypatch) -> None:
         "ROBOT_CAMERA_CAPTURE_FRAME_TOPIC_TEMPLATE",
         "robot/capture/{sessionId}/frame",
     )
+    monkeypatch.setenv("TASKFLOW_CANCEL_TOPIC_FILTER", "robot/taskflow/+/cancel")
+    monkeypatch.setenv("MQTT_STATUS_QOS", "1")
+    monkeypatch.setenv("MQTT_TERMINAL_STATUS_QOS", "2")
+    monkeypatch.setenv("MQTT_TERMINAL_STATUS_RETAIN", "true")
+    monkeypatch.setenv("MQTT_TERMINAL_STATUS_WAIT_TIMEOUT", "3.5")
+    monkeypatch.setenv("TASKFLOW_QUEUE_MAXSIZE", "32")
+    monkeypatch.setenv("TASKFLOW_QUEUE_FULL_POLICY", "reject")
+    monkeypatch.setenv("ROBOT_STATE_QUEUE_MAXSIZE", "12")
+    monkeypatch.setenv("ROBOT_STATE_QUEUE_FULL_POLICY", "reject")
+    monkeypatch.setenv("DIAGNOSTICS_MQTT_CONNECT_TIMEOUT", "4.5")
+    monkeypatch.setenv("PAYLOAD_MAX_STRING_LENGTH", "128")
+    monkeypatch.setenv("PAYLOAD_MAX_COLLECTION_ITEMS", "5")
+    monkeypatch.setenv("PAYLOAD_MAX_DEPTH", "4")
+    monkeypatch.setenv("PAYLOAD_INCLUDE_FULL_VARIABLES", "true")
 
     settings = ExecutorSettings.from_env()
 
@@ -66,11 +104,27 @@ def test_env_overrides(monkeypatch) -> None:
     assert settings.robot_current_pose_response_topic == "robot/custom/response"
     assert settings.robot_camera_frame_request_topic == "robot/camera/request"
     assert settings.robot_camera_frame_response_topic == "robot/camera/response"
+    assert settings.robot_camera_calibration_request_topic == "robot/calibration/request"
+    assert settings.robot_camera_calibration_response_topic == "robot/calibration/response"
     assert settings.robot_camera_capture_start_request_topic == "robot/capture/start"
     assert settings.robot_camera_capture_start_response_topic == "robot/capture/start/resp"
     assert settings.robot_camera_capture_stop_request_topic == "robot/capture/stop"
     assert settings.robot_camera_capture_stop_response_topic == "robot/capture/stop/resp"
     assert settings.robot_camera_capture_frame_topic_template == "robot/capture/{sessionId}/frame"
+    assert settings.taskflow_cancel_topic_filter == "robot/taskflow/+/cancel"
+    assert settings.mqtt_status_qos == 1
+    assert settings.mqtt_terminal_status_qos == 2
+    assert settings.mqtt_terminal_status_retain is True
+    assert settings.mqtt_terminal_status_wait_timeout == 3.5
+    assert settings.taskflow_queue_maxsize == 32
+    assert settings.taskflow_queue_full_policy == "reject"
+    assert settings.robot_state_queue_maxsize == 12
+    assert settings.robot_state_queue_full_policy == "reject"
+    assert settings.diagnostics_mqtt_connect_timeout == 4.5
+    assert settings.payload_max_string_length == 128
+    assert settings.payload_max_collection_items == 5
+    assert settings.payload_max_depth == 4
+    assert settings.payload_include_full_variables is True
 
 
 def test_env_file_loading(tmp_path) -> None:
@@ -144,6 +198,30 @@ def test_build_env_source_keeps_env_precedence_over_env_file(tmp_path) -> None:
 def test_invalid_status_topic_template() -> None:
     with pytest.raises(ConfigError):
         ExecutorSettings(taskflow_status_topic_template="taskflow/static/status").validate()
+
+
+def test_invalid_mqtt_status_qos() -> None:
+    with pytest.raises(ConfigError):
+        ExecutorSettings(mqtt_terminal_status_qos=3).validate()
+
+
+def test_invalid_queue_config() -> None:
+    with pytest.raises(ConfigError):
+        ExecutorSettings(taskflow_queue_maxsize=0).validate()
+    with pytest.raises(ConfigError):
+        ExecutorSettings(robot_state_queue_maxsize=0).validate()
+    with pytest.raises(ConfigError):
+        ExecutorSettings(taskflow_queue_full_policy="drop_oldest").validate()
+    with pytest.raises(ConfigError):
+        ExecutorSettings(robot_state_queue_full_policy="drop_oldest").validate()
+    with pytest.raises(ConfigError):
+        ExecutorSettings(diagnostics_mqtt_connect_timeout=0).validate()
+    with pytest.raises(ConfigError):
+        ExecutorSettings(payload_max_string_length=0).validate()
+    with pytest.raises(ConfigError):
+        ExecutorSettings(payload_max_collection_items=0).validate()
+    with pytest.raises(ConfigError):
+        ExecutorSettings(payload_max_depth=0).validate()
 
 
 def test_read_env_file_rejects_invalid_line(tmp_path) -> None:

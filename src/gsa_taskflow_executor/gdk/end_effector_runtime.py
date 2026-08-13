@@ -1,3 +1,10 @@
+"""GDK 末端执行器控制运行时。
+
+通过 agibot_gdk.Robot.move_ee_pos() 控制夹爪开合。
+支持 omnipicker/dahuan/ctek90d 三种单关节末端（opening 0~1 线性映射）；
+o10_t2/o12_t2 等多关节末端暂未适配。
+"""
+
 from __future__ import annotations
 
 import importlib
@@ -6,11 +13,12 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
-from gsa_taskflow_executor.taskflow.parser import EndEffectorParams
+from gsa_taskflow_executor.taskflow.models import EndEffectorParams
 
 from .control_probe import is_zero_error, utc_now_iso
 from .motion_runtime import TASKFLOW_ABS_JOINT_CONFIRMATION
 from .readonly import GDK_BACKEND, to_jsonable
+from .recovery import maybe_mark_gdk_recovery_required, recovery_refused_payload
 from .session import (
     PROCESS_MANAGED_RELEASE_RESULT,
     GdkSessionImportError,
@@ -47,6 +55,10 @@ def run_gdk_end_effector_control(
     if gate_result is not None:
         return gate_result
 
+    recovery_result = build_recovery_refused_result(env)
+    if recovery_result is not None:
+        return recovery_result
+
     if should_use_in_process_runtime(import_module, session_manager, sleep):
         return run_gdk_end_effector_control_in_process(
             end_effector_params,
@@ -79,6 +91,7 @@ def run_gdk_end_effector_control(
             end_effector_params,
             safety_gate=confirmed_taskflow_safety_gate(),
         )
+        maybe_mark_gdk_recovery_required(result, operation=ACTION_TASKFLOW_END_EFFECTOR)
         result["gdk_parent_lock"] = {
             **lease.to_payload(),
             "policy": GDK_PARENT_LOCK_POLICY,
@@ -137,6 +150,7 @@ def run_gdk_end_effector_control_in_process(
         result["gdk_init"] = lease.init_result
         result["gdk_release"] = dict(PROCESS_MANAGED_RELEASE_RESULT)
         result["gdk_session"] = lease.to_payload()
+        maybe_mark_gdk_recovery_required(result, operation=ACTION_TASKFLOW_END_EFFECTOR)
 
     return result
 
@@ -294,6 +308,21 @@ def check_taskflow_end_effector_safety_gate(
     return None
 
 
+def build_recovery_refused_result(env: Mapping[str, str]) -> dict[str, object] | None:
+    recovery_result = recovery_refused_payload(env)
+    if recovery_result is None:
+        return None
+    return refused_result(
+        stage="gdk_recovery_required",
+        message=str(recovery_result["error_msg"]),
+        safety_confirmed=True,
+        extra={
+            **recovery_result,
+            "safety_gate": confirmed_taskflow_safety_gate(),
+        },
+    )
+
+
 def read_end_state(robot: Any) -> Mapping[str, Any]:
     end_state = robot.get_end_state()
     if not isinstance(end_state, Mapping):
@@ -306,6 +335,7 @@ def resolve_end_effector_type(
     target_end: str,
     end_state: Mapping[str, Any],
 ) -> str | None:
+    """解析末端执行器型号：优先配置值，否则从 get_end_state() 推断。"""
     if configured_type:
         return normalize_end_effector_type(configured_type)
     return infer_end_effector_type(end_state, target_end)
@@ -315,6 +345,7 @@ def infer_end_effector_type(
     end_state: Mapping[str, Any],
     target_end: str,
 ) -> str | None:
+    """从 get_end_state() 返回值推断末端型号。按 top-level → nested → list 顺序查找。"""
     side = "left" if target_end == "left_tool" else "right"
     top_level_keys = (
         f"{side}_end_effector_type",
