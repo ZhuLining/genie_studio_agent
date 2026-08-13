@@ -424,6 +424,41 @@ def test_gdk_motion_runtime_reports_arm_command_when_move_fails() -> None:
     assert "target_positions_csv" in result["move_arm_command"]
 
 
+def test_gdk_motion_runtime_skips_arm_move_when_target_is_current_pose() -> None:
+    FakeAgibotGdk.reset()
+    right_target = list(FakeAgibotGdk.robot.arm_positions[len(LEFT_ARM_JOINTS) :])
+
+    result = run_gdk_motion_plan_abs_joint(
+        MotionPlanParams(
+            targets=(
+                MotionPlanTarget(
+                    body_part="right_arm",
+                    control_type="ABS_JOINT",
+                    action_data=right_target,
+                ),
+            ),
+            speed=0.05,
+            timeout=50.0,
+        ),
+        environ={
+            "ENABLE_GDK_CONTROL": "1",
+            "CONFIRM_GDK_CONTROL": TASKFLOW_ABS_JOINT_CONFIRMATION,
+        },
+        import_module=lambda _name: FakeAgibotGdk,
+    )
+
+    assert result["executed"] is True
+    assert FakeAgibotGdk.robot.arm_move_calls == []
+    groups = result["groups"]
+    assert isinstance(groups, list)
+    assert groups[0]["skipped"] is True
+    assert groups[0]["skip_reason"] == "target_positions_already_current"
+    assert groups[0]["control_group"] == CONTROL_GROUP_DUAL_ARM
+    assert groups[0]["positions_len"] == len(DUAL_ARM_JOINTS)
+    assert groups[0]["move_return"] == "skipped"
+    assert groups[0]["max_abs_target_origin_diff"] == 0.0
+
+
 def test_gdk_motion_runtime_reuses_process_session_across_multiple_calls() -> None:
     FakeAgibotGdk.reset()
     manager = GdkSessionManager(import_module=lambda _name: FakeAgibotGdk)

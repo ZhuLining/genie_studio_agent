@@ -53,6 +53,7 @@ TASKFLOW_ABS_JOINT_CONFIRMATION = "TASKFLOW_ABS_JOINT"  # 安全门确认令牌
 GDK_CONTROL_MODE_UNSUPPORTED = "GDK_CONTROL_MODE_UNSUPPORTED"
 UNSUPPORTED_CARTESIAN_IMPEDANCE_MODE = "CTRL_CARTESIAN_IMPEDANCE"
 UNSUPPORTED_CONTROL_MODE_MESSAGE = "当前为笛卡尔阻抗模式，请切换到关节位置/规划控制模式后重试"
+ARM_MOVE_NOOP_TOLERANCE_RAD = 1e-6
 WAIST_JOINTS = [
     "idx01_body_joint1",
     "idx02_body_joint2",
@@ -336,6 +337,24 @@ def execute_arm_abs_joint_targets(
         velocity=velocity,
         origin_positions=origin.positions,
     )
+    no_op_diffs = position_diffs(target_positions, origin.positions)
+    max_abs_diff = max((abs(diff) for diff in no_op_diffs), default=0.0)
+    if max_abs_diff <= ARM_MOVE_NOOP_TOLERANCE_RAD:
+        # 目标已经等于当前位姿时不再下发控制命令。现场 GDK 对“保持当前值”的
+        # move_arm_joint 可能返回失败，跳过可以避免无意义控制调用打断工作流。
+        return build_arm_noop_result(
+            targets_by_part=targets_by_part,
+            target_positions=target_positions,
+            velocities=velocities,
+            control_group=control_group,
+            joint_order=joint_order,
+            interface_mode=interface_mode,
+            velocity=velocity,
+            origin=origin,
+            command_diagnostic=command_diagnostic,
+            max_abs_diff=max_abs_diff,
+        )
+
     try:
         move_return = robot.move_arm_joint(target_positions, velocities, control_group)
     except Exception as error:
@@ -369,6 +388,47 @@ def execute_arm_abs_joint_targets(
         "after_positions": after.positions,
         "diffs": position_diffs(after.positions, origin.positions),
         "move_return": to_jsonable(move_return),
+        "raw": snapshot_raw(origin),
+    }
+
+
+def build_arm_noop_result(
+    *,
+    targets_by_part: Mapping[str, Sequence[float]],
+    target_positions: Sequence[float],
+    velocities: Sequence[float],
+    control_group: int,
+    joint_order: Sequence[str],
+    interface_mode: str,
+    velocity: float,
+    origin: JointSnapshot,
+    command_diagnostic: Mapping[str, object],
+    max_abs_diff: float,
+) -> dict[str, object]:
+    """构建机械臂 no-op 结果。"""
+    return {
+        "body_part": "arms",
+        "requested_body_parts": list(targets_by_part.keys()),
+        "method": "move_arm_joint",
+        "skipped": True,
+        "skip_reason": "target_positions_already_current",
+        "noop_tolerance_rad": ARM_MOVE_NOOP_TOLERANCE_RAD,
+        "max_abs_target_origin_diff": max_abs_diff,
+        "control_group": control_group,
+        "control_group_semantics": "0=left_arm_7d, 1=right_arm_7d, 2=dual_arm_14d",
+        "interface_mode": interface_mode,
+        "joint_order": list(joint_order),
+        "positions_len": len(target_positions),
+        "velocities_len": len(velocities),
+        "velocities": list(velocities),
+        "effective_gdk_velocity": velocity,
+        "velocity_source": "taskflow_speed",
+        "origin_positions": origin.positions,
+        "target_positions": [float(value) for value in target_positions],
+        "after_positions": origin.positions,
+        "diffs": [0.0] * len(origin.positions),
+        "move_return": "skipped",
+        "move_arm_command": dict(command_diagnostic),
         "raw": snapshot_raw(origin),
     }
 
