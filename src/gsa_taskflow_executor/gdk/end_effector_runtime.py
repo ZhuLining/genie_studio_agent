@@ -1,16 +1,25 @@
+"""GDK 末端执行器控制运行时。
+
+通过 agibot_gdk.Robot.move_ee_pos() 控制夹爪开合。
+支持 omnipicker/dahuan/ctek90d 三种单关节末端（opening 0~1 线性映射）；
+o10_t2/o12_t2 等多关节末端暂未适配。
+"""
+
 from __future__ import annotations
 
 import importlib
 import os
 import time
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
-from gsa_taskflow_executor.taskflow.parser import EndEffectorParams
+from gsa_taskflow_executor.taskflow.models import EndEffectorParams
 
 from .control_probe import is_zero_error, utc_now_iso
 from .motion_runtime import TASKFLOW_ABS_JOINT_CONFIRMATION
 from .readonly import GDK_BACKEND, to_jsonable
+from .recovery import maybe_mark_gdk_recovery_required, recovery_refused_payload
 from .session import (
     PROCESS_MANAGED_RELEASE_RESULT,
     GdkSessionImportError,
@@ -22,6 +31,7 @@ from .subprocess_runtime import GDK_PARENT_LOCK_POLICY, run_end_effector_in_subp
 ACTION_TASKFLOW_END_EFFECTOR = "taskflow_end_effector"
 GDK_END_EFFECTOR_TYPE_UNKNOWN = "GDK_END_EFFECTOR_TYPE_UNKNOWN"
 GDK_END_EFFECTOR_TYPE_UNSUPPORTED = "GDK_END_EFFECTOR_TYPE_UNSUPPORTED"
+GDK_END_EFFECTOR_TYPE_MISMATCH = "GDK_END_EFFECTOR_TYPE_MISMATCH"
 
 # PDF 示例给出了这些单关节末端的开/合范围；opening=1 表示打开，0 表示闭合。
 SINGLE_JOINT_END_EFFECTOR_RANGES = {
@@ -30,6 +40,17 @@ SINGLE_JOINT_END_EFFECTOR_RANGES = {
     "ctek90d": {"open": -0.91, "closed": 0.0},
 }
 MULTI_JOINT_END_EFFECTOR_TYPES = frozenset({"o10_t2", "o12_t2"})
+
+
+@dataclass(frozen=True)
+class EndEffectorMoveCommand:
+    end_effector_type: str | None
+    positions: list[float] | None
+    requested_openings: list[float]
+    left_opening: float | None
+    right_opening: float | None
+    left_end_effector_type: str | None
+    right_end_effector_type: str | None
 
 
 def run_gdk_end_effector_control(
@@ -46,6 +67,10 @@ def run_gdk_end_effector_control(
     gate_result = check_taskflow_end_effector_safety_gate(env)
     if gate_result is not None:
         return gate_result
+
+    recovery_result = build_recovery_refused_result(env)
+    if recovery_result is not None:
+        return recovery_result
 
     if should_use_in_process_runtime(import_module, session_manager, sleep):
         return run_gdk_end_effector_control_in_process(
@@ -79,6 +104,7 @@ def run_gdk_end_effector_control(
             end_effector_params,
             safety_gate=confirmed_taskflow_safety_gate(),
         )
+        maybe_mark_gdk_recovery_required(result, operation=ACTION_TASKFLOW_END_EFFECTOR)
         result["gdk_parent_lock"] = {
             **lease.to_payload(),
             "policy": GDK_PARENT_LOCK_POLICY,
@@ -137,6 +163,7 @@ def run_gdk_end_effector_control_in_process(
         result["gdk_init"] = lease.init_result
         result["gdk_release"] = dict(PROCESS_MANAGED_RELEASE_RESULT)
         result["gdk_session"] = lease.to_payload()
+        maybe_mark_gdk_recovery_required(result, operation=ACTION_TASKFLOW_END_EFFECTOR)
 
     return result
 
@@ -172,12 +199,12 @@ def execute_end_effector_control(
     sleep: Callable[[float], None] = time.sleep,
 ) -> dict[str, object]:
     before_end_state = read_end_state(robot)
-    end_effector_type = resolve_end_effector_type(
-        end_effector_params.end_effector_type,
-        end_effector_params.target_end,
-        before_end_state,
-    )
-    if end_effector_type is None:
+    command_result = build_end_effector_move_command(end_effector_params, before_end_state)
+    if isinstance(command_result, dict):
+        return command_result
+    command = command_result
+
+    if command.end_effector_type is None:
         return refused_result(
             stage="resolve_end_effector_type",
             message=(
@@ -191,22 +218,18 @@ def execute_end_effector_control(
             },
         )
 
-    positions = build_positions_for_opening(
-        end_effector_type,
-        end_effector_params.opening,
-    )
-    if positions is None:
+    if command.positions is None:
         return refused_result(
             stage="validate_end_effector_type",
             message=(
                 "当前开合度 0~1 映射仅支持 omnipicker/dahuan/ctek90d；"
-                f"{end_effector_type} 需要补充多关节映射后再开放"
+                f"{command.end_effector_type} 需要补充多关节映射后再开放"
             ),
             safety_confirmed=True,
             extra={
                 "error_code": GDK_END_EFFECTOR_TYPE_UNSUPPORTED,
                 "target_end": end_effector_params.target_end,
-                "end_effector_type": end_effector_type,
+                "end_effector_type": command.end_effector_type,
                 "supported_end_effector_types": sorted(SINGLE_JOINT_END_EFFECTOR_RANGES),
                 "known_multi_joint_end_effector_types": sorted(
                     MULTI_JOINT_END_EFFECTOR_TYPES
@@ -218,8 +241,8 @@ def execute_end_effector_control(
     joint_states = build_gdk_joint_states(
         agibot_gdk,
         group=end_effector_params.target_end,
-        target_type=end_effector_type,
-        positions=positions,
+        target_type=command.end_effector_type,
+        positions=command.positions,
     )
     move_return = robot.move_ee_pos(joint_states)
     if not is_zero_error(move_return):
@@ -236,7 +259,7 @@ def execute_end_effector_control(
     actual_openness_source = "gdk_after_end_state"
     if actual_openness is None:
         # 真机 get_end_state() 字段形态仍需继续现场归档；解析不到时保留请求值用于下游联调。
-        actual_openness = [end_effector_params.opening]
+        actual_openness = command.requested_openings
         actual_openness_source = "requested_opening_fallback"
     return {
         "available": True,
@@ -247,20 +270,26 @@ def execute_end_effector_control(
         "method": "move_ee_pos",
         "target_end": end_effector_params.target_end,
         "group": end_effector_params.target_end,
-        "end_effector_type": end_effector_type,
-        "target_type": end_effector_type,
+        "end_effector_type": command.end_effector_type,
+        "target_type": command.end_effector_type,
         "opening": end_effector_params.opening,
+        "left_opening": command.left_opening,
+        "right_opening": command.right_opening,
+        "left_end_effector_type": command.left_end_effector_type,
+        "right_end_effector_type": command.right_end_effector_type,
         "post_wait_seconds": end_effector_params.post_wait_seconds,
         "wait_after_command": wait_after_command,
         "actual_openness": actual_openness,
         "actual_openness_source": actual_openness_source,
-        "target_positions": positions,
-        "positions_len": len(positions),
+        "target_positions": command.positions,
+        "positions_len": len(command.positions),
+        "positions_layout": build_positions_layout(end_effector_params.target_end),
         "joint_states": {
             "group": end_effector_params.target_end,
-            "target_type": end_effector_type,
-            "nums": len(positions),
-            "positions": positions,
+            "target_type": command.end_effector_type,
+            "nums": len(command.positions),
+            "positions": command.positions,
+            "positions_layout": build_positions_layout(end_effector_params.target_end),
         },
         "move_return": to_jsonable(move_return),
         "timeout": end_effector_params.timeout,
@@ -294,6 +323,21 @@ def check_taskflow_end_effector_safety_gate(
     return None
 
 
+def build_recovery_refused_result(env: Mapping[str, str]) -> dict[str, object] | None:
+    recovery_result = recovery_refused_payload(env)
+    if recovery_result is None:
+        return None
+    return refused_result(
+        stage="gdk_recovery_required",
+        message=str(recovery_result["error_msg"]),
+        safety_confirmed=True,
+        extra={
+            **recovery_result,
+            "safety_gate": confirmed_taskflow_safety_gate(),
+        },
+    )
+
+
 def read_end_state(robot: Any) -> Mapping[str, Any]:
     end_state = robot.get_end_state()
     if not isinstance(end_state, Mapping):
@@ -301,13 +345,133 @@ def read_end_state(robot: Any) -> Mapping[str, Any]:
     return end_state
 
 
+def build_end_effector_move_command(
+    end_effector_params: EndEffectorParams,
+    end_state: Mapping[str, Any],
+) -> EndEffectorMoveCommand | dict[str, object]:
+    if end_effector_params.target_end == "dual_tool":
+        left_type = resolve_single_end_effector_type(
+            end_effector_params.left_end_effector_type,
+            end_effector_params.end_effector_type,
+            "left_tool",
+            end_state,
+        )
+        right_type = resolve_single_end_effector_type(
+            end_effector_params.right_end_effector_type,
+            end_effector_params.end_effector_type,
+            "right_tool",
+            end_state,
+        )
+        if left_type is None or right_type is None:
+            return EndEffectorMoveCommand(
+                end_effector_type=None,
+                positions=None,
+                requested_openings=[
+                    read_side_opening(end_effector_params, "left_tool"),
+                    read_side_opening(end_effector_params, "right_tool"),
+                ],
+                left_opening=read_side_opening(end_effector_params, "left_tool"),
+                right_opening=read_side_opening(end_effector_params, "right_tool"),
+                left_end_effector_type=left_type,
+                right_end_effector_type=right_type,
+            )
+        if left_type != right_type:
+            return refused_result(
+                stage="validate_end_effector_type",
+                message="dual_tool 需要左右末端型号一致，因为 move_ee_pos 只有一个 target_type",
+                safety_confirmed=True,
+                extra={
+                    "error_code": GDK_END_EFFECTOR_TYPE_MISMATCH,
+                    "target_end": end_effector_params.target_end,
+                    "left_end_effector_type": left_type,
+                    "right_end_effector_type": right_type,
+                    "before_end_state": to_jsonable(end_state),
+                },
+            )
+        left_opening = read_side_opening(end_effector_params, "left_tool")
+        right_opening = read_side_opening(end_effector_params, "right_tool")
+        left_positions = build_positions_for_opening(left_type, left_opening)
+        right_positions = build_positions_for_opening(right_type, right_opening)
+        positions = (
+            [*left_positions, *right_positions]
+            if left_positions is not None and right_positions is not None
+            else None
+        )
+        return EndEffectorMoveCommand(
+            end_effector_type=left_type,
+            positions=positions,
+            requested_openings=[left_opening, right_opening],
+            left_opening=left_opening,
+            right_opening=right_opening,
+            left_end_effector_type=left_type,
+            right_end_effector_type=right_type,
+        )
+
+    end_effector_type = resolve_end_effector_type(
+        end_effector_params.end_effector_type,
+        end_effector_params.target_end,
+        end_state,
+    )
+    opening = read_side_opening(end_effector_params, end_effector_params.target_end)
+    return EndEffectorMoveCommand(
+        end_effector_type=end_effector_type,
+        positions=(
+            build_positions_for_opening(end_effector_type, opening)
+            if end_effector_type is not None
+            else None
+        ),
+        requested_openings=[opening],
+        left_opening=opening if end_effector_params.target_end == "left_tool" else None,
+        right_opening=opening if end_effector_params.target_end == "right_tool" else None,
+        left_end_effector_type=(
+            end_effector_type if end_effector_params.target_end == "left_tool" else None
+        ),
+        right_end_effector_type=(
+            end_effector_type if end_effector_params.target_end == "right_tool" else None
+        ),
+    )
+
+
+def resolve_single_end_effector_type(
+    side_configured_type: str | None,
+    fallback_configured_type: str | None,
+    target_end: str,
+    end_state: Mapping[str, Any],
+) -> str | None:
+    configured_type = side_configured_type or fallback_configured_type
+    return resolve_end_effector_type(configured_type, target_end, end_state)
+
+
+def read_side_opening(end_effector_params: EndEffectorParams, target_end: str) -> float:
+    if target_end == "left_tool":
+        return (
+            end_effector_params.left_opening
+            if end_effector_params.left_opening is not None
+            else end_effector_params.opening
+        )
+    if target_end == "right_tool":
+        return (
+            end_effector_params.right_opening
+            if end_effector_params.right_opening is not None
+            else end_effector_params.opening
+        )
+    return end_effector_params.opening
+
+
 def resolve_end_effector_type(
     configured_type: str | None,
     target_end: str,
     end_state: Mapping[str, Any],
 ) -> str | None:
+    """解析末端执行器型号：优先配置值，否则从 get_end_state() 推断。"""
     if configured_type:
         return normalize_end_effector_type(configured_type)
+    if target_end == "dual_tool":
+        left_type = infer_end_effector_type(end_state, "left_tool")
+        right_type = infer_end_effector_type(end_state, "right_tool")
+        if left_type is not None and left_type == right_type:
+            return left_type
+        return None
     return infer_end_effector_type(end_state, target_end)
 
 
@@ -315,6 +479,7 @@ def infer_end_effector_type(
     end_state: Mapping[str, Any],
     target_end: str,
 ) -> str | None:
+    """从 get_end_state() 返回值推断末端型号。按 top-level → nested → list 顺序查找。"""
     side = "left" if target_end == "left_tool" else "right"
     top_level_keys = (
         f"{side}_end_effector_type",
@@ -387,6 +552,13 @@ def extract_actual_openness(
     end_state: Mapping[str, Any],
     target_end: str,
 ) -> list[float] | None:
+    if target_end == "dual_tool":
+        left = extract_actual_openness(end_state, "left_tool")
+        right = extract_actual_openness(end_state, "right_tool")
+        if left is None or right is None:
+            return None
+        return [*left, *right]
+
     side = "left" if target_end == "left_tool" else "right"
     nested_keys = (
         target_end,
@@ -448,6 +620,12 @@ def extract_actual_openness_from_items(
     return None
 
 
+def fallback_actual_openness(target_end: str, opening: float) -> list[float]:
+    if target_end == "dual_tool":
+        return [opening, opening]
+    return [opening]
+
+
 def first_numeric_sequence(mapping: Mapping[str, Any], keys: Sequence[str]) -> list[float] | None:
     for key in keys:
         value = mapping.get(key)
@@ -496,6 +674,12 @@ def build_positions_for_opening(
     open_position = joint_range["open"]
     closed_position = joint_range["closed"]
     return [closed_position + (open_position - closed_position) * opening]
+
+
+def build_positions_layout(target_end: str) -> str:
+    if target_end == "dual_tool":
+        return "left_tool_then_right_tool"
+    return target_end
 
 
 def build_gdk_joint_states(

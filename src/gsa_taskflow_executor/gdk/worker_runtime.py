@@ -1,56 +1,68 @@
+"""GDK 持久 worker 子进程管理器。
+
+通过复用单个 multiprocessing.Process 避免每个节点重复 spawn/import/init agibot_gdk。
+命令超时时直接 kill worker，下条命令懒启动新 worker。
+
+数据流::
+
+    父进程                              worker 子进程
+    ────────                            ────────────
+    run_command() ──command_queue──▶   gdk_worker_main()
+                                      │
+                                      ├─ motion_abs_joint → Robot.move_arm_joint()
+                                      ├─ end_effector    → Robot.move_ee_pos()
+                                      ├─ code_script     → run_script_safely()
+                                      └─ shutdown        → release_gdk()
+                                      │
+    _wait_for_result() ◀──result_queue── result
+
+    cancel_active_command() → terminate worker → 下次命令懒重启
+
+父进程仍通过 GdkSessionManager 做访问互斥；worker 只承担 GDK C 扩展的阻塞边界。
+"""
+
 from __future__ import annotations
 
-import importlib
-import os
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
 from multiprocessing import get_context
 from queue import Empty
 from threading import Lock
-from typing import Any, cast
+from typing import Any
 from uuid import uuid4
 
-from gsa_taskflow_executor.gdk.control_probe import initialize_gdk, release_gdk, utc_now_iso
-from gsa_taskflow_executor.gdk.readonly import GDK_BACKEND, GDK_MODULE_NAME, to_jsonable
+from gsa_taskflow_executor.gdk.readonly import GDK_BACKEND
 from gsa_taskflow_executor.gdk.subprocess_runtime import (
     DEFAULT_TERMINATE_GRACE_SECONDS,
-    GDK_SUBPROCESS_FAILED_CODE,
     build_subprocess_failed_result,
     build_timeout_result,
     close_process,
     close_queue,
     read_timeout_seconds,
 )
-
-GDK_WORKER_POLICY = "persistent_gdk_worker"
-GDK_WORKER_COMMAND_TIMEOUT_SEMANTICS = (
-    "worker_process_restarted; robot_controller_cancel_not_guaranteed"
+from gsa_taskflow_executor.gdk.worker_commands import (
+    GDK_WORKER_COMMAND_TIMEOUT_SEMANTICS,
+    GDK_WORKER_POLICY,
+    GDK_WORKER_SHUTDOWN_ACTION,
+    build_cancelled_result,
+    build_worker_process_payload,
+    default_gdk_release_result,
+    gdk_worker_main,
+    normalize_string_mapping,
+    read_mapping_field,
+    read_string_field,
 )
-GDK_WORKER_SHUTDOWN_ACTION = "gdk_worker_shutdown"
+
 DEFAULT_WORKER_SHUTDOWN_TIMEOUT_SECONDS = 5.0
 
 WorkerTarget = Callable[[Any, Any], None]
 
 
-@dataclass
-class WorkerGdkState:
-    agibot_gdk: Any | None = None
-    init_attempted: bool = False
-    gdk_initialized: bool = False
-    init_result: dict[str, object] = field(default_factory=lambda: default_gdk_init_result())
-
-    def require_agibot_gdk(self) -> Any:
-        if self.agibot_gdk is None:
-            raise RuntimeError("GDK worker missing initialized agibot_gdk module")
-        return self.agibot_gdk
-
-
 class GdkWorkerProcessManager:
-    """复用一个可杀掉的 GDK 子进程，避免每个节点重复 spawn/import/init。
+    """复用单个 GDK 子进程的命令管理器。
 
-    父进程仍依赖 GdkSessionManager 做访问互斥；这里的 worker 只承担 GDK C 扩展
-    的阻塞边界。命令超时时直接终止 worker，并在下一条命令懒启动新 worker。
+    父进程通过 GdkSessionManager 做访问互斥；本类只管理 worker 生命周期。
+    命令超时时直接 terminate worker → 下次命令懒启动新 worker。
     """
 
     def __init__(
@@ -63,11 +75,17 @@ class GdkWorkerProcessManager:
         self._ctx: Any = get_context(start_method)
         self._worker_target: WorkerTarget = worker_target or gdk_worker_main
         self._terminate_grace_seconds = terminate_grace_seconds
-        self._lock = Lock()
+        self._lock = Lock()            # 保护进程/队列状态
+        self._command_lock = Lock()    # 串行化命令（同一时刻只有一个命令在飞）
         self._process: Any | None = None
         self._command_queue: Any | None = None
         self._result_queue: Any | None = None
+        # 未认领的结果（command_id 匹配但延迟到达）。
         self._pending_results: dict[str, dict[str, object]] = {}
+        # cancel_active_command 注入给等待线程的取消结果。
+        self._cancelled_results: dict[str, dict[str, object]] = {}
+        self._active_command_id: str | None = None
+        self._active_command_payload: dict[str, object] | None = None
 
     def run_command(
         self,
@@ -79,31 +97,44 @@ class GdkWorkerProcessManager:
         timeout_seconds: float,
         safety_gate: Mapping[str, object],
     ) -> dict[str, object]:
+        """发送命令到 worker，阻塞等待结果。超时时 terminate worker 并返回 timeout 结果。"""
         command_id = str(uuid4())
-        with self._lock:
+        with self._command_lock:
+            process: Any | None = None
+            worker_started = False
             try:
-                process, command_queue, result_queue, worker_started = self._ensure_started_locked()
-                command_queue.put(
-                    {
-                        "command_id": command_id,
-                        "kind": kind,
-                        "payload": dict(payload),
+                with self._lock:
+                    process, command_queue, result_queue, worker_started = (
+                        self._ensure_started_locked()
+                    )
+                    self._active_command_id = command_id
+                    self._active_command_payload = {
                         "action": action,
                         "backend": backend,
                         "safety_gate": dict(safety_gate),
                     }
-                )
+                    command_queue.put(
+                        {
+                            "command_id": command_id,
+                            "kind": kind,
+                            "payload": dict(payload),
+                            "action": action,
+                            "backend": backend,
+                            "safety_gate": dict(safety_gate),
+                        }
+                    )
             except Exception as error:
-                subprocess_payload = build_worker_process_payload(
-                    self._process,
-                    command_id=command_id,
-                    timed_out=False,
-                    terminated=False,
-                    killed=False,
-                    worker_started=False,
-                    worker_reused=False,
-                )
-                self._reset_locked()
+                with self._lock:
+                    subprocess_payload = build_worker_process_payload(
+                        self._process,
+                        command_id=command_id,
+                        timed_out=False,
+                        terminated=False,
+                        killed=False,
+                        worker_started=False,
+                        worker_reused=False,
+                    )
+                    self._reset_locked()
                 return build_subprocess_failed_result(
                     action=action,
                     backend=backend,
@@ -113,7 +144,7 @@ class GdkWorkerProcessManager:
                     subprocess_payload=subprocess_payload,
                 )
 
-            status, envelope = self._wait_for_result_locked(
+            status, envelope = self._wait_for_result(
                 command_id=command_id,
                 process=process,
                 result_queue=result_queue,
@@ -121,11 +152,12 @@ class GdkWorkerProcessManager:
             )
 
             if status == "timeout":
-                subprocess_payload = self._terminate_worker_locked(
-                    command_id=command_id,
-                    timeout_seconds=timeout_seconds,
-                    worker_started=worker_started,
-                )
+                with self._lock:
+                    subprocess_payload = self._terminate_worker_locked(
+                        command_id=command_id,
+                        timeout_seconds=timeout_seconds,
+                        worker_started=worker_started,
+                    )
                 result = build_timeout_result(
                     action=action,
                     backend=backend,
@@ -137,16 +169,17 @@ class GdkWorkerProcessManager:
                 return result
 
             if status != "ok" or envelope is None:
-                subprocess_payload = build_worker_process_payload(
-                    process,
-                    command_id=command_id,
-                    timed_out=False,
-                    terminated=False,
-                    killed=False,
-                    worker_started=worker_started,
-                    worker_reused=not worker_started,
-                )
-                self._reset_locked()
+                with self._lock:
+                    subprocess_payload = build_worker_process_payload(
+                        process,
+                        command_id=command_id,
+                        timed_out=False,
+                        terminated=False,
+                        killed=False,
+                        worker_started=worker_started,
+                        worker_reused=not worker_started,
+                    )
+                    self._reset_locked()
                 return build_subprocess_failed_result(
                     action=action,
                     backend=backend,
@@ -156,18 +189,23 @@ class GdkWorkerProcessManager:
                     subprocess_payload=subprocess_payload,
                 )
 
+            # 提取并校验 command result
             raw_result = envelope.get("result")
             command_result = normalize_string_mapping(raw_result)
             if command_result is None:
-                subprocess_payload = build_worker_process_payload(
-                    process,
-                    command_id=command_id,
-                    timed_out=False,
-                    terminated=False,
-                    killed=False,
-                    worker_started=worker_started,
-                    worker_reused=not worker_started,
-                )
+                with self._lock:
+                    subprocess_payload = build_worker_process_payload(
+                        process,
+                        command_id=command_id,
+                        timed_out=False,
+                        terminated=False,
+                        killed=False,
+                        worker_started=worker_started,
+                        worker_reused=not worker_started,
+                    )
+                    if self._active_command_id == command_id:
+                        self._active_command_id = None
+                        self._active_command_payload = None
                 return build_subprocess_failed_result(
                     action=action,
                     backend=backend,
@@ -177,119 +215,186 @@ class GdkWorkerProcessManager:
                     subprocess_payload=subprocess_payload,
                 )
 
-            command_result["subprocess"] = build_worker_process_payload(
-                process,
-                command_id=command_id,
-                timed_out=False,
-                terminated=False,
-                killed=False,
-                worker_started=worker_started,
-                worker_reused=not worker_started,
-            )
-            return command_result
-
-    def shutdown(
-        self,
-        timeout_seconds: float = DEFAULT_WORKER_SHUTDOWN_TIMEOUT_SECONDS,
-    ) -> dict[str, object]:
-        """优雅释放常驻 GDK worker；若 worker 正卡在 GDK 内部，则超时后杀掉。"""
-
-        command_id = str(uuid4())
-        with self._lock:
-            if self._process is None:
-                return {
-                    "called": False,
-                    "success": True,
-                    "reason": "not_started",
-                    "subprocess": build_worker_process_payload(
-                        None,
-                        command_id=command_id,
-                        timed_out=False,
-                        terminated=False,
-                        killed=False,
-                        worker_started=False,
-                        worker_reused=False,
-                    ),
-                }
-
-            process = self._process
-            command_queue = self._command_queue
-            result_queue = self._result_queue
-            if command_queue is None or result_queue is None or not process.is_alive():
-                subprocess_payload = build_worker_process_payload(
+            if "subprocess" not in command_result:
+                command_result["subprocess"] = build_worker_process_payload(
                     process,
                     command_id=command_id,
                     timed_out=False,
                     terminated=False,
                     killed=False,
-                    worker_started=False,
-                    worker_reused=True,
+                    worker_started=worker_started,
+                    worker_reused=not worker_started,
                 )
-                self._reset_locked()
+            with self._lock:
+                if self._active_command_id == command_id:
+                    self._active_command_id = None
+                    self._active_command_payload = None
+            return command_result
+
+    def cancel_active_command(self, reason: str) -> dict[str, object]:
+        """终止当前正在执行的 worker 命令（来自 MQTT 取消回调线程）。
+
+        这不是机器人控制器急停；只切断 executor 侧阻塞的 GDK worker。
+        后续控制命令会被恢复门控挡住，直到只读状态确认机器人安全。
+        """
+        command_id = str(uuid4())
+        with self._lock:
+            active_command_id = self._active_command_id
+            active_payload = dict(self._active_command_payload or {})
+            if active_command_id is None:
                 return {
                     "called": False,
                     "success": True,
-                    "reason": "worker_not_alive",
-                    "subprocess": subprocess_payload,
+                    "reason": "no_active_command",
+                    "request_reason": reason,
+                    "subprocess": build_worker_process_payload(
+                        self._process,
+                        command_id=command_id,
+                        timed_out=False,
+                        terminated=False,
+                        killed=False,
+                        worker_started=False,
+                        worker_reused=self._process is not None,
+                    ),
                 }
 
-            try:
-                command_queue.put(
-                    {
-                        "command_id": command_id,
-                        "kind": "shutdown",
-                        "payload": {},
-                        "action": GDK_WORKER_SHUTDOWN_ACTION,
-                        "backend": GDK_BACKEND,
-                        "safety_gate": {"enabled": True, "confirmed": True},
+            subprocess_payload = self._terminate_worker_locked(
+                command_id=active_command_id,
+                timeout_seconds=0.0,
+                worker_started=False,
+                timed_out=False,
+            )
+            result = build_cancelled_result(
+                action=read_string_field(active_payload, "action") or "gdk_worker_command",
+                backend=read_string_field(active_payload, "backend") or GDK_BACKEND,
+                reason=reason,
+                safety_gate=read_mapping_field(active_payload, "safety_gate") or {},
+                subprocess_payload=subprocess_payload,
+            )
+            # 注入取消结果，_wait_for_result 中会优先返回
+            self._cancelled_results[active_command_id] = {
+                "command_id": active_command_id,
+                "result": result,
+            }
+            return {
+                "called": True,
+                "success": True,
+                "reason": "worker_terminated",
+                "request_reason": reason,
+                "active_command_id": active_command_id,
+                "result": result,
+                "subprocess": subprocess_payload,
+            }
+
+    def shutdown(
+        self,
+        timeout_seconds: float = DEFAULT_WORKER_SHUTDOWN_TIMEOUT_SECONDS,
+    ) -> dict[str, object]:
+        """优雅关闭 GDK worker。发送 shutdown 命令 → 等待 → 超时则 kill。"""
+        command_id = str(uuid4())
+        with self._command_lock:
+            with self._lock:
+                if self._process is None:
+                    return {
+                        "called": False,
+                        "success": True,
+                        "reason": "not_started",
+                        "subprocess": build_worker_process_payload(
+                            None,
+                            command_id=command_id,
+                            timed_out=False,
+                            terminated=False,
+                            killed=False,
+                            worker_started=False,
+                            worker_reused=False,
+                        ),
                     }
-                )
-            except Exception as error:
-                subprocess_payload = self._terminate_worker_locked(
-                    command_id=command_id,
-                    timeout_seconds=timeout_seconds,
-                    worker_started=False,
-                )
-                return {
-                    "called": True,
-                    "success": False,
-                    "reason": "send_shutdown_failed",
-                    "error_type": type(error).__name__,
-                    "error_msg": str(error),
-                    "subprocess": subprocess_payload,
-                }
 
-            status, envelope = self._wait_for_result_locked(
+                process = self._process
+                command_queue = self._command_queue
+                result_queue = self._result_queue
+                if command_queue is None or result_queue is None or not process.is_alive():
+                    subprocess_payload = build_worker_process_payload(
+                        process,
+                        command_id=command_id,
+                        timed_out=False,
+                        terminated=False,
+                        killed=False,
+                        worker_started=False,
+                        worker_reused=True,
+                    )
+                    self._reset_locked()
+                    return {
+                        "called": False,
+                        "success": True,
+                        "reason": "worker_not_alive",
+                        "subprocess": subprocess_payload,
+                    }
+
+                self._active_command_id = command_id
+                self._active_command_payload = {
+                    "action": GDK_WORKER_SHUTDOWN_ACTION,
+                    "backend": GDK_BACKEND,
+                    "safety_gate": {"enabled": True, "confirmed": True},
+                }
+                try:
+                    command_queue.put(
+                        {
+                            "command_id": command_id,
+                            "kind": "shutdown",
+                            "payload": {},
+                            "action": GDK_WORKER_SHUTDOWN_ACTION,
+                            "backend": GDK_BACKEND,
+                            "safety_gate": {"enabled": True, "confirmed": True},
+                        }
+                    )
+                except Exception as error:
+                    subprocess_payload = self._terminate_worker_locked(
+                        command_id=command_id,
+                        timeout_seconds=timeout_seconds,
+                        worker_started=False,
+                    )
+                    return {
+                        "called": True,
+                        "success": False,
+                        "reason": "send_shutdown_failed",
+                        "error_type": type(error).__name__,
+                        "error_msg": str(error),
+                        "subprocess": subprocess_payload,
+                    }
+
+            status, envelope = self._wait_for_result(
                 command_id=command_id,
                 process=process,
                 result_queue=result_queue,
                 timeout_seconds=timeout_seconds,
             )
             process.join(0.1)
-            if process.is_alive():
-                subprocess_payload = self._terminate_worker_locked(
-                    command_id=command_id,
-                    timeout_seconds=timeout_seconds,
-                    worker_started=False,
-                )
-                return {
-                    "called": True,
-                    "success": False,
-                    "reason": "shutdown_timeout",
-                    "gdk_release": default_gdk_release_result(reason="shutdown_timeout"),
-                    "subprocess": subprocess_payload,
-                }
+            with self._lock:
+                if process.is_alive():
+                    subprocess_payload = self._terminate_worker_locked(
+                        command_id=command_id,
+                        timeout_seconds=timeout_seconds,
+                        worker_started=False,
+                    )
+                    return {
+                        "called": True,
+                        "success": False,
+                        "reason": "shutdown_timeout",
+                        "gdk_release": default_gdk_release_result(reason="shutdown_timeout"),
+                        "subprocess": subprocess_payload,
+                    }
 
-            subprocess_payload = build_worker_process_payload(
-                process,
-                command_id=command_id,
-                timed_out=status == "timeout",
-                terminated=False,
-                killed=False,
-                worker_started=False,
-                worker_reused=True,
-            )
-            self._reset_locked()
+                subprocess_payload = build_worker_process_payload(
+                    process,
+                    command_id=command_id,
+                    timed_out=status == "timeout",
+                    terminated=False,
+                    killed=False,
+                    worker_started=False,
+                    worker_reused=True,
+                )
+                self._reset_locked()
 
             result = normalize_string_mapping(envelope.get("result")) if envelope else None
             release_result = read_mapping_field(result, "gdk_release")
@@ -302,7 +407,46 @@ class GdkWorkerProcessManager:
                 "subprocess": subprocess_payload,
             }
 
+    def diagnostics(self) -> dict[str, object]:
+        """返回 worker 进程快照；只读，不 spawn、不发命令、不导入 GDK。"""
+        with self._lock:
+            process_alive = False
+            if self._process is not None:
+                try:
+                    process_alive = bool(self._process.is_alive())
+                except ValueError:
+                    process_alive = False
+
+            return {
+                "policy": GDK_WORKER_POLICY,
+                "started": self._process is not None,
+                "process_alive": process_alive,
+                "process": build_worker_process_payload(
+                    self._process,
+                    command_id=self._active_command_id,
+                    timed_out=False,
+                    terminated=False,
+                    killed=False,
+                    worker_started=False,
+                    worker_reused=self._process is not None,
+                ),
+                "active_command_id": self._active_command_id,
+                "active_command": (
+                    dict(self._active_command_payload)
+                    if self._active_command_payload is not None
+                    else None
+                ),
+                "pending_result_count": len(self._pending_results),
+                "cancelled_result_count": len(self._cancelled_results),
+            }
+
+    # ---- 内部方法（均在持有 _lock 时调用） ----
+
     def _ensure_started_locked(self) -> tuple[Any, Any, Any, bool]:
+        """确保 worker 进程在运行。返回 (process, cmd_queue, result_queue, is_new)。
+
+        若当前 worker 存活则复用；否则 spawn 新进程。
+        """
         if (
             self._process is not None
             and self._command_queue is not None
@@ -326,7 +470,7 @@ class GdkWorkerProcessManager:
         self._result_queue = result_queue
         return process, command_queue, result_queue, True
 
-    def _wait_for_result_locked(
+    def _wait_for_result(
         self,
         *,
         command_id: str,
@@ -334,12 +478,23 @@ class GdkWorkerProcessManager:
         result_queue: Any,
         timeout_seconds: float,
     ) -> tuple[str, dict[str, object] | None]:
-        pending = self._pending_results.pop(command_id, None)
+        """阻塞等待 worker 返回结果。支持 timeout、取消注入、pending result 认领。
+
+        每 200ms 轮询 result_queue，同时检查:
+        - cancelled_results（cancel_active_command 注入）
+        - process.is_alive()（worker 异常退出）
+        - pending_results（之前到达但 command_id 不匹配的结果）
+        """
+        pending = self._pop_pending_result(command_id)
         if pending is not None:
             return "ok", pending
 
         deadline = time.monotonic() + timeout_seconds
         while True:
+            cancelled = self._pop_cancelled_result(command_id)
+            if cancelled is not None:
+                return "ok", cancelled
+
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return "timeout", None
@@ -347,6 +502,9 @@ class GdkWorkerProcessManager:
             try:
                 raw_envelope = result_queue.get(timeout=min(remaining, 0.2))
             except Empty:
+                cancelled = self._pop_cancelled_result(command_id)
+                if cancelled is not None:
+                    return "ok", cancelled
                 if not process.is_alive():
                     return "worker_exited", None
                 continue
@@ -361,7 +519,8 @@ class GdkWorkerProcessManager:
 
             if raw_command_id == command_id:
                 return "ok", envelope
-            self._pending_results[raw_command_id] = envelope
+            # command_id 不匹配 → 存储为 pending（可能来自之前的命令）
+            self._store_pending_result(raw_command_id, envelope)
 
     def _terminate_worker_locked(
         self,
@@ -369,7 +528,9 @@ class GdkWorkerProcessManager:
         command_id: str,
         timeout_seconds: float,
         worker_started: bool,
+        timed_out: bool = True,
     ) -> dict[str, object]:
+        """强制终止 worker：先 terminate()，未退出则 kill()。"""
         process = self._process
         terminated = False
         killed = False
@@ -385,7 +546,7 @@ class GdkWorkerProcessManager:
         payload = build_worker_process_payload(
             process,
             command_id=command_id,
-            timed_out=True,
+            timed_out=timed_out,
             terminated=terminated,
             killed=killed,
             worker_started=worker_started,
@@ -397,6 +558,7 @@ class GdkWorkerProcessManager:
         return payload
 
     def _reset_locked(self) -> None:
+        """清空所有 worker 状态（队列、进程、pending/cancelled results）。"""
         if self._command_queue is not None:
             close_queue_safely(self._command_queue)
         if self._result_queue is not None:
@@ -407,6 +569,25 @@ class GdkWorkerProcessManager:
         self._command_queue = None
         self._result_queue = None
         self._pending_results.clear()
+        self._active_command_id = None
+        self._active_command_payload = None
+
+    def _pop_pending_result(self, command_id: str) -> dict[str, object] | None:
+        with self._lock:
+            return self._pending_results.pop(command_id, None)
+
+    def _store_pending_result(self, command_id: str, envelope: dict[str, object]) -> None:
+        with self._lock:
+            self._pending_results[command_id] = envelope
+
+    def _pop_cancelled_result(self, command_id: str) -> dict[str, object] | None:
+        with self._lock:
+            return self._cancelled_results.pop(command_id, None)
+
+
+# ============================================================
+# 顶层便捷函数（供 motion_runtime / end_effector_runtime / code_script 调用）
+# ============================================================
 
 
 def run_motion_abs_joint_in_worker(
@@ -414,6 +595,7 @@ def run_motion_abs_joint_in_worker(
     *,
     safety_gate: Mapping[str, object],
 ) -> dict[str, object]:
+    """通过持久 worker 执行 ABS_JOINT 运动。"""
     return get_default_gdk_worker_manager().run_command(
         kind="motion_abs_joint",
         payload={"motion_params": motion_params},
@@ -429,6 +611,7 @@ def run_end_effector_in_worker(
     *,
     safety_gate: Mapping[str, object],
 ) -> dict[str, object]:
+    """通过持久 worker 执行末端控制。"""
     return get_default_gdk_worker_manager().run_command(
         kind="end_effector",
         payload={"end_effector_params": end_effector_params},
@@ -447,6 +630,7 @@ def run_code_script_in_worker(
     environ: Mapping[str, str],
     safety_gate: Mapping[str, object],
 ) -> dict[str, object]:
+    """通过持久 worker 执行代码脚本。"""
     return get_default_gdk_worker_manager().run_command(
         kind="code_script",
         payload={
@@ -465,7 +649,10 @@ def run_code_script_in_worker(
 def shutdown_default_gdk_worker(
     timeout_seconds: float = DEFAULT_WORKER_SHUTDOWN_TIMEOUT_SECONDS,
 ) -> dict[str, object]:
-    manager = _DEFAULT_GDK_WORKER_MANAGER
+    """关闭全局默认 GDK worker。"""
+    global _DEFAULT_GDK_WORKER_MANAGER
+    with _DEFAULT_GDK_WORKER_MANAGER_LOCK:
+        manager = _DEFAULT_GDK_WORKER_MANAGER
     if manager is None:
         return {
             "called": False,
@@ -481,454 +668,59 @@ def shutdown_default_gdk_worker(
                 worker_reused=False,
             ),
         }
-    return manager.shutdown(timeout_seconds=timeout_seconds)
+    result = manager.shutdown(timeout_seconds=timeout_seconds)
+    with _DEFAULT_GDK_WORKER_MANAGER_LOCK:
+        if _DEFAULT_GDK_WORKER_MANAGER is manager:
+            _DEFAULT_GDK_WORKER_MANAGER = None
+    return result
+
+
+def cancel_default_gdk_worker_command(reason: str) -> dict[str, object]:
+    """取消全局默认 GDK worker 的当前命令。"""
+    with _DEFAULT_GDK_WORKER_MANAGER_LOCK:
+        manager = _DEFAULT_GDK_WORKER_MANAGER
+    if manager is None:
+        return {
+            "called": False,
+            "success": True,
+            "reason": "worker_not_started",
+            "request_reason": reason,
+        }
+    return manager.cancel_active_command(reason)
+
+
+def diagnostics_default_gdk_worker() -> dict[str, object]:
+    """返回全局默认 GDK worker 快照；不启动 worker，不触碰机器人。"""
+    with _DEFAULT_GDK_WORKER_MANAGER_LOCK:
+        manager = _DEFAULT_GDK_WORKER_MANAGER
+    if manager is None:
+        return {
+            "policy": GDK_WORKER_POLICY,
+            "started": False,
+            "process": build_worker_process_payload(
+                None,
+                command_id=None,
+                timed_out=False,
+                terminated=False,
+                killed=False,
+                worker_started=False,
+                worker_reused=False,
+            ),
+            "active_command_id": None,
+            "active_command": None,
+            "pending_result_count": 0,
+            "cancelled_result_count": 0,
+        }
+    return manager.diagnostics()
 
 
 def get_default_gdk_worker_manager() -> GdkWorkerProcessManager:
+    """获取/懒创建全局默认 GDK worker manager。"""
     global _DEFAULT_GDK_WORKER_MANAGER
-    if _DEFAULT_GDK_WORKER_MANAGER is None:
-        _DEFAULT_GDK_WORKER_MANAGER = GdkWorkerProcessManager()
-    return _DEFAULT_GDK_WORKER_MANAGER
-
-
-def gdk_worker_main(command_queue: Any, result_queue: Any) -> None:
-    state = WorkerGdkState()
-    while True:
-        raw_command = command_queue.get()
-        command = normalize_string_mapping(raw_command)
-        if command is None:
-            continue
-
-        command_id = command.get("command_id")
-        if not isinstance(command_id, str):
-            continue
-
-        kind = command.get("kind")
-        if not isinstance(kind, str):
-            result_queue.put(
-                {
-                    "command_id": command_id,
-                    "result": worker_command_failed_result(
-                        command=command,
-                        stage="validate_worker_command",
-                        message="GDK worker command missing string kind",
-                    ),
-                }
-            )
-            continue
-
-        if kind == "shutdown":
-            result_queue.put(
-                {
-                    "command_id": command_id,
-                    "result": execute_shutdown_command(state),
-                }
-            )
-            return
-
-        try:
-            result = execute_worker_command(kind, command, state)
-        except Exception as error:
-            result = worker_command_failed_result(
-                command=command,
-                stage="execute_worker_command",
-                message=str(error),
-                error_type=type(error).__name__,
-            )
-        result_queue.put({"command_id": command_id, "result": result})
-
-
-def execute_worker_command(
-    kind: str,
-    command: Mapping[str, object],
-    state: WorkerGdkState,
-) -> dict[str, object]:
-    payload = read_mapping_field(command, "payload") or {}
-    if kind == "motion_abs_joint":
-        return execute_motion_abs_joint_command(payload, state)
-    if kind == "end_effector":
-        return execute_end_effector_command(payload, state)
-    if kind == "code_script":
-        return execute_code_script_command(payload, state)
-    return worker_command_failed_result(
-        command=command,
-        stage="validate_worker_command",
-        message=f"unsupported GDK worker command kind: {kind}",
-    )
-
-
-def execute_motion_abs_joint_command(
-    payload: Mapping[str, object],
-    state: WorkerGdkState,
-) -> dict[str, object]:
-    from gsa_taskflow_executor.gdk import motion_runtime
-    from gsa_taskflow_executor.taskflow.parser import MotionPlanParams
-
-    init_error = ensure_gdk_ready_for_motion(state)
-    if init_error is not None:
-        result = init_error
-    else:
-        try:
-            agibot_gdk = state.require_agibot_gdk()
-            robot = agibot_gdk.Robot()
-            result = motion_runtime.execute_abs_joint_targets(
-                robot,
-                cast(MotionPlanParams, payload["motion_params"]),
-                agibot_gdk=agibot_gdk,
-            )
-        except motion_runtime.UnsupportedGdkControlModeError as error:
-            result = motion_runtime.refused_control_mode_result(error)
-        except Exception as error:
-            result = motion_runtime.unavailable_result("execute_abs_joint_targets", error)
-
-    attach_worker_gdk_payload(
-        result,
-        purpose="taskflow_abs_joint",
-        init_result=state.init_result,
-    )
-    return result
-
-
-def execute_end_effector_command(
-    payload: Mapping[str, object],
-    state: WorkerGdkState,
-) -> dict[str, object]:
-    from gsa_taskflow_executor.gdk import end_effector_runtime
-    from gsa_taskflow_executor.taskflow.parser import EndEffectorParams
-
-    init_error = ensure_gdk_ready_for_end_effector(state)
-    if init_error is not None:
-        result = init_error
-    else:
-        try:
-            agibot_gdk = state.require_agibot_gdk()
-            robot = agibot_gdk.Robot()
-            result = end_effector_runtime.execute_end_effector_control(
-                robot,
-                cast(EndEffectorParams, payload["end_effector_params"]),
-                agibot_gdk=agibot_gdk,
-            )
-        except Exception as error:
-            result = end_effector_runtime.unavailable_result(
-                "execute_end_effector_control",
-                error,
-            )
-
-    attach_worker_gdk_payload(
-        result,
-        purpose="taskflow_end_effector",
-        init_result=state.init_result,
-    )
-    return result
-
-
-def execute_code_script_command(
-    payload: Mapping[str, object],
-    state: WorkerGdkState,
-) -> dict[str, object]:
-    from gsa_taskflow_executor.code_scripts.api import CodeScriptContext
-    from gsa_taskflow_executor.code_scripts.registry import CODE_SCRIPT_DEFINITIONS
-    from gsa_taskflow_executor.code_scripts.runtime import load_script_runner, run_script_safely
-    from gsa_taskflow_executor.taskflow.parser import ScriptParams
-
-    script_id = payload.get("script_id")
-    if not isinstance(script_id, str):
-        return worker_command_failed_result(
-            command={
-                "action": "code_script",
-                "backend": "executor_code_script",
-                "safety_gate": {"enabled": True, "confirmed": True},
-            },
-            stage="validate_worker_command",
-            message="code script worker command missing script_id",
-        )
-
-    environ = read_string_mapping(payload.get("environ"))
-    os.environ.update(environ)
-    definition = CODE_SCRIPT_DEFINITIONS[script_id]
-    script_runner = load_script_runner(definition, import_module=importlib.import_module)
-    if isinstance(script_runner, dict):
-        return script_runner
-
-    typed_script_params = cast(ScriptParams, payload["script_params"])
-    inputs = read_mapping_field(payload, "inputs") or {}
-    init_error = ensure_gdk_ready_for_code_script(script_id, state)
-    if init_error is not None:
-        result = init_error
-    else:
-        try:
-            agibot_gdk = state.require_agibot_gdk()
-            robot = agibot_gdk.Robot()
-            context = CodeScriptContext(
-                script_id=definition.script_id,
-                description=definition.description,
-                timeout=read_timeout_seconds(typed_script_params),
-                output_variables=typed_script_params.output_variables,
-                environ=environ,
-                agibot_gdk=agibot_gdk,
-                robot=robot,
-                gdk_init=state.init_result,
-                gdk_session=build_worker_session_payload(
-                    purpose=f"code_script:{script_id}",
-                    init_result=state.init_result,
-                ),
-            )
-            result = run_script_safely(
-                definition=definition,
-                script_runner=script_runner,
-                inputs=inputs,
-                context=context,
-                safety_gate_enabled=True,
-                safety_confirmed=True,
-            )
-        except Exception as error:
-            from gsa_taskflow_executor.code_scripts.api import unavailable_result
-
-            result = unavailable_result(
-                script_id=script_id,
-                stage="import_or_execute_gdk_script",
-                error=error,
-                safety_gate_enabled=True,
-                safety_confirmed=True,
-            )
-
-    attach_worker_gdk_payload(
-        result,
-        purpose=f"code_script:{script_id}",
-        init_result=state.init_result,
-    )
-    return result
-
-
-def execute_shutdown_command(state: WorkerGdkState) -> dict[str, object]:
-    release_result = default_gdk_release_result(reason="not_initialized")
-    if state.agibot_gdk is not None and state.gdk_initialized:
-        release_result = release_gdk(state.agibot_gdk)
-    return {
-        "available": True,
-        "executed": False,
-        "backend": GDK_BACKEND,
-        "action": GDK_WORKER_SHUTDOWN_ACTION,
-        "collected_at": utc_now_iso(),
-        "gdk_init": dict(state.init_result),
-        "gdk_release": release_result,
-        "gdk_session": build_worker_session_payload(
-            purpose=GDK_WORKER_SHUTDOWN_ACTION,
-            init_result=state.init_result,
-        ),
-    }
-
-
-def ensure_gdk_ready_for_motion(state: WorkerGdkState) -> dict[str, object] | None:
-    from gsa_taskflow_executor.gdk import motion_runtime
-
-    init_error = ensure_gdk_ready(state)
-    if init_error is None:
-        return None
-    if init_error["stage"] == "gdk_init":
-        return motion_runtime.refused_result(
-            stage="gdk_init",
-            message="agibot_gdk.gdk_init() did not return success",
-            extra={"gdk_init": state.init_result},
-        )
-    return motion_runtime.unavailable_result(
-        "import_or_initialize_gdk",
-        cast(Exception, init_error["error"]),
-    )
-
-
-def ensure_gdk_ready_for_end_effector(state: WorkerGdkState) -> dict[str, object] | None:
-    from gsa_taskflow_executor.gdk import end_effector_runtime
-
-    init_error = ensure_gdk_ready(state)
-    if init_error is None:
-        return None
-    if init_error["stage"] == "gdk_init":
-        return end_effector_runtime.refused_result(
-            stage="gdk_init",
-            message="agibot_gdk.gdk_init() did not return success",
-            safety_confirmed=True,
-            extra={"gdk_init": state.init_result},
-        )
-    return end_effector_runtime.unavailable_result(
-        "import_or_execute_end_effector",
-        cast(Exception, init_error["error"]),
-    )
-
-
-def ensure_gdk_ready_for_code_script(
-    script_id: str,
-    state: WorkerGdkState,
-) -> dict[str, object] | None:
-    from gsa_taskflow_executor.code_scripts.api import refused_result, unavailable_result
-
-    init_error = ensure_gdk_ready(state)
-    if init_error is None:
-        return None
-    if init_error["stage"] == "gdk_init":
-        return refused_result(
-            script_id=script_id,
-            stage="gdk_init",
-            message="agibot_gdk.gdk_init() did not return success",
-            extra={"gdk_init": state.init_result},
-            safety_gate_enabled=True,
-            safety_confirmed=True,
-        )
-    return unavailable_result(
-        script_id=script_id,
-        stage="import_or_execute_gdk_script",
-        error=cast(Exception, init_error["error"]),
-        safety_gate_enabled=True,
-        safety_confirmed=True,
-    )
-
-
-def ensure_gdk_ready(state: WorkerGdkState) -> dict[str, object] | None:
-    if state.agibot_gdk is None:
-        try:
-            state.agibot_gdk = importlib.import_module(GDK_MODULE_NAME)
-        except Exception as error:
-            return {"stage": "import_agibot_gdk", "error": error}
-
-    if not state.init_attempted:
-        try:
-            state.init_result = initialize_gdk(state.agibot_gdk)
-        except Exception as error:
-            state.init_result = default_gdk_init_result()
-            return {"stage": "gdk_init_exception", "error": error}
-
-        if (
-            state.init_result.get("called") is True
-            and state.init_result.get("success") is not True
-        ):
-            state.init_attempted = False
-            state.gdk_initialized = False
-            return {"stage": "gdk_init", "error": RuntimeError("gdk_init failed")}
-
-        state.init_attempted = True
-        state.gdk_initialized = bool(state.init_result.get("called"))
-
-    return None
-
-
-def attach_worker_gdk_payload(
-    result: dict[str, object],
-    *,
-    purpose: str,
-    init_result: Mapping[str, object],
-) -> None:
-    result.setdefault("gdk_init", dict(init_result))
-    result.setdefault(
-        "gdk_release",
-        default_gdk_release_result(reason="persistent_worker_releases_on_shutdown"),
-    )
-    result["gdk_session"] = build_worker_session_payload(
-        purpose=purpose,
-        init_result=init_result,
-    )
-
-
-def build_worker_session_payload(
-    *,
-    purpose: str,
-    init_result: Mapping[str, object],
-) -> dict[str, object]:
-    return {
-        "policy": GDK_WORKER_POLICY,
-        "purpose": purpose,
-        "pid": os.getpid(),
-        "initialize": True,
-        "init_result": dict(init_result),
-    }
-
-
-def build_worker_process_payload(
-    process: Any | None,
-    *,
-    command_id: str | None,
-    timed_out: bool,
-    terminated: bool,
-    killed: bool,
-    worker_started: bool,
-    worker_reused: bool,
-) -> dict[str, object]:
-    return {
-        "policy": GDK_WORKER_POLICY,
-        "pid": None if process is None else process.pid,
-        "exitcode": None if process is None else to_jsonable(process.exitcode),
-        "command_id": command_id,
-        "timed_out": timed_out,
-        "terminated": terminated,
-        "killed": killed,
-        "worker_started": worker_started,
-        "worker_reused": worker_reused,
-    }
-
-
-def worker_command_failed_result(
-    *,
-    command: Mapping[str, object],
-    stage: str,
-    message: str,
-    error_type: str = "GdkWorkerCommandError",
-) -> dict[str, object]:
-    action = command.get("action")
-    backend = command.get("backend")
-    safety_gate = read_mapping_field(command, "safety_gate") or {}
-    result = build_subprocess_failed_result(
-        action=action if isinstance(action, str) else "gdk_worker_command",
-        backend=backend if isinstance(backend, str) else GDK_BACKEND,
-        stage=stage,
-        message=message,
-        safety_gate=safety_gate,
-        subprocess_payload={},
-    )
-    result["error_code"] = GDK_SUBPROCESS_FAILED_CODE
-    result["error_type"] = error_type
-    result.pop("subprocess", None)
-    return result
-
-
-def default_gdk_init_result() -> dict[str, object]:
-    return {"called": False, "success": True, "return": None}
-
-
-def default_gdk_release_result(*, reason: str) -> dict[str, object]:
-    return {
-        "called": False,
-        "success": True,
-        "return": None,
-        "reason": reason,
-    }
-
-
-def normalize_string_mapping(value: object) -> dict[str, object] | None:
-    if not isinstance(value, Mapping):
-        return None
-    result: dict[str, object] = {}
-    for key, item in value.items():
-        if isinstance(key, str):
-            result[key] = item
-    return result
-
-
-def read_mapping_field(
-    mapping: Mapping[str, object] | None,
-    key: str,
-) -> dict[str, object] | None:
-    if mapping is None:
-        return None
-    return normalize_string_mapping(mapping.get(key))
-
-
-def read_string_mapping(value: object) -> dict[str, str]:
-    if not isinstance(value, Mapping):
-        return {}
-    result: dict[str, str] = {}
-    for key, item in value.items():
-        if isinstance(key, str) and isinstance(item, str):
-            result[key] = item
-    return result
+    with _DEFAULT_GDK_WORKER_MANAGER_LOCK:
+        if _DEFAULT_GDK_WORKER_MANAGER is None:
+            _DEFAULT_GDK_WORKER_MANAGER = GdkWorkerProcessManager()
+        return _DEFAULT_GDK_WORKER_MANAGER
 
 
 def close_queue_safely(queue: Any) -> None:
@@ -945,4 +737,6 @@ def close_process_safely(process: Any) -> None:
         pass
 
 
+# 全局默认 worker manager（懒初始化）
 _DEFAULT_GDK_WORKER_MANAGER: GdkWorkerProcessManager | None = None
+_DEFAULT_GDK_WORKER_MANAGER_LOCK = Lock()

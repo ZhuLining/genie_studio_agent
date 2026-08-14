@@ -1,3 +1,9 @@
+"""代码脚本注册表 — 白名单管理的脚本模块定义。
+
+CODE_SCRIPT_DEFINITIONS 包含 4 个内置脚本，每个指定固定模块路径。
+脚本只能通过白名单加载，不接受任意 Python 文件路径。
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

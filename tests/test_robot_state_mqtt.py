@@ -2,15 +2,18 @@ import json
 
 from gsa_taskflow_executor.mqtt.gateway import TaskflowMessage
 from gsa_taskflow_executor.mqtt.robot_state import (
+    build_camera_calibration_response,
     build_camera_capture_start_response,
     build_camera_capture_stop_response,
     build_camera_frame_response,
     build_current_pose_response,
+    handle_camera_calibration_request,
     handle_camera_capture_start_request,
     handle_camera_capture_stop_request,
     handle_camera_frame_request,
     handle_current_pose_request,
     handle_robot_state_request,
+    parse_camera_calibration_request,
     parse_camera_capture_start_request,
     parse_camera_capture_stop_request,
     parse_camera_frame_request,
@@ -137,6 +140,28 @@ def test_parse_camera_frame_request_defaults_camera_and_timeout() -> None:
     assert request.timeout_ms == 3000
 
 
+def test_parse_camera_calibration_request_reads_camera_ids_and_extrinsics_flag() -> None:
+    request = parse_camera_calibration_request(
+        json.dumps(
+            {
+                "type": "get_camera_calibration",
+                "requestId": "req-calibration",
+                "replyTopic": "robot/calibration/response",
+                "cameraIds": ["hand_left_color", "hand_right_color"],
+                "includeExtrinsics": True,
+                "timeoutMs": 2500,
+            }
+        ),
+        default_reply_topic="gsa/self/robot/state/get_camera_calibration/response",
+    )
+
+    assert request.request_id == "req-calibration"
+    assert request.reply_topic == "robot/calibration/response"
+    assert request.camera_ids == ("hand_left_color", "hand_right_color")
+    assert request.include_extrinsics is True
+    assert request.timeout_ms == 2500
+
+
 def test_parse_camera_capture_start_request_defaults_frame_topic() -> None:
     request = parse_camera_capture_start_request(
         json.dumps(
@@ -238,6 +263,73 @@ def test_handle_robot_state_request_dispatches_camera_frame_by_topic() -> None:
     assert topic == "gsa/self/robot/state/get_camera_frame/response"
     assert payload["type"] == "get_camera_frame"
     assert payload["data"]["cameraId"] == "head_color"
+
+
+def test_handle_camera_calibration_request_publishes_success_response() -> None:
+    published: list[tuple[str, dict[str, object]]] = []
+
+    handle_camera_calibration_request(
+        TaskflowMessage(
+            topic="gsa/self/robot/state/get_camera_calibration/request",
+            payload=json.dumps(
+                {
+                    "requestId": "req-calibration",
+                    "cameraIds": ["hand_left_color"],
+                    "includeExtrinsics": True,
+                }
+            ),
+            received_at="2026-07-27T00:00:00+00:00",
+        ),
+        settings=ExecutorSettings(executor_aid="aid-1"),
+        publish_response=lambda topic, payload: published.append((topic, dict(payload))),
+        collect_snapshot=lambda camera_ids, timeout_ms, include_extrinsics: {
+            "available": True,
+            "cameraIds": list(camera_ids),
+            "timeoutMs": timeout_ms,
+            "includeExtrinsics": include_extrinsics,
+            "calibrations": [
+                {
+                    "cameraId": "hand_left_color",
+                    "fx": 1,
+                    "fy": 2,
+                    "cx": 3,
+                    "cy": 4,
+                }
+            ],
+        },
+    )
+
+    [(topic, payload)] = published
+    assert topic == "gsa/self/robot/state/get_camera_calibration/response"
+    assert payload["type"] == "get_camera_calibration"
+    assert payload["requestId"] == "req-calibration"
+    assert payload["ok"] is True
+    assert payload["data"]["cameraIds"] == ["hand_left_color"]
+    assert payload["data"]["includeExtrinsics"] is True
+
+
+def test_handle_robot_state_request_dispatches_camera_calibration_by_topic() -> None:
+    published: list[tuple[str, dict[str, object]]] = []
+
+    handle_robot_state_request(
+        TaskflowMessage(
+            topic="gsa/self/robot/state/get_camera_calibration/request",
+            payload=json.dumps({"requestId": "req-calibration", "cameraIds": ["head_color"]}),
+            received_at="2026-07-27T00:00:00+00:00",
+        ),
+        settings=ExecutorSettings(executor_aid="aid-1"),
+        publish_response=lambda topic, payload: published.append((topic, dict(payload))),
+        collect_camera_calibration=lambda camera_ids, _timeout_ms, _include_extrinsics: {
+            "available": True,
+            "cameraIds": list(camera_ids),
+            "calibrations": [{"cameraId": camera_ids[0]}],
+        },
+    )
+
+    [(topic, payload)] = published
+    assert topic == "gsa/self/robot/state/get_camera_calibration/response"
+    assert payload["type"] == "get_camera_calibration"
+    assert payload["data"]["cameraIds"] == ["head_color"]
 
 
 def test_handle_camera_capture_start_request_publishes_success_response() -> None:
@@ -347,6 +439,23 @@ def test_build_camera_frame_response_maps_busy_snapshot_to_robot_busy() -> None:
     assert response["error"]["message"] == "GDK 正在执行控制动作，相机图像读取已拒绝"
 
 
+def test_build_camera_calibration_response_maps_busy_snapshot_to_robot_busy() -> None:
+    response = build_camera_calibration_response(
+        request_id="req-calibration",
+        executor_aid="aid-1",
+        snapshot={
+            "available": False,
+            "busy": True,
+            "errorStage": "gdk_session_busy",
+        },
+    )
+
+    assert response["ok"] is False
+    assert response["type"] == "get_camera_calibration"
+    assert response["error"]["code"] == "ROBOT_BUSY"
+    assert response["error"]["message"] == "GDK 正在执行控制动作，相机标定读取已拒绝"
+
+
 def test_build_camera_capture_start_response_maps_busy_to_robot_busy() -> None:
     response = build_camera_capture_start_response(
         request_id="req-start",
@@ -391,3 +500,23 @@ def test_build_camera_frame_response_preserves_subprocess_timeout_error() -> Non
     assert response["type"] == "get_camera_frame"
     assert response["error"]["code"] == "GDK_OPERATION_TIMEOUT"
     assert response["error"]["message"] == "GDK operation get_camera_frame exceeded timeout 6.500s"
+
+
+def test_build_camera_calibration_response_preserves_subprocess_timeout_error() -> None:
+    response = build_camera_calibration_response(
+        request_id="req-calibration-timeout",
+        executor_aid="aid-1",
+        snapshot={
+            "available": False,
+            "error_code": "GDK_OPERATION_TIMEOUT",
+            "error_msg": "GDK operation get_camera_calibration exceeded timeout 6.500s",
+        },
+    )
+
+    assert response["ok"] is False
+    assert response["type"] == "get_camera_calibration"
+    assert response["error"]["code"] == "GDK_OPERATION_TIMEOUT"
+    assert (
+        response["error"]["message"]
+        == "GDK operation get_camera_calibration exceeded timeout 6.500s"
+    )

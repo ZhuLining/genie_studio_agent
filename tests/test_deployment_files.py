@@ -20,13 +20,31 @@ def test_systemd_service_uses_gdk_executor_entrypoint() -> None:
     assert "ReadWritePaths=/var/log/gsa-taskflow-executor" in service
 
 
+def test_runtime_dependencies_do_not_include_unused_pydantic_stack() -> None:
+    pyproject = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+    assert '"pydantic' not in pyproject
+    assert '"pydantic-settings' not in pyproject
+
+
 def test_deploy_env_template_uses_gdk_mode() -> None:
     env_file = (PROJECT_ROOT / "deploy" / "gsa-taskflow-executor.env.example").read_text(
         encoding="utf-8"
     )
 
     assert "TASKFLOW_INPUT_TOPIC=gsa/self/taskflow_yaml" in env_file
+    assert "TASKFLOW_CANCEL_TOPIC_FILTER=gsa/self/taskflow/+/cancel" in env_file
     assert "TASKFLOW_STATUS_TOPIC_TEMPLATE=gsa/self/{aid}/status" in env_file
+    assert "MQTT_TERMINAL_STATUS_QOS=1" in env_file
+    assert "TASKFLOW_QUEUE_MAXSIZE=16" in env_file
+    assert "TASKFLOW_QUEUE_FULL_POLICY=reject" in env_file
+    assert "ROBOT_STATE_QUEUE_MAXSIZE=8" in env_file
+    assert "ROBOT_STATE_QUEUE_FULL_POLICY=reject" in env_file
+    assert "DIAGNOSTICS_MQTT_CONNECT_TIMEOUT=2.0" in env_file
+    assert "PAYLOAD_MAX_STRING_LENGTH=512" in env_file
+    assert "PAYLOAD_MAX_COLLECTION_ITEMS=20" in env_file
+    assert "PAYLOAD_MAX_DEPTH=6" in env_file
+    assert "PAYLOAD_INCLUDE_FULL_VARIABLES=false" in env_file
     assert (
         "ROBOT_CURRENT_POSE_REQUEST_TOPIC=gsa/self/robot/state/get_current_pose/request"
         in env_file
@@ -41,6 +59,14 @@ def test_deploy_env_template_uses_gdk_mode() -> None:
     )
     assert (
         "ROBOT_CAMERA_FRAME_RESPONSE_TOPIC=gsa/self/robot/state/get_camera_frame/response"
+        in env_file
+    )
+    assert (
+        "ROBOT_CAMERA_CALIBRATION_REQUEST_TOPIC=gsa/self/robot/state/get_camera_calibration/request"
+        in env_file
+    )
+    assert (
+        "ROBOT_CAMERA_CALIBRATION_RESPONSE_TOPIC=gsa/self/robot/state/get_camera_calibration/response"
         in env_file
     )
     assert (

@@ -1,3 +1,9 @@
+"""代码脚本 API：上下文、结果工厂和类型安全输入读取器。
+
+脚本通过 CodeScriptContext 访问 agibot_gdk/Robot/环境变量。
+success_result/refused_result/unavailable_result 构建标准化结果 dict。
+"""
+
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
@@ -7,11 +13,12 @@ from math import isfinite
 from typing import Any
 
 from gsa_taskflow_executor.gdk.motion_runtime import TASKFLOW_ABS_JOINT_CONFIRMATION
-from gsa_taskflow_executor.taskflow.parser import ScriptOutputVariable
+from gsa_taskflow_executor.taskflow.models import ScriptOutputVariable
 
 
 @dataclass(frozen=True)
 class CodeScriptContext:
+    """脚本执行上下文。提供 GDK 模块、Robot 实例、超时和环境变量。"""
     script_id: str
     description: str
     timeout: float
@@ -43,6 +50,7 @@ def success_result(
     safety_gate_enabled: bool = False,
     extra: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
+    """构建脚本执行成功结果。executed=True, available=True。"""
     payload: dict[str, object] = {
         "available": True,
         "executed": True,
@@ -73,6 +81,7 @@ def refused_result(
     safety_gate_enabled: bool = True,
     safety_confirmed: bool = False,
 ) -> dict[str, object]:
+    """构建脚本拒绝结果（安全门/校验/白名单拒绝）。executed=False。"""
     payload: dict[str, object] = {
         "available": False,
         "executed": False,
@@ -100,6 +109,7 @@ def unavailable_result(
     safety_gate_enabled: bool = True,
     safety_confirmed: bool = False,
 ) -> dict[str, object]:
+    """构建脚本异常结果（执行中异常）。"""
     payload = refused_result(
         script_id=script_id,
         stage=stage,
@@ -118,6 +128,7 @@ def build_safety_gate_payload(
     *,
     confirmed: bool,
 ) -> dict[str, object]:
+    """构建安全门 payload。"""
     if not enabled:
         return {
             "enabled": False,
@@ -131,7 +142,13 @@ def build_safety_gate_payload(
     }
 
 
+# ============================================================
+# 类型安全输入读取器（供脚本内部使用）
+# ============================================================
+
+
 def read_actual_openness_input(inputs: Mapping[str, object]) -> float | None:
+    """从 inputs 读取 actual_openness（数值序列的第一个元素）。"""
     value = inputs.get("actual_openness")
     if not isinstance(value, Sequence) or isinstance(value, str | bytes | bytearray) or not value:
         return None
@@ -139,10 +156,12 @@ def read_actual_openness_input(inputs: Mapping[str, object]) -> float | None:
 
 
 def read_number_input(inputs: Mapping[str, object], name: str) -> float | None:
+    """按名称读取数值输入。"""
     return read_finite_float(inputs.get(name))
 
 
 def read_finite_float(value: Any) -> float | None:
+    """将值转为有限浮点数。拒绝 bool、NaN、inf。"""
     if isinstance(value, bool) or not isinstance(value, int | float):
         return None
     number = float(value)
@@ -150,4 +169,5 @@ def read_finite_float(value: Any) -> float | None:
 
 
 def clamp_opening(value: float) -> float:
+    """将开度值限制在 [0, 1] 范围内。"""
     return min(1.0, max(0.0, value))

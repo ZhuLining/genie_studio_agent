@@ -1,3 +1,9 @@
+"""GDK 只读探针。
+
+纯只读 GDK 接口封装：import agibot_gdk → gdk_init → Robot.get_joint_states()。
+不执行任何控制命令，用于诊断和预检查。
+"""
+
 from __future__ import annotations
 
 import importlib

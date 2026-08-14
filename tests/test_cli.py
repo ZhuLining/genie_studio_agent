@@ -81,7 +81,9 @@ def test_gdk_readonly_probe_cli_prints_json_and_writes_event(
     event = json.loads(log_files[0].read_text(encoding="utf-8").splitlines()[0])
     assert event["event_type"] == "gdk_readonly_probe"
     assert event["level"] == "warning"
-    assert event["payload"] == {"probe": probe_payload}
+    assert event["payload"]["probe"]["available"] is False
+    assert event["payload"]["probe"]["error_stage"] == "import_agibot_gdk"
+    assert event["payload"]["probe"]["raw"]["omitted"] is True
 
 
 def test_gdk_control_probe_cli_prints_json_and_writes_event(
@@ -133,3 +135,43 @@ def test_gdk_control_probe_cli_prints_json_and_writes_event(
     assert event["event_type"] == "gdk_control_probe"
     assert event["level"] == "info"
     assert event["payload"] == {"probe": probe_payload}
+
+
+def test_health_check_cli_prints_json_and_returns_health_exit_code(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "MQTT_BROKER_URL=mqtt://127.0.0.1:1883",
+                "DIAGNOSTICS_MQTT_CONNECT_TIMEOUT=0.1",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        cli,
+        "build_health_check_payload",
+        lambda **_kwargs: {
+            "type": "executor_health_check",
+            "status": "error",
+            "checks": [
+                {
+                    "name": "mqtt_status_roundtrip",
+                    "status": "error",
+                    "message": "failed",
+                    "detail": {"ok": False},
+                }
+            ],
+        },
+    )
+
+    exit_code = cli.main(["--env-file", str(env_file), "--health-check"])
+
+    assert exit_code == 1
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["type"] == "executor_health_check"
+    assert printed["status"] == "error"

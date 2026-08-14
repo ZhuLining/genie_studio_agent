@@ -106,3 +106,45 @@ def test_worker_queue_rejects_when_full() -> None:
     finally:
         blocking_handler_release.set()
         queue.stop()
+
+    snapshot = queue.snapshot()
+    assert snapshot["maxsize"] == 1
+    assert snapshot["queue_full_policy"] == "reject"
+    assert snapshot["rejected_count"] == 1
+
+
+def test_worker_queue_snapshot_tracks_active_and_wait_metrics() -> None:
+    handler_started = threading.Event()
+    release_handler = threading.Event()
+
+    def blocking_handler(_message: TaskflowMessage) -> None:
+        handler_started.set()
+        release_handler.wait(timeout=1)
+
+    queue = MqttMessageWorkerQueue(
+        name="test-observable-worker",
+        handler=blocking_handler,
+        maxsize=2,
+    )
+    queue.start()
+    try:
+        queue.enqueue(make_message("active"))
+        assert handler_started.wait(timeout=1)
+
+        snapshot = queue.snapshot()
+        assert snapshot["thread_alive"] is True
+        assert snapshot["active"] is True
+        assert snapshot["active_topic"] == "gsa/self/taskflow_yaml"
+        assert snapshot["active_payload_bytes"] == len("active")
+        assert snapshot["enqueued_count"] == 1
+        assert snapshot["dequeued_count"] == 1
+        assert snapshot["last_queue_wait_ms"] is not None
+        assert snapshot["active_started_at"] is not None
+        assert snapshot["active_run_ms"] is not None
+    finally:
+        release_handler.set()
+        queue.stop()
+
+    finished_snapshot = queue.snapshot()
+    assert finished_snapshot["active"] is False
+    assert finished_snapshot["completed_count"] == 1
