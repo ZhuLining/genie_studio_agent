@@ -47,7 +47,6 @@ DEFAULT_END_EFFECTOR_TIMEOUT = 20.0
 DEFAULT_FORCE_CONTROL_TIMEOUT = 50.0
 
 # 末端执行器默认值
-DEFAULT_END_EFFECTOR_OPENING = 0.5
 DEFAULT_END_EFFECTOR_POST_WAIT_SECONDS = 1.0  # 动作完成后的稳定等待
 
 # 力控默认参数
@@ -303,7 +302,13 @@ def parse_end_effector_params(params: YamlMapping, path: str) -> EndEffectorPara
         f"{path}.right_opening",
         required=False,
     )
-    opening = opening if opening is not None else DEFAULT_END_EFFECTOR_OPENING
+    validate_end_effector_opening_presence(
+        target_end=target_end,
+        opening=opening,
+        left_opening=left_opening,
+        right_opening=right_opening,
+        path=path,
+    )
     timeout = read_positive_number_with_default(
         params.get("timeout"),
         f"{path}.timeout",
@@ -325,6 +330,27 @@ def parse_end_effector_params(params: YamlMapping, path: str) -> EndEffectorPara
         left_opening=left_opening,
         right_opening=right_opening,
     )
+
+
+def validate_end_effector_opening_presence(
+    *,
+    target_end: str,
+    opening: float | None,
+    left_opening: float | None,
+    right_opening: float | None,
+    path: str,
+) -> None:
+    """真机末端控制必须带显式开度，避免 malformed YAML 被默认值驱动动作。"""
+
+    if target_end == "left_tool" and opening is None and left_opening is None:
+        raise TaskflowParseError(f"{path}.opening 或 {path}.left_opening 必须提供")
+    if target_end == "right_tool" and opening is None and right_opening is None:
+        raise TaskflowParseError(f"{path}.opening 或 {path}.right_opening 必须提供")
+    if target_end == "dual_tool" and opening is None:
+        if left_opening is None or right_opening is None:
+            raise TaskflowParseError(
+                f"{path}.dual_tool 必须提供 opening，或同时提供 left_opening/right_opening"
+            )
 
 
 def parse_force_control_params(params: YamlMapping, path: str) -> ForceControlParams:

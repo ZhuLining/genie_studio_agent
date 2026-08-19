@@ -297,10 +297,16 @@ class EndEffectorSkillGdk:
             params_template=resolved_params,
             end_effector_params=end_effector_params,
         )
+        # GDK runtime 会补齐从真机状态推断出的型号与左右开度；这些值必须进入
+        # VariableStore，否则后续代码节点会拿到解析前的空值。
+        merge_end_effector_result_outputs(outputs, end_effector_result)
         # 实际开度可能不同于请求值
         actual_openness = end_effector_result.get("actual_openness")
         if not isinstance(actual_openness, list):
-            actual_openness = [end_effector_params.opening]
+            actual_openness = build_requested_openness_fallback(
+                outputs,
+                end_effector_params=end_effector_params,
+            )
         outputs["actual_openness"] = deepcopy(actual_openness)
         outputs["actual_openness_source"] = str(
             end_effector_result.get("actual_openness_source", "requested_opening_fallback")
@@ -636,6 +642,53 @@ def build_end_effector_outputs(
         "post_wait_seconds": end_effector_params.post_wait_seconds,
         "resolved_params_template": deepcopy(dict(params_template)),
     }
+
+
+def merge_end_effector_result_outputs(
+    outputs: dict[str, object],
+    end_effector_result: Mapping[str, object],
+) -> None:
+    """回写 GDK 侧最终采用的末端控制参数，供下游节点读取真实执行语义。"""
+
+    for key in (
+        "target_end",
+        "opening",
+        "left_opening",
+        "right_opening",
+        "left_end_effector_type",
+        "right_end_effector_type",
+    ):
+        if key in end_effector_result:
+            outputs[key] = deepcopy(end_effector_result[key])
+
+
+def build_requested_openness_fallback(
+    outputs: Mapping[str, object],
+    *,
+    end_effector_params: EndEffectorParams,
+) -> list[float]:
+    """当 GDK 未返回实际开度时，用最终请求开度兜底。"""
+
+    if end_effector_params.target_end == "dual_tool":
+        side_openings = [
+            read_output_number(outputs.get("left_opening")),
+            read_output_number(outputs.get("right_opening")),
+        ]
+        if all(value is not None for value in side_openings):
+            return [float(value) for value in side_openings if value is not None]
+
+    opening = read_output_number(outputs.get("opening"))
+    if opening is not None:
+        return [opening]
+    if end_effector_params.opening is not None:
+        return [end_effector_params.opening]
+    return []
+
+
+def read_output_number(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
 
 
 def build_force_control_outputs(

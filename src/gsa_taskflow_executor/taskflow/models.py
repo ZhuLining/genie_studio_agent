@@ -73,11 +73,11 @@ class ScriptOutputVariable:
 
 @dataclass(frozen=True)
 class EndEffectorParams:
-    """control_end_effector_skill 参数。opening: 0(闭)-1(开)。"""
+    """control_end_effector_skill 参数。opening: 0(闭)-1(开)，None 表示双末端只给了左右开度。"""
 
     target_end: str
     end_effector_type: str | None
-    opening: float
+    opening: float | None
     timeout: float
     post_wait_seconds: float = 1.0
     left_end_effector_type: str | None = None

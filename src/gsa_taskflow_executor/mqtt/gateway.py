@@ -132,7 +132,12 @@ class MqttGateway:
         finally:
             self.disconnect()
 
-    def publish_status(self, payload: Mapping[str, Any]) -> None:
+    def publish_status(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        wait_for_terminal: bool = True,
+    ) -> None:
         if self._client is None:
             raise MqttGatewayError("MQTT 尚未连接，不能发布状态")
 
@@ -151,7 +156,7 @@ class MqttGateway:
             qos=qos,
             retain=retain,
         )
-        if terminal and qos > 0:
+        if terminal and wait_for_terminal and qos > 0:
             wait_for_publish(result, timeout=self.settings.mqtt_terminal_status_wait_timeout)
         self.record_event(
             RuntimeEvent(

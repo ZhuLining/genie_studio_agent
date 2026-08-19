@@ -191,6 +191,23 @@ def test_parse_end_effector_skill_params_accepts_dual_tool_aliases() -> None:
     assert params.right_opening == pytest.approx(0.75)
 
 
+def test_parse_end_effector_skill_params_accepts_dual_side_openings_without_common() -> None:
+    params = parse_end_effector_params(
+        {
+            "target_end": "dual_tool",
+            "left_opening": 0.25,
+            "right_opening": 0.75,
+            "timeout": 20,
+        },
+        "params_template",
+    )
+
+    assert params.target_end == "dual_tool"
+    assert params.opening is None
+    assert params.left_opening == pytest.approx(0.25)
+    assert params.right_opening == pytest.approx(0.75)
+
+
 def test_parse_force_control_skill_params() -> None:
     taskflow = parse_taskflow_yaml(VALID_FORCE_CONTROL_YAML)
     worker = taskflow.worker_nodes[0]
@@ -288,6 +305,25 @@ def test_parse_end_effector_params_allows_robot_reported_type() -> None:
 def test_reject_end_effector_opening_outside_range() -> None:
     with pytest.raises(TaskflowParseError, match="必须在 0 到 1 之间"):
         parse_taskflow_yaml(VALID_END_EFFECTOR_YAML.replace("opening: 0.5", "opening: 1.2"))
+
+
+def test_reject_end_effector_missing_opening_for_single_target() -> None:
+    yaml_payload = VALID_END_EFFECTOR_YAML.replace("      opening: 0.5\n", "")
+
+    with pytest.raises(TaskflowParseError, match="opening 或 .*left_opening 必须提供"):
+        parse_taskflow_yaml(yaml_payload)
+
+
+def test_reject_end_effector_missing_side_opening_for_dual_target() -> None:
+    with pytest.raises(TaskflowParseError, match="同时提供 left_opening/right_opening"):
+        parse_end_effector_params(
+            {
+                "target_end": "dual_tool",
+                "left_opening": 0.25,
+                "timeout": 20,
+            },
+            "params_template",
+        )
 
 
 def test_reject_script_id_outside_whitelist() -> None:

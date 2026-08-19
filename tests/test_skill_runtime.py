@@ -475,6 +475,71 @@ def test_end_effector_skill_gdk_adapter_calls_gdk_runtime(monkeypatch) -> None:
     }
 
 
+def test_end_effector_skill_gdk_outputs_resolved_dual_side_fields(monkeypatch) -> None:
+    node = TaskflowNode(
+        node_id="末端控制",
+        node_type="worker",
+        assignments={},
+        skill_name="control_end_effector_skill",
+        params_template={
+            "target_end": "dual_tool",
+            "left_opening": 0.25,
+            "right_opening": 0.75,
+            "timeout": 20,
+        },
+        capture_state_detail=True,
+        output_var="末端控制",
+        output_contract={},
+    )
+
+    def fake_end_effector_runtime(
+        end_effector_params: object,
+        *,
+        environ: dict[str, str] | None = None,
+        session_manager: GdkSessionManager | None = None,
+    ) -> dict[str, object]:
+        del environ, session_manager
+        return {
+            "available": True,
+            "executed": True,
+            "backend": "agibot_gdk.Robot",
+            "action": "taskflow_end_effector",
+            "target_end": "dual_tool",
+            "end_effector_type": "omnipicker",
+            "opening": end_effector_params.opening,
+            "left_opening": 0.25,
+            "right_opening": 0.75,
+            "left_end_effector_type": "omnipicker",
+            "right_end_effector_type": "omnipicker",
+            "actual_openness_source": "requested_opening_fallback",
+        }
+
+    monkeypatch.setattr(
+        skill_runtime,
+        "run_gdk_end_effector_control",
+        fake_end_effector_runtime,
+    )
+
+    result = SkillRuntime().run(
+        node,
+        SkillExecutionContext(
+            app_execution_id="dual-end-run",
+            variable_store=VariableStore(),
+            mode="gdk",
+        ),
+    )
+
+    assert result.outputs is not None
+    assert result.outputs["target_end"] == "dual_tool"
+    assert result.outputs["opening"] is None
+    assert result.outputs["left_opening"] == pytest.approx(0.25)
+    assert result.outputs["right_opening"] == pytest.approx(0.75)
+    assert result.outputs["left_end_effector_type"] == "omnipicker"
+    assert result.outputs["right_end_effector_type"] == "omnipicker"
+    assert result.outputs["end_effector_type"] == "omnipicker"
+    assert result.outputs["actual_openness"] == pytest.approx([0.25, 0.75])
+
+
 def test_non_mvp_worker_skill_is_rejected() -> None:
     node = TaskflowNode(
         node_id="二维码定位",

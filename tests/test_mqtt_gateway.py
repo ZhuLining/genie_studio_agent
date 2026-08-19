@@ -110,6 +110,32 @@ def test_publish_terminal_status_waits_for_qos_ack(tmp_path) -> None:
     assert client.publish_results[0].timeout == 1.25
 
 
+def test_publish_terminal_status_can_skip_qos_ack_wait(tmp_path) -> None:
+    client = FakeClient()
+    gateway = MqttGateway(
+        settings=ExecutorSettings(
+            executor_aid="aid-1",
+            mqtt_terminal_status_qos=1,
+            mqtt_terminal_status_wait_timeout=1.25,
+        ),
+        on_taskflow_message=lambda _message: None,
+        event_writer=JsonlEventWriter(tmp_path),
+    )
+    gateway._client = client
+
+    gateway.publish_status(
+        {"task_state": "ERROR", "error_msg": "queue full"},
+        wait_for_terminal=False,
+    )
+
+    [(topic, payload, qos, retain)] = client.published
+    assert topic == "gsa/self/aid-1/status"
+    assert json.loads(payload)["error_msg"] == "queue full"
+    assert qos == 1
+    assert retain is False
+    assert client.publish_results[0].waited is False
+
+
 def test_publish_status_requires_connection() -> None:
     gateway = MqttGateway(
         settings=ExecutorSettings(),

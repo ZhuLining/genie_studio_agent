@@ -262,6 +262,11 @@ def main(argv: list[str] | None = None) -> int:
                 gdk_worker_diagnostics=diagnostics_default_gdk_worker(),
             )
 
+        def publish_status_from_paho_callback(payload: Mapping[str, Any]) -> None:
+            """paho 网络线程内只发布不等待，避免 QoS ack 等待阻塞后续 MQTT 消息。"""
+
+            gateway.publish_status(payload, wait_for_terminal=False)
+
         # ==== taskflow worker 线程回调 ====
 
         def process_taskflow_message(message: TaskflowMessage) -> None:
@@ -482,7 +487,7 @@ def main(argv: list[str] | None = None) -> int:
                 logger.error("taskflow message queue rejected message: %s", error)
                 TaskflowStatusReporter(
                     settings=settings,
-                    publish_status=gateway.publish_status,
+                    publish_status=publish_status_from_paho_callback,
                     status_sequence=status_sequence,
                 ).publish_execution_error(message=str(error))
                 writer.write(
@@ -509,7 +514,7 @@ def main(argv: list[str] | None = None) -> int:
             """
             reporter = TaskflowStatusReporter(
                 settings=settings,
-                publish_status=gateway.publish_status,
+                publish_status=publish_status_from_paho_callback,
                 status_sequence=status_sequence,
             )
             try:

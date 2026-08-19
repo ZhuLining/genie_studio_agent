@@ -444,17 +444,19 @@ def resolve_single_end_effector_type(
 
 def read_side_opening(end_effector_params: EndEffectorParams, target_end: str) -> float:
     if target_end == "left_tool":
-        return (
-            end_effector_params.left_opening
-            if end_effector_params.left_opening is not None
-            else end_effector_params.opening
-        )
+        if end_effector_params.left_opening is not None:
+            return end_effector_params.left_opening
+        if end_effector_params.opening is not None:
+            return end_effector_params.opening
+        raise ValueError("left_tool 缺少 opening/left_opening")
     if target_end == "right_tool":
-        return (
-            end_effector_params.right_opening
-            if end_effector_params.right_opening is not None
-            else end_effector_params.opening
-        )
+        if end_effector_params.right_opening is not None:
+            return end_effector_params.right_opening
+        if end_effector_params.opening is not None:
+            return end_effector_params.opening
+        raise ValueError("right_tool 缺少 opening/right_opening")
+    if end_effector_params.opening is None:
+        raise ValueError("dual_tool 缺少 opening 或左右开度")
     return end_effector_params.opening
 
 
