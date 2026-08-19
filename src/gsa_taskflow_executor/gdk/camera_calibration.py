@@ -43,6 +43,10 @@ SENSOR_EXTRINSIC_ATTRS: dict[str, tuple[tuple[str, str], ...]] = {
         ("kHeadRGBDToHeadLink3", "头部RGBD到头部链接3"),
     ),
 }
+VERIFIED_ORIGINAL_QR_SENSOR_EXTRINSIC_ATTRS = {
+    ("hand_left_color", "kLeftHandRGBDToArmLEndLink"),
+    ("hand_right_color", "kRightHandRGBDToArmREndLink"),
+}
 
 
 def run_gdk_camera_calibration_snapshot(
@@ -300,6 +304,10 @@ def collect_camera_extrinsics(
                             camera_id=camera_id,
                             gdk_sensor_type=read_camera_type_name(gdk_sensor_type),
                             description=description,
+                            direction_verified=is_verified_original_qr_extrinsic(
+                                camera_id,
+                                attr,
+                            ),
                         )
                     )
                 except Exception as error:
@@ -363,6 +371,7 @@ def build_extrinsic_payload(
     camera_id: str,
     gdk_sensor_type: str,
     description: str,
+    direction_verified: bool,
 ) -> dict[str, object]:
     translation = getattr(transform, "translation", None)
     rotation = getattr(transform, "rotation", None)
@@ -381,9 +390,15 @@ def build_extrinsic_payload(
             "z": read_float_attr(rotation, "z"),
             "w": read_float_attr(rotation, "w"),
         },
-        "directionVerified": False,
+        "directionVerified": direction_verified,
         "collectedAt": utc_now_iso(),
     }
+
+
+def is_verified_original_qr_extrinsic(camera_id: str, sensor_attr: str) -> bool:
+    # 这两条外参已在 G2 真机上与原版 extrinsic_end_T_hand_*_rgbd.json
+    # 逐字段对齐；其他 TF 结果仍只作为探针，避免坐标方向误用。
+    return (camera_id, sensor_attr) in VERIFIED_ORIGINAL_QR_SENSOR_EXTRINSIC_ATTRS
 
 
 def normalize_camera_ids(camera_ids: tuple[str, ...]) -> tuple[str, ...]:

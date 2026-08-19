@@ -17,6 +17,8 @@ class FakeCameraType:
 class FakeSensorExtrinsicType:
     kLeftHandDepthToLeftHandColor = "FakeLeftDepthToColor"
     kLeftHandRGBDToArmLEndLink = "FakeLeftRgbdToEnd"
+    kRightHandDepthToRightHandColor = "FakeRightDepthToColor"
+    kRightHandRGBDToArmREndLink = "FakeRightRgbdToEnd"
 
 
 class FakeIntrinsic:
@@ -135,9 +137,9 @@ def test_camera_calibration_returns_busy_when_session_active() -> None:
     assert result["activePurpose"] == "motion"
 
 
-def test_camera_calibration_include_extrinsics_marks_direction_unverified() -> None:
+def test_camera_calibration_include_extrinsics_marks_verified_qr_hand_extrinsic() -> None:
     result = run_gdk_camera_calibration_snapshot(
-        camera_ids=("hand_left_color",),
+        camera_ids=("hand_left_color", "hand_right_color"),
         timeout_ms=1500,
         include_extrinsics=True,
         warmup_seconds=0,
@@ -146,5 +148,10 @@ def test_camera_calibration_include_extrinsics_marks_direction_unverified() -> N
 
     assert result["available"] is True
     extrinsics = result["extrinsics"]
-    assert len(extrinsics) == 2
-    assert extrinsics[0]["directionVerified"] is False
+    assert len(extrinsics) == 4
+    verified_types = {
+        item["gdkSensorExtrinsicType"]
+        for item in extrinsics
+        if item["directionVerified"] is True
+    }
+    assert verified_types == {"FakeLeftRgbdToEnd", "FakeRightRgbdToEnd"}
