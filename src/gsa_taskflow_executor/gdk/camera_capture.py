@@ -40,6 +40,8 @@ CAPTURE_RATE_FPS_MIN = 1
 CAPTURE_RATE_FPS_MAX = 10
 STOP_JOIN_TIMEOUT_SECONDS = 6.0
 TERMINATE_GRACE_SECONDS = 2.0
+STALE_FRAME_REOPEN_THRESHOLD = 3
+CAMERA_REOPEN_WARMUP_SECONDS = DEFAULT_CAMERA_WARMUP_SECONDS
 
 
 @dataclass(frozen=True)
@@ -249,6 +251,9 @@ def camera_capture_child(
     started_at = utc_now_iso()
     frames_captured = 0
     frames_published = 0
+    duplicate_timestamp_count = 0
+    reopened_camera_count = 0
+    last_timestamp_key: str | None = None
     last_error: dict[str, object] | None = None
     agibot_gdk = None
     camera = None
@@ -279,6 +284,12 @@ def camera_capture_child(
                     camera_id=camera_id,
                     gdk_camera_type=str(gdk_camera_type),
                 )
+                timestamp_key = read_frame_timestamp_key(snapshot)
+                if timestamp_key and timestamp_key == last_timestamp_key:
+                    duplicate_timestamp_count += 1
+                else:
+                    duplicate_timestamp_count = 0
+                    last_timestamp_key = timestamp_key
                 frames_captured += 1
                 frame_payload = build_frame_payload(
                     snapshot,
@@ -286,6 +297,8 @@ def camera_capture_child(
                     frame_index=frames_captured,
                     capture_rate_fps=capture_rate_fps,
                     executor_aid=executor_aid,
+                    duplicate_timestamp_count=duplicate_timestamp_count,
+                    reopened_camera_count=reopened_camera_count,
                 )
                 publish_info = mqtt_client.publish(
                     frame_topic,
@@ -294,6 +307,13 @@ def camera_capture_child(
                 )
                 publish_info.wait_for_publish(timeout=2.0)
                 frames_published += 1
+                if duplicate_timestamp_count >= STALE_FRAME_REOPEN_THRESHOLD:
+                    # GDK 偶发会持续返回同一 timestamp 的缓存帧；重建 Camera 订阅比让
+                    # 页面继续显示假“实时”更安全，也能尽快恢复后续点位录制预览。
+                    camera = reopen_camera(agibot_gdk, camera)
+                    reopened_camera_count += 1
+                    duplicate_timestamp_count = 0
+                    last_timestamp_key = None
             except Exception as error:
                 last_error = {
                     "stage": "capture_frame",
@@ -315,12 +335,7 @@ def camera_capture_child(
         }
     finally:
         if camera is not None:
-            close_camera = getattr(camera, "close_camera", None)
-            if callable(close_camera):
-                try:
-                    close_camera()
-                except Exception:
-                    pass
+            close_camera_safely(camera)
         release_result: dict[str, object] = {"called": False, "success": True, "return": None}
         if agibot_gdk is not None and gdk_initialized:
             release_result = release_gdk(agibot_gdk)
@@ -341,6 +356,7 @@ def camera_capture_child(
                 "captureRateFps": capture_rate_fps,
                 "framesCaptured": frames_captured,
                 "framesPublished": frames_published,
+                "reopenedCameraCount": reopened_camera_count,
                 "startedAt": started_at,
                 "stoppedAt": utc_now_iso(),
                 "stopReason": "requested" if stop_event.is_set() else "child_finished",
@@ -377,6 +393,8 @@ def build_frame_payload(
     frame_index: int,
     capture_rate_fps: int,
     executor_aid: str,
+    duplicate_timestamp_count: int = 0,
+    reopened_camera_count: int = 0,
 ) -> dict[str, object]:
     return {
         "type": CAMERA_CAPTURE_FRAME_TYPE,
@@ -390,10 +408,36 @@ def build_frame_payload(
         "width": snapshot.get("width"),
         "height": snapshot.get("height"),
         "encoding": snapshot.get("encoding"),
+        "imageSha256": snapshot.get("imageSha256"),
         "timestampNs": snapshot.get("timestampNs"),
         "capturedAt": snapshot.get("collectedAt"),
+        "duplicateTimestampCount": duplicate_timestamp_count,
+        "reopenedCameraCount": reopened_camera_count,
         "raw": snapshot.get("raw"),
     }
+
+
+def read_frame_timestamp_key(snapshot: Mapping[str, object]) -> str | None:
+    timestamp = snapshot.get("timestampNs")
+    if timestamp is None:
+        return None
+    return str(timestamp)
+
+
+def close_camera_safely(camera: Any) -> None:
+    close_camera = getattr(camera, "close_camera", None)
+    if callable(close_camera):
+        try:
+            close_camera()
+        except Exception:
+            pass
+
+
+def reopen_camera(agibot_gdk: Any, camera: Any) -> Any:
+    close_camera_safely(camera)
+    new_camera = agibot_gdk.Camera()
+    time.sleep(CAMERA_REOPEN_WARMUP_SECONDS)
+    return new_camera
 
 
 def connect_frame_mqtt_client(payload: Mapping[str, object]) -> Any:

@@ -134,6 +134,7 @@ def test_build_frame_payload_uses_capture_metadata() -> None:
             "width": 1280,
             "height": 1056,
             "encoding": "JPEG",
+            "imageSha256": "sha",
             "timestampNs": "123",
             "collectedAt": "2026-08-07T00:00:00+00:00",
         },
@@ -141,6 +142,8 @@ def test_build_frame_payload_uses_capture_metadata() -> None:
         frame_index=7,
         capture_rate_fps=5,
         executor_aid="aid-1",
+        duplicate_timestamp_count=2,
+        reopened_camera_count=1,
     )
 
     assert payload["type"] == "camera_capture_frame"
@@ -148,3 +151,6 @@ def test_build_frame_payload_uses_capture_metadata() -> None:
     assert payload["frameIndex"] == 7
     assert payload["captureRateFps"] == 5
     assert payload["cameraId"] == "hand_left_color"
+    assert payload["imageSha256"] == "sha"
+    assert payload["duplicateTimestampCount"] == 2
+    assert payload["reopenedCameraCount"] == 1

@@ -21,14 +21,18 @@ from uuid import uuid4
 
 from gsa_taskflow_executor.gdk.camera_calibration import collect_camera_calibration
 from gsa_taskflow_executor.gdk.camera_capture import (
+    STALE_FRAME_REOPEN_THRESHOLD,
     CAPTURE_RATE_FPS_MAX,
     CAPTURE_RATE_FPS_MIN,
     STOP_JOIN_TIMEOUT_SECONDS,
     TERMINATE_GRACE_SECONDS,
     build_frame_payload,
+    close_camera_safely,
     connect_frame_mqtt_client,
     put_summary_queue,
+    read_frame_timestamp_key,
     read_summary_queue,
+    reopen_camera,
 )
 from gsa_taskflow_executor.gdk.camera_frame import (
     DEFAULT_CAMERA_WARMUP_SECONDS,
@@ -300,6 +304,9 @@ def qr_capture_child(
     frames_captured = 0
     frames_published = 0
     frames_saved = 0
+    duplicate_timestamp_count = 0
+    reopened_camera_count = 0
+    last_timestamp_key: str | None = None
     last_error: dict[str, object] | None = None
     agibot_gdk = None
     camera = None
@@ -379,27 +386,40 @@ def qr_capture_child(
                     camera_id=camera_id,
                     gdk_camera_type=str(gdk_camera_type),
                 )
+                timestamp_key = read_frame_timestamp_key(snapshot)
+                is_duplicate_timestamp = bool(timestamp_key and timestamp_key == last_timestamp_key)
+                if is_duplicate_timestamp:
+                    duplicate_timestamp_count += 1
+                else:
+                    duplicate_timestamp_count = 0
+                    last_timestamp_key = timestamp_key
                 frames_captured += 1
-                captured_frame = save_captured_frame(
-                    paths=paths,
-                    payload=payload,
-                    snapshot=snapshot,
-                    session_id=session_id,
-                    frame_index=frames_captured,
-                    capture_rate_fps=capture_rate_fps,
-                )
-                frames_saved += 1
+                captured_frame = None
+                if not is_duplicate_timestamp:
+                    captured_frame = save_captured_frame(
+                        paths=paths,
+                        payload=payload,
+                        snapshot=snapshot,
+                        session_id=session_id,
+                        frame_index=frames_captured,
+                        capture_rate_fps=capture_rate_fps,
+                    )
+                    frames_saved += 1
                 frame_payload = build_frame_payload(
                     snapshot,
                     session_id=session_id,
                     frame_index=frames_captured,
                     capture_rate_fps=capture_rate_fps,
                     executor_aid=executor_aid,
+                    duplicate_timestamp_count=duplicate_timestamp_count,
+                    reopened_camera_count=reopened_camera_count,
                 )
                 frame_payload["type"] = QR_CAPTURE_FRAME_TYPE
                 frame_payload["robotSerial"] = payload["robotSerial"]
                 frame_payload["projectName"] = payload["projectName"]
-                frame_payload["capturedFrame"] = captured_frame
+                frame_payload["frameSaved"] = captured_frame is not None
+                if captured_frame is not None:
+                    frame_payload["capturedFrame"] = captured_frame
                 publish_info = mqtt_client.publish(
                     frame_topic,
                     json.dumps(to_jsonable(frame_payload), ensure_ascii=False),
@@ -407,6 +427,13 @@ def qr_capture_child(
                 )
                 publish_info.wait_for_publish(timeout=2.0)
                 frames_published += 1
+                if duplicate_timestamp_count >= STALE_FRAME_REOPEN_THRESHOLD:
+                    # 重复 timestamp 代表 GDK 返回的很可能是缓存帧；二维码建图不能把
+                    # 假实时帧继续落盘，否则会污染后续 SDK 建图输入。
+                    camera = reopen_camera(agibot_gdk, camera)
+                    reopened_camera_count += 1
+                    duplicate_timestamp_count = 0
+                    last_timestamp_key = None
             except Exception as error:
                 last_error = {
                     "stage": "capture_frame",
@@ -442,12 +469,7 @@ def qr_capture_child(
             ready_sent = True
     finally:
         if camera is not None:
-            close_camera = getattr(camera, "close_camera", None)
-            if callable(close_camera):
-                try:
-                    close_camera()
-                except Exception:
-                    pass
+            close_camera_safely(camera)
         release_result: dict[str, object] = {"called": False, "success": True, "return": None}
         if agibot_gdk is not None and gdk_initialized:
             release_result = release_gdk(agibot_gdk)
@@ -483,6 +505,7 @@ def qr_capture_child(
                 "framesPublished": frames_published,
                 "framesSaved": frames_saved,
                 "imageCount": frames_saved,
+                "reopenedCameraCount": reopened_camera_count,
                 "startedAt": started_at,
                 "stoppedAt": utc_now_iso(),
                 "stopReason": "requested" if stop_event.is_set() else "child_finished",

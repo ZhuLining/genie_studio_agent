@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import importlib
 import json
 import os
@@ -349,10 +350,12 @@ def build_camera_frame_snapshot(
         "width": width,
         "height": height,
         "encoding": encoding,
+        "imageSha256": hashlib.sha256(output_bytes).hexdigest(),
         "timestampNs": to_jsonable(getattr(image, "timestamp_ns", None)),
         "collectedAt": utc_now_iso(),
         "raw": {
             "dataBytes": len(data),
+            "outputBytes": len(output_bytes),
         },
     }
 
