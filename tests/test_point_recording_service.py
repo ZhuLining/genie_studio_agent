@@ -8,7 +8,9 @@ from gsa_taskflow_executor.qr_mapping.point_recording_service import (
     PointRecordingSaveTargetParams,
     PointRecordingService,
     QrLocalizeSdkError,
+    QrLocalizeQualityError,
     run_qr_localize_sdk,
+    validate_qr_localize_quality,
 )
 from gsa_taskflow_executor.qr_mapping.project_store import QrProjectStore
 
@@ -140,6 +142,30 @@ def test_qr_localize_sdk_failure_keeps_stats(tmp_path, monkeypatch: pytest.Monke
     assert error.stats["n_markers"] == 2
 
 
+def test_qr_localize_quality_gate_rejects_high_reprojection(tmp_path) -> None:
+    stats_path = tmp_path / "locate_stats.json"
+    output_dir = tmp_path / "waypoints" / "photo_001"
+
+    with pytest.raises(QrLocalizeQualityError) as raised:
+        validate_qr_localize_quality(
+            {
+                "ok": True,
+                "n_markers": 6,
+                "reproj_px": 399.2342529296875,
+                "used_ids": [1, 2, 4, 7, 8, 10],
+            },
+            min_markers=4,
+            max_reproj_px=2.0,
+            stats_path=stats_path,
+            output_dir=output_dir,
+        )
+
+    error = raised.value
+    assert "重投影误差 399.234px" in str(error)
+    assert error.stats_path == stats_path
+    assert error.max_reproj_px == 2.0
+
+
 def make_service(tmp_path) -> tuple[QrProjectStore, PointRecordingService]:
     store = QrProjectStore(tmp_path)
     service = PointRecordingService(
@@ -232,7 +258,14 @@ def fake_sdk_runner(
     )
     (out_dir / "joints.json").write_text(json.dumps([0.0] * 22), encoding="utf-8")
     stats_path.write_text(
-        json.dumps({"ok": True, "n_markers": min_markers, "used_ids": [1, 2, 3, 4]}),
+        json.dumps(
+            {
+                "ok": True,
+                "n_markers": min_markers,
+                "used_ids": [1, 2, 3, 4],
+                "reproj_px": 1.0,
+            }
+        ),
         encoding="utf-8",
     )
     return {"returnCode": 0, "stdout": "", "stderr": ""}
