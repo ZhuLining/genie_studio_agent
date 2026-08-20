@@ -20,7 +20,9 @@ from uuid import uuid4
 
 from gsa_taskflow_executor.gdk.camera_frame import (
     DEFAULT_CAMERA_WARMUP_SECONDS,
+    build_camera_child_artifact_path,
     build_camera_frame_snapshot,
+    remove_camera_child_artifact,
     resolve_gdk_camera_type,
     validate_camera_id,
 )
@@ -58,7 +60,7 @@ ACTION_SAVE_QR_TARGET_POINT = "save_qr_target_point"
 ACTION_SAVE_QR_INITIAL_PHOTO_POINT = "save_qr_initial_photo_point"
 ACTION_SUBMIT_POINT_RECORDING = "submit_point_recording"
 POINT_RECORDING_BUSY_ERROR_MESSAGE = "GDK 正在执行控制动作，点位录制已拒绝"
-DEFAULT_POINT_RECORDING_TIMEOUT_MS = 3000
+DEFAULT_POINT_RECORDING_TIMEOUT_MS = 60000
 DEFAULT_LOCALIZE_TIMEOUT_SECONDS = 120.0
 DEFAULT_MIN_MARKERS = 4
 MAX_MIN_MARKERS = 32
@@ -448,35 +450,41 @@ def collect_point_recording_gdk_snapshot(
     if lease is None:
         return busy_result(action, active_purpose=session_manager.active_purpose)
 
+    progress_path = build_camera_child_artifact_path("point_recording_progress")
     with lease:
-        result = run_gdk_subprocess(
-            operation=action,
-            action=action,
-            backend=GDK_BACKEND,
-            timeout_seconds=build_gdk_snapshot_timeout_seconds(
-                timeout_ms,
-                include_image=include_image,
-            ),
-            child_target=point_recording_gdk_child,
-            child_args=(
-                action,
-                arm,
-                camera_id,
-                timeout_ms,
-                include_image,
-                str(temp_dir),
-                DEFAULT_CAMERA_WARMUP_SECONDS,
-                DEFAULT_MAX_MOTION_DURING_CAPTURE_MM,
-                DEFAULT_MAX_ROTATION_DURING_CAPTURE_DEG,
-            ),
-            safety_gate={
-                "enabled": False,
-                "confirmed": True,
-                "reason": "read_only_point_recording",
-            },
-        )
-        result["gdk_parent_lock"] = lease.to_payload()
-        return result
+        try:
+            result = run_gdk_subprocess(
+                operation=action,
+                action=action,
+                backend=GDK_BACKEND,
+                timeout_seconds=build_gdk_snapshot_timeout_seconds(
+                    timeout_ms,
+                    include_image=include_image,
+                ),
+                child_target=point_recording_gdk_child,
+                child_args=(
+                    action,
+                    arm,
+                    camera_id,
+                    timeout_ms,
+                    include_image,
+                    str(temp_dir),
+                    DEFAULT_CAMERA_WARMUP_SECONDS,
+                    DEFAULT_MAX_MOTION_DURING_CAPTURE_MM,
+                    DEFAULT_MAX_ROTATION_DURING_CAPTURE_DEG,
+                    str(progress_path),
+                ),
+                safety_gate={
+                    "enabled": False,
+                    "confirmed": True,
+                    "reason": "read_only_point_recording",
+                },
+            )
+            attach_point_recording_child_progress(result, progress_path)
+            result["gdk_parent_lock"] = lease.to_payload()
+            return result
+        finally:
+            remove_camera_child_artifact(progress_path)
 
 
 def build_gdk_snapshot_timeout_seconds(timeout_ms: int, *, include_image: bool) -> float:
@@ -495,6 +503,7 @@ def point_recording_gdk_child(
     warmup_seconds: float,
     max_motion_mm: float,
     max_rotation_deg: float,
+    progress_path: str | None = None,
 ) -> None:
     agibot_gdk = None
     gdk_initialized = False
@@ -503,35 +512,118 @@ def point_recording_gdk_child(
     result: dict[str, object]
     camera = None
     try:
+        write_point_recording_child_progress(progress_path, "child_started", action=action)
         agibot_gdk = __import__(GDK_MODULE_NAME)
+        write_point_recording_child_progress(progress_path, "agibot_gdk_imported", action=action)
+        write_point_recording_child_progress(progress_path, "gdk_init_started", action=action)
         init_result = initialize_gdk(agibot_gdk)
+        write_point_recording_child_progress(
+            progress_path,
+            "gdk_init_finished",
+            action=action,
+            gdk_init=init_result,
+        )
         if init_result.get("called") is True and init_result.get("success") is not True:
             raise RuntimeError("agibot_gdk.gdk_init() did not return success")
         gdk_initialized = bool(init_result.get("called"))
+        write_point_recording_child_progress(progress_path, "robot_create_started", action=action)
         robot = agibot_gdk.Robot()
+        write_point_recording_child_progress(progress_path, "robot_created", action=action)
+        write_point_recording_child_progress(
+            progress_path,
+            "validate_robot_status_started",
+            action=action,
+            arm=arm,
+        )
         validate_robot_status_for_arm(robot, arm)
+        write_point_recording_child_progress(
+            progress_path,
+            "validate_robot_status_finished",
+            action=action,
+            arm=arm,
+        )
 
         if include_image:
             gdk_camera_type = resolve_gdk_camera_type(agibot_gdk, camera_id)
+            write_point_recording_child_progress(
+                progress_path,
+                "camera_create_started",
+                action=action,
+                camera_id=camera_id,
+            )
             camera = agibot_gdk.Camera()
+            write_point_recording_child_progress(
+                progress_path,
+                "camera_created",
+                action=action,
+                camera_id=camera_id,
+            )
             if warmup_seconds > 0:
                 # Camera 初始化后首帧容易失败，沿用二维码建图采集的保守 warmup。
                 import time
 
+                write_point_recording_child_progress(
+                    progress_path,
+                    "camera_warmup_started",
+                    action=action,
+                    camera_id=camera_id,
+                    warmup_seconds=warmup_seconds,
+                )
                 time.sleep(warmup_seconds)
+                write_point_recording_child_progress(
+                    progress_path,
+                    "camera_warmup_finished",
+                    action=action,
+                    camera_id=camera_id,
+                )
+            write_point_recording_child_progress(
+                progress_path,
+                "read_before_pose_started",
+                action=action,
+                arm=arm,
+            )
             before_pose = read_arm_end_pose(robot, arm)
+            write_point_recording_child_progress(
+                progress_path,
+                "get_latest_image_started",
+                action=action,
+                camera_id=camera_id,
+            )
             image = camera.get_latest_image(gdk_camera_type, float(timeout_ms))
+            write_point_recording_child_progress(
+                progress_path,
+                "get_latest_image_returned",
+                action=action,
+                camera_id=camera_id,
+            )
             if image is None:
                 raise RuntimeError("camera.get_latest_image() returned None")
+            write_point_recording_child_progress(
+                progress_path,
+                "read_after_pose_started",
+                action=action,
+                arm=arm,
+            )
             after_pose = read_arm_end_pose(robot, arm)
             motion = build_stationarity_payload(before_pose, after_pose)
             if motion["motionMm"] > max_motion_mm or motion["rotationDeg"] > max_rotation_deg:
                 raise RuntimeError(
                     "拍照期间末端发生移动: "
                     f"{motion['motionMm']:.3f}mm/{motion['rotationDeg']:.3f}deg"
-                )
+            )
             pose = mean_pose(before_pose, after_pose)
+            write_point_recording_child_progress(
+                progress_path,
+                "read_joint_positions_started",
+                action=action,
+            )
             joints = read_joint_positions(robot)
+            write_point_recording_child_progress(
+                progress_path,
+                "encode_frame_started",
+                action=action,
+                camera_id=camera_id,
+            )
             frame_snapshot = build_camera_frame_snapshot(
                 image,
                 camera_id=camera_id,
@@ -559,7 +651,18 @@ def point_recording_gdk_child(
                 },
             )
         else:
+            write_point_recording_child_progress(
+                progress_path,
+                "read_pose_started",
+                action=action,
+                arm=arm,
+            )
             pose = read_arm_end_pose(robot, arm)
+            write_point_recording_child_progress(
+                progress_path,
+                "read_joint_positions_started",
+                action=action,
+            )
             joints = read_joint_positions(robot)
             result = build_snapshot_result(
                 action,
@@ -579,9 +682,18 @@ def point_recording_gdk_child(
                 except Exception:
                     pass
         if agibot_gdk is not None and gdk_initialized:
+            write_point_recording_child_progress(progress_path, "gdk_release_started", action=action)
             release_result = release_gdk(agibot_gdk)
+            write_point_recording_child_progress(
+                progress_path,
+                "gdk_release_finished",
+                action=action,
+                gdk_release=release_result,
+            )
         result.setdefault("gdk_init", init_result)
         result.setdefault("gdk_release", release_result)
+        attach_point_recording_child_progress(result, Path(progress_path) if progress_path else None)
+        write_point_recording_child_progress(progress_path, "result_put_started", action=action)
         result_queue.put(result)
 
 
@@ -1213,3 +1325,45 @@ def error_code_from_exception(error: Exception) -> str:
     if isinstance(error, ValueError):
         return "POINT_RECORDING_INVALID"
     return "POINT_RECORDING_FAILED"
+
+
+def write_point_recording_child_progress(
+    progress_path: str | None,
+    stage: str,
+    **payload: object,
+) -> None:
+    if not progress_path:
+        return
+    progress = {
+        "stage": stage,
+        "pid": os.getpid(),
+        "updatedAt": utc_now_iso(),
+        **payload,
+    }
+    try:
+        Path(progress_path).write_text(
+            json.dumps(to_jsonable(progress), ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except Exception:
+        # 进度文件只用于现场定位 GDK 阻塞阶段，写失败不能影响点位录制主流程。
+        return
+
+
+def attach_point_recording_child_progress(
+    result: dict[str, object],
+    progress_path: Path | None,
+) -> None:
+    progress = read_point_recording_child_progress(progress_path)
+    if progress is not None:
+        result["pointRecordingChildProgress"] = progress
+
+
+def read_point_recording_child_progress(progress_path: Path | None) -> dict[str, object] | None:
+    if progress_path is None or not progress_path.exists():
+        return None
+    try:
+        decoded = json.loads(progress_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return decoded if isinstance(decoded, dict) else None
