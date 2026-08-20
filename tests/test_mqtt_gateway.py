@@ -198,6 +198,13 @@ def test_on_connect_subscribes_robot_state_topic_when_handler_configured() -> No
         ("gsa/self/robot/state/get_camera_calibration/request", 0),
         ("gsa/self/robot/state/camera_capture/start/request", 0),
         ("gsa/self/robot/state/camera_capture/stop/request", 0),
+        ("gsa/self/robot/qr_mapping/get_qr_project_path/request", 0),
+        ("gsa/self/robot/qr_mapping/get_qr_project_snapshot/request", 0),
+        ("gsa/self/robot/qr_mapping/start_capture/request", 0),
+        ("gsa/self/robot/qr_mapping/stop_capture/request", 0),
+        ("gsa/self/robot/qr_mapping/build_map/request", 0),
+        ("gsa/self/robot/qr_mapping/delete_map/request", 0),
+        ("gsa/self/robot/qr_mapping/read_pcd_preview/request", 0),
     ]
 
 

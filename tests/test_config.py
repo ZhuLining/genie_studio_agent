@@ -48,6 +48,34 @@ def test_default_status_topic() -> None:
         settings.robot_camera_capture_frame_topic_template
         == "gsa/self/robot/state/camera_capture/{sessionId}/frame"
     )
+    assert settings.gsa_data_root == "/data/gsa"
+    assert (
+        settings.qr_mapping_project_path_request_topic
+        == "gsa/self/robot/qr_mapping/get_qr_project_path/request"
+    )
+    assert (
+        settings.qr_mapping_project_snapshot_request_topic
+        == "gsa/self/robot/qr_mapping/get_qr_project_snapshot/request"
+    )
+    assert (
+        settings.qr_mapping_capture_start_request_topic
+        == "gsa/self/robot/qr_mapping/start_capture/request"
+    )
+    assert (
+        settings.qr_mapping_capture_frame_topic_template
+        == "gsa/self/robot/qr_mapping/capture/{sessionId}/frame"
+    )
+    assert (
+        settings.qr_mapping_build_map_request_topic
+        == "gsa/self/robot/qr_mapping/build_map/request"
+    )
+    assert (
+        settings.qr_mapping_pcd_preview_request_topic
+        == "gsa/self/robot/qr_mapping/read_pcd_preview/request"
+    )
+    assert settings.qr_mapping_sdk_path == ""
+    assert settings.qr_mapping_sdk_python == "python3"
+    assert settings.qr_mapping_build_timeout_seconds == 300.0
     assert settings.taskflow_cancel_topic_filter == "gsa/self/taskflow/+/cancel"
     assert settings.mqtt_status_qos == 0
     assert settings.mqtt_terminal_status_qos == 1
@@ -81,6 +109,25 @@ def test_env_overrides(monkeypatch) -> None:
         "ROBOT_CAMERA_CAPTURE_FRAME_TOPIC_TEMPLATE",
         "robot/capture/{sessionId}/frame",
     )
+    monkeypatch.setenv("GSA_DATA_ROOT", "/tmp/gsa-data")
+    monkeypatch.setenv("QR_MAPPING_PROJECT_PATH_REQUEST_TOPIC", "qr/path/request")
+    monkeypatch.setenv("QR_MAPPING_PROJECT_PATH_RESPONSE_TOPIC", "qr/path/response")
+    monkeypatch.setenv("QR_MAPPING_PROJECT_SNAPSHOT_REQUEST_TOPIC", "qr/snapshot/request")
+    monkeypatch.setenv("QR_MAPPING_PROJECT_SNAPSHOT_RESPONSE_TOPIC", "qr/snapshot/response")
+    monkeypatch.setenv("QR_MAPPING_CAPTURE_START_REQUEST_TOPIC", "qr/capture/start/request")
+    monkeypatch.setenv("QR_MAPPING_CAPTURE_START_RESPONSE_TOPIC", "qr/capture/start/response")
+    monkeypatch.setenv("QR_MAPPING_CAPTURE_STOP_REQUEST_TOPIC", "qr/capture/stop/request")
+    monkeypatch.setenv("QR_MAPPING_CAPTURE_STOP_RESPONSE_TOPIC", "qr/capture/stop/response")
+    monkeypatch.setenv("QR_MAPPING_CAPTURE_FRAME_TOPIC_TEMPLATE", "qr/capture/{sessionId}/frame")
+    monkeypatch.setenv("QR_MAPPING_BUILD_MAP_REQUEST_TOPIC", "qr/build/request")
+    monkeypatch.setenv("QR_MAPPING_BUILD_MAP_RESPONSE_TOPIC", "qr/build/response")
+    monkeypatch.setenv("QR_MAPPING_DELETE_MAP_REQUEST_TOPIC", "qr/delete/request")
+    monkeypatch.setenv("QR_MAPPING_DELETE_MAP_RESPONSE_TOPIC", "qr/delete/response")
+    monkeypatch.setenv("QR_MAPPING_PCD_PREVIEW_REQUEST_TOPIC", "qr/pcd/request")
+    monkeypatch.setenv("QR_MAPPING_PCD_PREVIEW_RESPONSE_TOPIC", "qr/pcd/response")
+    monkeypatch.setenv("QR_MAPPING_SDK_PATH", "/opt/qr_mapping_sdk")
+    monkeypatch.setenv("QR_MAPPING_SDK_PYTHON", "/opt/venv/bin/python")
+    monkeypatch.setenv("QR_MAPPING_BUILD_TIMEOUT_SECONDS", "123.5")
     monkeypatch.setenv("TASKFLOW_CANCEL_TOPIC_FILTER", "robot/taskflow/+/cancel")
     monkeypatch.setenv("MQTT_STATUS_QOS", "1")
     monkeypatch.setenv("MQTT_TERMINAL_STATUS_QOS", "2")
@@ -111,6 +158,25 @@ def test_env_overrides(monkeypatch) -> None:
     assert settings.robot_camera_capture_stop_request_topic == "robot/capture/stop"
     assert settings.robot_camera_capture_stop_response_topic == "robot/capture/stop/resp"
     assert settings.robot_camera_capture_frame_topic_template == "robot/capture/{sessionId}/frame"
+    assert settings.gsa_data_root == "/tmp/gsa-data"
+    assert settings.qr_mapping_project_path_request_topic == "qr/path/request"
+    assert settings.qr_mapping_project_path_response_topic == "qr/path/response"
+    assert settings.qr_mapping_project_snapshot_request_topic == "qr/snapshot/request"
+    assert settings.qr_mapping_project_snapshot_response_topic == "qr/snapshot/response"
+    assert settings.qr_mapping_capture_start_request_topic == "qr/capture/start/request"
+    assert settings.qr_mapping_capture_start_response_topic == "qr/capture/start/response"
+    assert settings.qr_mapping_capture_stop_request_topic == "qr/capture/stop/request"
+    assert settings.qr_mapping_capture_stop_response_topic == "qr/capture/stop/response"
+    assert settings.qr_mapping_capture_frame_topic_template == "qr/capture/{sessionId}/frame"
+    assert settings.qr_mapping_build_map_request_topic == "qr/build/request"
+    assert settings.qr_mapping_build_map_response_topic == "qr/build/response"
+    assert settings.qr_mapping_delete_map_request_topic == "qr/delete/request"
+    assert settings.qr_mapping_delete_map_response_topic == "qr/delete/response"
+    assert settings.qr_mapping_pcd_preview_request_topic == "qr/pcd/request"
+    assert settings.qr_mapping_pcd_preview_response_topic == "qr/pcd/response"
+    assert settings.qr_mapping_sdk_path == "/opt/qr_mapping_sdk"
+    assert settings.qr_mapping_sdk_python == "/opt/venv/bin/python"
+    assert settings.qr_mapping_build_timeout_seconds == 123.5
     assert settings.taskflow_cancel_topic_filter == "robot/taskflow/+/cancel"
     assert settings.mqtt_status_qos == 1
     assert settings.mqtt_terminal_status_qos == 2

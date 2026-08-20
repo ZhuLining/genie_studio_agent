@@ -22,6 +22,26 @@ from gsa_taskflow_executor.gdk.camera_capture import (
     CameraCaptureStartParams,
 )
 from gsa_taskflow_executor.gdk.camera_frame import DEFAULT_CAMERA_TIMEOUT_MS
+from gsa_taskflow_executor.qr_mapping.build_service import (
+    ACTION_BUILD_QR_MAP,
+    ACTION_DELETE_QR_MAP,
+    ACTION_READ_QR_PCD_PREVIEW,
+    DEFAULT_PCD_MAX_POINTS,
+    PCD_MAX_POINTS_LIMIT,
+)
+from gsa_taskflow_executor.qr_mapping.capture_service import (
+    ACTION_START_QR_CAPTURE,
+    ACTION_STOP_QR_CAPTURE,
+    DEFAULT_QR_CAMERA_TIMEOUT_MS,
+    DEFAULT_QR_CAPTURE_RATE_FPS,
+    QrCaptureStartParams,
+)
+from gsa_taskflow_executor.qr_mapping.project_store import (
+    ACTION_GET_QR_PROJECT_PATH,
+    ACTION_GET_QR_PROJECT_SNAPSHOT,
+    DEFAULT_IMAGE_LIMIT,
+    MAX_IMAGE_LIMIT,
+)
 
 # 请求类型常量
 CURRENT_POSE_REQUEST_TYPE = "get_current_pose"
@@ -29,6 +49,13 @@ CAMERA_FRAME_REQUEST_TYPE = "get_camera_frame"
 CAMERA_CALIBRATION_REQUEST_TYPE = ACTION_GET_CAMERA_CALIBRATION
 CAMERA_CAPTURE_START_REQUEST_TYPE = ACTION_START_CAMERA_CAPTURE
 CAMERA_CAPTURE_STOP_REQUEST_TYPE = ACTION_STOP_CAMERA_CAPTURE
+QR_PROJECT_PATH_REQUEST_TYPE = ACTION_GET_QR_PROJECT_PATH
+QR_PROJECT_SNAPSHOT_REQUEST_TYPE = ACTION_GET_QR_PROJECT_SNAPSHOT
+QR_CAPTURE_START_REQUEST_TYPE = ACTION_START_QR_CAPTURE
+QR_CAPTURE_STOP_REQUEST_TYPE = ACTION_STOP_QR_CAPTURE
+QR_BUILD_MAP_REQUEST_TYPE = ACTION_BUILD_QR_MAP
+QR_DELETE_MAP_REQUEST_TYPE = ACTION_DELETE_QR_MAP
+QR_PCD_PREVIEW_REQUEST_TYPE = ACTION_READ_QR_PCD_PREVIEW
 
 
 @dataclass(frozen=True)
@@ -76,6 +103,82 @@ class CameraCaptureStopRequest:
     request_id: str
     reply_topic: str
     session_id: str
+
+
+@dataclass(frozen=True)
+class QrProjectPathRequest:
+    """二维码建图项目远端路径查询请求。"""
+
+    request_id: str
+    reply_topic: str
+    robot_serial: str
+    project_name: str
+
+
+@dataclass(frozen=True)
+class QrProjectSnapshotRequest:
+    """二维码建图项目快照查询请求。"""
+
+    request_id: str
+    reply_topic: str
+    robot_serial: str
+    project_name: str
+    image_limit: int
+
+
+@dataclass(frozen=True)
+class QrCaptureStartRequest:
+    """二维码建图远端采集开始请求。"""
+
+    request_id: str
+    reply_topic: str
+    params: QrCaptureStartParams
+
+
+@dataclass(frozen=True)
+class QrCaptureStopRequest:
+    """二维码建图远端采集停止请求。"""
+
+    request_id: str
+    reply_topic: str
+    session_id: str
+
+
+@dataclass(frozen=True)
+class QrBuildMapRequest:
+    """二维码建图 SDK 执行请求。"""
+
+    request_id: str
+    reply_topic: str
+    robot_serial: str
+    project_name: str
+    map_name: str
+    camera_id: str
+    marker_type: str
+    marker_size_meters: float
+
+
+@dataclass(frozen=True)
+class QrDeleteMapRequest:
+    """二维码建图地图删除请求。"""
+
+    request_id: str
+    reply_topic: str
+    robot_serial: str
+    project_name: str
+    map_name: str
+
+
+@dataclass(frozen=True)
+class QrPcdPreviewRequest:
+    """二维码建图 PCD 远端抽样预览请求。"""
+
+    request_id: str
+    reply_topic: str
+    robot_serial: str
+    project_name: str
+    map_name: str
+    max_points: int
 
 
 def parse_current_pose_request(payload: str, *, default_reply_topic: str) -> CurrentPoseRequest:
@@ -268,6 +371,319 @@ def parse_camera_capture_stop_request(
     )
 
 
+def parse_qr_project_path_request(
+    payload: str,
+    *,
+    default_reply_topic: str,
+) -> QrProjectPathRequest:
+    """解析二维码建图远端项目路径请求。"""
+
+    decoded = parse_json_object(payload, "二维码建图项目路径请求")
+    request_type = read_optional_string(decoded, "type")
+    if request_type is not None and request_type != QR_PROJECT_PATH_REQUEST_TYPE:
+        raise ValueError(f"不支持的二维码建图请求类型: {request_type}")
+
+    request_id = read_request_id_from_object(decoded)
+    if not request_id:
+        raise ValueError("二维码建图项目路径请求缺少 requestId")
+
+    robot_serial = read_optional_string(decoded, "robotSerial") or read_optional_string(
+        decoded,
+        "robot_serial",
+    )
+    if not robot_serial:
+        raise ValueError("二维码建图项目路径请求缺少 robotSerial")
+
+    project_name = read_optional_string(decoded, "projectName") or read_optional_string(
+        decoded,
+        "project_name",
+    )
+    if not project_name:
+        raise ValueError("二维码建图项目路径请求缺少 projectName")
+
+    return QrProjectPathRequest(
+        request_id=request_id,
+        reply_topic=read_reply_topic(decoded, default_reply_topic),
+        robot_serial=robot_serial,
+        project_name=project_name,
+    )
+
+
+def parse_qr_project_snapshot_request(
+    payload: str,
+    *,
+    default_reply_topic: str,
+) -> QrProjectSnapshotRequest:
+    """解析二维码建图项目快照请求。"""
+
+    decoded = parse_json_object(payload, "二维码建图项目快照请求")
+    request_type = read_optional_string(decoded, "type")
+    if request_type is not None and request_type != QR_PROJECT_SNAPSHOT_REQUEST_TYPE:
+        raise ValueError(f"不支持的二维码建图请求类型: {request_type}")
+
+    request_id = read_request_id_from_object(decoded)
+    if not request_id:
+        raise ValueError("二维码建图项目快照请求缺少 requestId")
+
+    robot_serial = read_optional_string(decoded, "robotSerial") or read_optional_string(
+        decoded,
+        "robot_serial",
+    )
+    if not robot_serial:
+        raise ValueError("二维码建图项目快照请求缺少 robotSerial")
+
+    project_name = read_optional_string(decoded, "projectName") or read_optional_string(
+        decoded,
+        "project_name",
+    )
+    if not project_name:
+        raise ValueError("二维码建图项目快照请求缺少 projectName")
+
+    image_limit = read_bounded_positive_int(
+        decoded.get("imageLimit"),
+        fallback=DEFAULT_IMAGE_LIMIT,
+        max_value=MAX_IMAGE_LIMIT,
+    )
+    return QrProjectSnapshotRequest(
+        request_id=request_id,
+        reply_topic=read_reply_topic(decoded, default_reply_topic),
+        robot_serial=robot_serial,
+        project_name=project_name,
+        image_limit=image_limit,
+    )
+
+
+def parse_qr_capture_start_request(
+    payload: str,
+    *,
+    default_reply_topic: str,
+    default_frame_topic_template: str,
+) -> QrCaptureStartRequest:
+    """解析二维码建图远端采集开始请求。"""
+
+    decoded = parse_json_object(payload, "二维码建图采集开始请求")
+    request_type = read_optional_string(decoded, "type")
+    if request_type is not None and request_type != QR_CAPTURE_START_REQUEST_TYPE:
+        raise ValueError(f"不支持的二维码建图请求类型: {request_type}")
+
+    request_id = read_request_id_from_object(decoded)
+    if not request_id:
+        raise ValueError("二维码建图采集开始请求缺少 requestId")
+
+    session_id = read_optional_string(decoded, "sessionId") or read_optional_string(
+        decoded,
+        "session_id",
+    )
+    if not session_id:
+        raise ValueError("二维码建图采集开始请求缺少 sessionId")
+
+    robot_serial, project_name = read_qr_project_identity(decoded, "二维码建图采集开始请求")
+    frame_topic = (
+        read_optional_string(decoded, "frameTopic")
+        or read_optional_string(decoded, "frame_topic")
+        or default_frame_topic_template.replace("{sessionId}", session_id)
+    )
+    camera_id = read_optional_string(decoded, "cameraId") or read_optional_string(
+        decoded,
+        "camera_id",
+    ) or "hand_left_color"
+    marker_type = (
+        read_optional_string(decoded, "markerType")
+        or read_optional_string(decoded, "qrType")
+        or read_optional_string(decoded, "dictName")
+        or "ARUCO_MIP_36h12"
+    )
+    marker_size_meters = read_positive_float(
+        decoded.get("markerSizeMeters") or decoded.get("marker_len_m"),
+        0.04,
+    )
+    capture_rate_fps = read_positive_int(
+        decoded.get("captureRateFps") or decoded.get("fps"),
+        DEFAULT_QR_CAPTURE_RATE_FPS,
+    )
+    timeout_ms = read_positive_int(decoded.get("timeoutMs"), DEFAULT_QR_CAMERA_TIMEOUT_MS)
+    return QrCaptureStartRequest(
+        request_id=request_id,
+        reply_topic=read_reply_topic(decoded, default_reply_topic),
+        params=QrCaptureStartParams(
+            session_id=session_id,
+            frame_topic=frame_topic,
+            robot_serial=robot_serial,
+            project_name=project_name,
+            camera_id=camera_id,
+            marker_type=marker_type,
+            marker_size_meters=marker_size_meters,
+            capture_rate_fps=capture_rate_fps,
+            timeout_ms=timeout_ms,
+            reset_existing=read_bool(decoded.get("resetExisting"), False),
+        ),
+    )
+
+
+def parse_qr_capture_stop_request(
+    payload: str,
+    *,
+    default_reply_topic: str,
+) -> QrCaptureStopRequest:
+    """解析二维码建图远端采集停止请求。"""
+
+    decoded = parse_json_object(payload, "二维码建图采集停止请求")
+    request_type = read_optional_string(decoded, "type")
+    if request_type is not None and request_type != QR_CAPTURE_STOP_REQUEST_TYPE:
+        raise ValueError(f"不支持的二维码建图请求类型: {request_type}")
+
+    request_id = read_request_id_from_object(decoded)
+    if not request_id:
+        raise ValueError("二维码建图采集停止请求缺少 requestId")
+
+    session_id = read_optional_string(decoded, "sessionId") or read_optional_string(
+        decoded,
+        "session_id",
+    )
+    if not session_id:
+        raise ValueError("二维码建图采集停止请求缺少 sessionId")
+
+    return QrCaptureStopRequest(
+        request_id=request_id,
+        reply_topic=read_reply_topic(decoded, default_reply_topic),
+        session_id=session_id,
+    )
+
+
+def parse_qr_build_map_request(
+    payload: str,
+    *,
+    default_reply_topic: str,
+) -> QrBuildMapRequest:
+    """解析二维码建图 SDK 执行请求。"""
+
+    decoded = parse_json_object(payload, "二维码建图 SDK 请求")
+    request_type = read_optional_string(decoded, "type")
+    if request_type is not None and request_type != QR_BUILD_MAP_REQUEST_TYPE:
+        raise ValueError(f"不支持的二维码建图请求类型: {request_type}")
+
+    request_id = read_request_id_from_object(decoded)
+    if not request_id:
+        raise ValueError("二维码建图 SDK 请求缺少 requestId")
+
+    robot_serial, project_name = read_qr_project_identity(decoded, "二维码建图 SDK 请求")
+    map_name = read_optional_string(decoded, "mapName") or read_optional_string(
+        decoded,
+        "map_name",
+    )
+    if not map_name:
+        raise ValueError("二维码建图 SDK 请求缺少 mapName")
+    camera_id = read_optional_string(decoded, "cameraId") or read_optional_string(
+        decoded,
+        "camera_id",
+    ) or "hand_left_color"
+    marker_type = (
+        read_optional_string(decoded, "markerType")
+        or read_optional_string(decoded, "qrType")
+        or "ARUCO_MIP_36h12"
+    )
+    marker_size_meters = read_positive_float(
+        decoded.get("markerSizeMeters") or decoded.get("marker_len_m"),
+        0.04,
+    )
+    return QrBuildMapRequest(
+        request_id=request_id,
+        reply_topic=read_reply_topic(decoded, default_reply_topic),
+        robot_serial=robot_serial,
+        project_name=project_name,
+        map_name=map_name,
+        camera_id=camera_id,
+        marker_type=marker_type,
+        marker_size_meters=marker_size_meters,
+    )
+
+
+def parse_qr_delete_map_request(
+    payload: str,
+    *,
+    default_reply_topic: str,
+) -> QrDeleteMapRequest:
+    """解析二维码建图地图删除请求。"""
+
+    decoded = parse_json_object(payload, "二维码建图删除请求")
+    request_type = read_optional_string(decoded, "type")
+    if request_type is not None and request_type != QR_DELETE_MAP_REQUEST_TYPE:
+        raise ValueError(f"不支持的二维码建图请求类型: {request_type}")
+    request_id = read_request_id_from_object(decoded)
+    if not request_id:
+        raise ValueError("二维码建图删除请求缺少 requestId")
+    robot_serial, project_name = read_qr_project_identity(decoded, "二维码建图删除请求")
+    map_name = read_optional_string(decoded, "mapName") or read_optional_string(
+        decoded,
+        "map_name",
+    )
+    if not map_name:
+        raise ValueError("二维码建图删除请求缺少 mapName")
+    return QrDeleteMapRequest(
+        request_id=request_id,
+        reply_topic=read_reply_topic(decoded, default_reply_topic),
+        robot_serial=robot_serial,
+        project_name=project_name,
+        map_name=map_name,
+    )
+
+
+def parse_qr_pcd_preview_request(
+    payload: str,
+    *,
+    default_reply_topic: str,
+) -> QrPcdPreviewRequest:
+    """解析二维码建图 PCD 远端预览请求。"""
+
+    decoded = parse_json_object(payload, "二维码建图 PCD 预览请求")
+    request_type = read_optional_string(decoded, "type")
+    if request_type is not None and request_type != QR_PCD_PREVIEW_REQUEST_TYPE:
+        raise ValueError(f"不支持的二维码建图请求类型: {request_type}")
+    request_id = read_request_id_from_object(decoded)
+    if not request_id:
+        raise ValueError("二维码建图 PCD 预览请求缺少 requestId")
+    robot_serial, project_name = read_qr_project_identity(decoded, "二维码建图 PCD 预览请求")
+    map_name = read_optional_string(decoded, "mapName") or read_optional_string(
+        decoded,
+        "map_name",
+    )
+    if not map_name:
+        raise ValueError("二维码建图 PCD 预览请求缺少 mapName")
+    max_points = read_bounded_positive_int(
+        decoded.get("maxPoints"),
+        fallback=DEFAULT_PCD_MAX_POINTS,
+        max_value=PCD_MAX_POINTS_LIMIT,
+    )
+    return QrPcdPreviewRequest(
+        request_id=request_id,
+        reply_topic=read_reply_topic(decoded, default_reply_topic),
+        robot_serial=robot_serial,
+        project_name=project_name,
+        map_name=map_name,
+        max_points=max_points,
+    )
+
+
+def read_qr_project_identity(
+    value: Mapping[str, Any],
+    label: str,
+) -> tuple[str, str]:
+    robot_serial = read_optional_string(value, "robotSerial") or read_optional_string(
+        value,
+        "robot_serial",
+    )
+    if not robot_serial:
+        raise ValueError(f"{label}缺少 robotSerial")
+
+    project_name = read_optional_string(value, "projectName") or read_optional_string(
+        value,
+        "project_name",
+    )
+    if not project_name:
+        raise ValueError(f"{label}缺少 projectName")
+    return robot_serial, project_name
+
+
 def read_optional_string(value: Mapping[str, Any], key: str) -> str | None:
     """从 Mapping 读取可选字符串。空字符串返回 None。"""
 
@@ -365,3 +781,19 @@ def read_positive_int(value: Any, fallback: int) -> int:
     if isinstance(value, int) and value > 0:
         return value
     return fallback
+
+
+def read_positive_float(value: Any, fallback: float) -> float:
+    """读取正浮点数。非法输入返回 fallback。"""
+
+    if isinstance(value, bool):
+        return fallback
+    if isinstance(value, (int, float)) and float(value) > 0:
+        return float(value)
+    return fallback
+
+
+def read_bounded_positive_int(value: Any, *, fallback: int, max_value: int) -> int:
+    """读取带上限的正整数，避免一次快照返回过多图片元数据。"""
+
+    return min(read_positive_int(value, fallback), max_value)

@@ -15,7 +15,15 @@ from gsa_taskflow_executor.mqtt.robot_state_models import (
     CAMERA_CAPTURE_STOP_REQUEST_TYPE,
     CAMERA_FRAME_REQUEST_TYPE,
     CURRENT_POSE_REQUEST_TYPE,
+    QR_BUILD_MAP_REQUEST_TYPE,
+    QR_CAPTURE_START_REQUEST_TYPE,
+    QR_CAPTURE_STOP_REQUEST_TYPE,
+    QR_DELETE_MAP_REQUEST_TYPE,
+    QR_PCD_PREVIEW_REQUEST_TYPE,
+    QR_PROJECT_PATH_REQUEST_TYPE,
+    QR_PROJECT_SNAPSHOT_REQUEST_TYPE,
 )
+from gsa_taskflow_executor.qr_mapping.capture_service import QR_CAPTURE_BUSY_ERROR_MESSAGE
 
 ROBOT_BUSY_ERROR_CODE = "ROBOT_BUSY"
 ROBOT_BUSY_ERROR_MESSAGE = "GDK 正在执行控制动作，当前位姿读取已拒绝"
@@ -195,6 +203,188 @@ def build_camera_capture_stop_response(
         code=read_error_code(result, "CAMERA_CAPTURE_STOP_FAILED"),
         message=read_error_message(result, fallback="相机连续采集停止失败"),
         details=dict(result),
+    )
+
+
+def build_qr_project_path_response(
+    *,
+    request_id: str,
+    executor_aid: str,
+    snapshot: Mapping[str, object],
+) -> dict[str, object]:
+    """构建二维码建图项目路径响应。"""
+
+    return build_qr_mapping_response(
+        response_type=QR_PROJECT_PATH_REQUEST_TYPE,
+        request_id=request_id,
+        executor_aid=executor_aid,
+        snapshot=snapshot,
+        fallback_code="QR_PROJECT_PATH_UNAVAILABLE",
+        fallback_message="二维码建图远端路径读取失败",
+    )
+
+
+def build_qr_project_snapshot_response(
+    *,
+    request_id: str,
+    executor_aid: str,
+    snapshot: Mapping[str, object],
+) -> dict[str, object]:
+    """构建二维码建图项目快照响应。"""
+
+    return build_qr_mapping_response(
+        response_type=QR_PROJECT_SNAPSHOT_REQUEST_TYPE,
+        request_id=request_id,
+        executor_aid=executor_aid,
+        snapshot=snapshot,
+        fallback_code="QR_PROJECT_SNAPSHOT_UNAVAILABLE",
+        fallback_message="二维码建图项目快照读取失败",
+    )
+
+
+def build_qr_capture_start_response(
+    *,
+    request_id: str,
+    executor_aid: str,
+    result: Mapping[str, object],
+) -> dict[str, object]:
+    """构建二维码建图采集开始响应。"""
+
+    if result.get("started") is True:
+        return {
+            "type": QR_CAPTURE_START_REQUEST_TYPE,
+            "requestId": request_id,
+            "ok": True,
+            "executorAid": executor_aid,
+            "data": dict(result),
+        }
+
+    if result.get("busy") is True:
+        return error_response(
+            response_type=QR_CAPTURE_START_REQUEST_TYPE,
+            request_id=request_id,
+            executor_aid=executor_aid,
+            code=ROBOT_BUSY_ERROR_CODE,
+            message=QR_CAPTURE_BUSY_ERROR_MESSAGE,
+            details=dict(result),
+        )
+
+    return error_response(
+        response_type=QR_CAPTURE_START_REQUEST_TYPE,
+        request_id=request_id,
+        executor_aid=executor_aid,
+        code=read_error_code(result, "QR_CAPTURE_START_FAILED"),
+        message=read_error_message(result, fallback="二维码建图采集启动失败"),
+        details=dict(result),
+    )
+
+
+def build_qr_capture_stop_response(
+    *,
+    request_id: str,
+    executor_aid: str,
+    result: Mapping[str, object],
+) -> dict[str, object]:
+    """构建二维码建图采集停止响应。"""
+
+    if result.get("stopped") is True:
+        return {
+            "type": QR_CAPTURE_STOP_REQUEST_TYPE,
+            "requestId": request_id,
+            "ok": True,
+            "executorAid": executor_aid,
+            "data": dict(result),
+        }
+
+    return error_response(
+        response_type=QR_CAPTURE_STOP_REQUEST_TYPE,
+        request_id=request_id,
+        executor_aid=executor_aid,
+        code=read_error_code(result, "QR_CAPTURE_STOP_FAILED"),
+        message=read_error_message(result, fallback="二维码建图采集停止失败"),
+        details=dict(result),
+    )
+
+
+def build_qr_build_map_response(
+    *,
+    request_id: str,
+    executor_aid: str,
+    result: Mapping[str, object],
+) -> dict[str, object]:
+    """构建二维码建图 SDK 响应。"""
+
+    return build_qr_mapping_response(
+        response_type=QR_BUILD_MAP_REQUEST_TYPE,
+        request_id=request_id,
+        executor_aid=executor_aid,
+        snapshot=result,
+        fallback_code="QR_BUILD_MAP_FAILED",
+        fallback_message="二维码建图 SDK 执行失败",
+    )
+
+
+def build_qr_delete_map_response(
+    *,
+    request_id: str,
+    executor_aid: str,
+    result: Mapping[str, object],
+) -> dict[str, object]:
+    """构建二维码地图删除响应。"""
+
+    return build_qr_mapping_response(
+        response_type=QR_DELETE_MAP_REQUEST_TYPE,
+        request_id=request_id,
+        executor_aid=executor_aid,
+        snapshot=result,
+        fallback_code="QR_DELETE_MAP_FAILED",
+        fallback_message="二维码建图结果删除失败",
+    )
+
+
+def build_qr_pcd_preview_response(
+    *,
+    request_id: str,
+    executor_aid: str,
+    result: Mapping[str, object],
+) -> dict[str, object]:
+    """构建二维码 PCD 预览响应。"""
+
+    return build_qr_mapping_response(
+        response_type=QR_PCD_PREVIEW_REQUEST_TYPE,
+        request_id=request_id,
+        executor_aid=executor_aid,
+        snapshot=result,
+        fallback_code="QR_PCD_PREVIEW_FAILED",
+        fallback_message="二维码 PCD 预览读取失败",
+    )
+
+
+def build_qr_mapping_response(
+    *,
+    response_type: str,
+    request_id: str,
+    executor_aid: str,
+    snapshot: Mapping[str, object],
+    fallback_code: str,
+    fallback_message: str,
+) -> dict[str, object]:
+    if snapshot.get("available") is True:
+        return {
+            "type": response_type,
+            "requestId": request_id,
+            "ok": True,
+            "executorAid": executor_aid,
+            "data": dict(snapshot),
+        }
+
+    return error_response(
+        response_type=response_type,
+        request_id=request_id,
+        executor_aid=executor_aid,
+        code=read_error_code(snapshot, fallback_code),
+        message=read_error_message(snapshot, fallback=fallback_message),
+        details=dict(snapshot),
     )
 
 

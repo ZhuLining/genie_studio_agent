@@ -74,6 +74,56 @@ class ExecutorSettings:
     robot_camera_capture_frame_topic_template: str = (
         "gsa/self/robot/state/camera_capture/{sessionId}/frame"
     )
+    # 二维码建图远端资源服务。客户端只传 robotSerial/projectName，路径由 executor 侧生成。
+    gsa_data_root: str = "/data/gsa"
+    qr_mapping_project_path_request_topic: str = (
+        "gsa/self/robot/qr_mapping/get_qr_project_path/request"
+    )
+    qr_mapping_project_path_response_topic: str = (
+        "gsa/self/robot/qr_mapping/get_qr_project_path/response"
+    )
+    qr_mapping_project_snapshot_request_topic: str = (
+        "gsa/self/robot/qr_mapping/get_qr_project_snapshot/request"
+    )
+    qr_mapping_project_snapshot_response_topic: str = (
+        "gsa/self/robot/qr_mapping/get_qr_project_snapshot/response"
+    )
+    qr_mapping_capture_start_request_topic: str = (
+        "gsa/self/robot/qr_mapping/start_capture/request"
+    )
+    qr_mapping_capture_start_response_topic: str = (
+        "gsa/self/robot/qr_mapping/start_capture/response"
+    )
+    qr_mapping_capture_stop_request_topic: str = (
+        "gsa/self/robot/qr_mapping/stop_capture/request"
+    )
+    qr_mapping_capture_stop_response_topic: str = (
+        "gsa/self/robot/qr_mapping/stop_capture/response"
+    )
+    qr_mapping_capture_frame_topic_template: str = (
+        "gsa/self/robot/qr_mapping/capture/{sessionId}/frame"
+    )
+    qr_mapping_build_map_request_topic: str = (
+        "gsa/self/robot/qr_mapping/build_map/request"
+    )
+    qr_mapping_build_map_response_topic: str = (
+        "gsa/self/robot/qr_mapping/build_map/response"
+    )
+    qr_mapping_delete_map_request_topic: str = (
+        "gsa/self/robot/qr_mapping/delete_map/request"
+    )
+    qr_mapping_delete_map_response_topic: str = (
+        "gsa/self/robot/qr_mapping/delete_map/response"
+    )
+    qr_mapping_pcd_preview_request_topic: str = (
+        "gsa/self/robot/qr_mapping/read_pcd_preview/request"
+    )
+    qr_mapping_pcd_preview_response_topic: str = (
+        "gsa/self/robot/qr_mapping/read_pcd_preview/response"
+    )
+    qr_mapping_sdk_path: str = ""
+    qr_mapping_sdk_python: str = "python3"
+    qr_mapping_build_timeout_seconds: float = 300.0
     # executor 标识
     executor_aid: str = "gsa-dev"
     executor_mode: str = "gdk"
@@ -207,6 +257,80 @@ class ExecutorSettings:
                 "ROBOT_CAMERA_CAPTURE_FRAME_TOPIC_TEMPLATE",
                 cls.robot_camera_capture_frame_topic_template,
             ).strip(),
+            gsa_data_root=source.get("GSA_DATA_ROOT", cls.gsa_data_root).strip(),
+            qr_mapping_project_path_request_topic=source.get(
+                "QR_MAPPING_PROJECT_PATH_REQUEST_TOPIC",
+                cls.qr_mapping_project_path_request_topic,
+            ).strip(),
+            qr_mapping_project_path_response_topic=source.get(
+                "QR_MAPPING_PROJECT_PATH_RESPONSE_TOPIC",
+                cls.qr_mapping_project_path_response_topic,
+            ).strip(),
+            qr_mapping_project_snapshot_request_topic=source.get(
+                "QR_MAPPING_PROJECT_SNAPSHOT_REQUEST_TOPIC",
+                cls.qr_mapping_project_snapshot_request_topic,
+            ).strip(),
+            qr_mapping_project_snapshot_response_topic=source.get(
+                "QR_MAPPING_PROJECT_SNAPSHOT_RESPONSE_TOPIC",
+                cls.qr_mapping_project_snapshot_response_topic,
+            ).strip(),
+            qr_mapping_capture_start_request_topic=source.get(
+                "QR_MAPPING_CAPTURE_START_REQUEST_TOPIC",
+                cls.qr_mapping_capture_start_request_topic,
+            ).strip(),
+            qr_mapping_capture_start_response_topic=source.get(
+                "QR_MAPPING_CAPTURE_START_RESPONSE_TOPIC",
+                cls.qr_mapping_capture_start_response_topic,
+            ).strip(),
+            qr_mapping_capture_stop_request_topic=source.get(
+                "QR_MAPPING_CAPTURE_STOP_REQUEST_TOPIC",
+                cls.qr_mapping_capture_stop_request_topic,
+            ).strip(),
+            qr_mapping_capture_stop_response_topic=source.get(
+                "QR_MAPPING_CAPTURE_STOP_RESPONSE_TOPIC",
+                cls.qr_mapping_capture_stop_response_topic,
+            ).strip(),
+            qr_mapping_capture_frame_topic_template=source.get(
+                "QR_MAPPING_CAPTURE_FRAME_TOPIC_TEMPLATE",
+                cls.qr_mapping_capture_frame_topic_template,
+            ).strip(),
+            qr_mapping_build_map_request_topic=source.get(
+                "QR_MAPPING_BUILD_MAP_REQUEST_TOPIC",
+                cls.qr_mapping_build_map_request_topic,
+            ).strip(),
+            qr_mapping_build_map_response_topic=source.get(
+                "QR_MAPPING_BUILD_MAP_RESPONSE_TOPIC",
+                cls.qr_mapping_build_map_response_topic,
+            ).strip(),
+            qr_mapping_delete_map_request_topic=source.get(
+                "QR_MAPPING_DELETE_MAP_REQUEST_TOPIC",
+                cls.qr_mapping_delete_map_request_topic,
+            ).strip(),
+            qr_mapping_delete_map_response_topic=source.get(
+                "QR_MAPPING_DELETE_MAP_RESPONSE_TOPIC",
+                cls.qr_mapping_delete_map_response_topic,
+            ).strip(),
+            qr_mapping_pcd_preview_request_topic=source.get(
+                "QR_MAPPING_PCD_PREVIEW_REQUEST_TOPIC",
+                cls.qr_mapping_pcd_preview_request_topic,
+            ).strip(),
+            qr_mapping_pcd_preview_response_topic=source.get(
+                "QR_MAPPING_PCD_PREVIEW_RESPONSE_TOPIC",
+                cls.qr_mapping_pcd_preview_response_topic,
+            ).strip(),
+            qr_mapping_sdk_path=source.get(
+                "QR_MAPPING_SDK_PATH",
+                cls.qr_mapping_sdk_path,
+            ).strip(),
+            qr_mapping_sdk_python=source.get(
+                "QR_MAPPING_SDK_PYTHON",
+                cls.qr_mapping_sdk_python,
+            ).strip(),
+            qr_mapping_build_timeout_seconds=read_float(
+                source,
+                "QR_MAPPING_BUILD_TIMEOUT_SECONDS",
+                cls.qr_mapping_build_timeout_seconds,
+            ),
             executor_aid=source.get("EXECUTOR_AID", cls.executor_aid).strip(),
             executor_mode=source.get("EXECUTOR_MODE", cls.executor_mode).strip(),
             executor_log_dir=source.get("EXECUTOR_LOG_DIR", cls.executor_log_dir).strip(),
@@ -237,6 +361,13 @@ class ExecutorSettings:
             self.robot_camera_calibration_request_topic,
             self.robot_camera_capture_start_request_topic,
             self.robot_camera_capture_stop_request_topic,
+            self.qr_mapping_project_path_request_topic,
+            self.qr_mapping_project_snapshot_request_topic,
+            self.qr_mapping_capture_start_request_topic,
+            self.qr_mapping_capture_stop_request_topic,
+            self.qr_mapping_build_map_request_topic,
+            self.qr_mapping_delete_map_request_topic,
+            self.qr_mapping_pcd_preview_request_topic,
         )
 
     @property
@@ -299,6 +430,68 @@ class ExecutorSettings:
             "ROBOT_CAMERA_CAPTURE_FRAME_TOPIC_TEMPLATE",
             self.robot_camera_capture_frame_topic_template,
         )
+        require_non_empty("GSA_DATA_ROOT", self.gsa_data_root)
+        require_non_empty(
+            "QR_MAPPING_PROJECT_PATH_REQUEST_TOPIC",
+            self.qr_mapping_project_path_request_topic,
+        )
+        require_non_empty(
+            "QR_MAPPING_PROJECT_PATH_RESPONSE_TOPIC",
+            self.qr_mapping_project_path_response_topic,
+        )
+        require_non_empty(
+            "QR_MAPPING_PROJECT_SNAPSHOT_REQUEST_TOPIC",
+            self.qr_mapping_project_snapshot_request_topic,
+        )
+        require_non_empty(
+            "QR_MAPPING_PROJECT_SNAPSHOT_RESPONSE_TOPIC",
+            self.qr_mapping_project_snapshot_response_topic,
+        )
+        require_non_empty(
+            "QR_MAPPING_CAPTURE_START_REQUEST_TOPIC",
+            self.qr_mapping_capture_start_request_topic,
+        )
+        require_non_empty(
+            "QR_MAPPING_CAPTURE_START_RESPONSE_TOPIC",
+            self.qr_mapping_capture_start_response_topic,
+        )
+        require_non_empty(
+            "QR_MAPPING_CAPTURE_STOP_REQUEST_TOPIC",
+            self.qr_mapping_capture_stop_request_topic,
+        )
+        require_non_empty(
+            "QR_MAPPING_CAPTURE_STOP_RESPONSE_TOPIC",
+            self.qr_mapping_capture_stop_response_topic,
+        )
+        require_non_empty(
+            "QR_MAPPING_CAPTURE_FRAME_TOPIC_TEMPLATE",
+            self.qr_mapping_capture_frame_topic_template,
+        )
+        require_non_empty(
+            "QR_MAPPING_BUILD_MAP_REQUEST_TOPIC",
+            self.qr_mapping_build_map_request_topic,
+        )
+        require_non_empty(
+            "QR_MAPPING_BUILD_MAP_RESPONSE_TOPIC",
+            self.qr_mapping_build_map_response_topic,
+        )
+        require_non_empty(
+            "QR_MAPPING_DELETE_MAP_REQUEST_TOPIC",
+            self.qr_mapping_delete_map_request_topic,
+        )
+        require_non_empty(
+            "QR_MAPPING_DELETE_MAP_RESPONSE_TOPIC",
+            self.qr_mapping_delete_map_response_topic,
+        )
+        require_non_empty(
+            "QR_MAPPING_PCD_PREVIEW_REQUEST_TOPIC",
+            self.qr_mapping_pcd_preview_request_topic,
+        )
+        require_non_empty(
+            "QR_MAPPING_PCD_PREVIEW_RESPONSE_TOPIC",
+            self.qr_mapping_pcd_preview_response_topic,
+        )
+        require_non_empty("QR_MAPPING_SDK_PYTHON", self.qr_mapping_sdk_python)
         require_non_empty("EXECUTOR_AID", self.executor_aid)
         require_non_empty("EXECUTOR_MODE", self.executor_mode)
         require_non_empty("EXECUTOR_LOG_DIR", self.executor_log_dir)
@@ -336,6 +529,10 @@ class ExecutorSettings:
             raise ConfigError("PAYLOAD_MAX_DEPTH 必须大于 0")
         if "{sessionId}" not in self.robot_camera_capture_frame_topic_template:
             raise ConfigError("ROBOT_CAMERA_CAPTURE_FRAME_TOPIC_TEMPLATE 必须包含 {sessionId}")
+        if "{sessionId}" not in self.qr_mapping_capture_frame_topic_template:
+            raise ConfigError("QR_MAPPING_CAPTURE_FRAME_TOPIC_TEMPLATE 必须包含 {sessionId}")
+        if self.qr_mapping_build_timeout_seconds <= 0:
+            raise ConfigError("QR_MAPPING_BUILD_TIMEOUT_SECONDS 必须大于 0")
         if self.executor_mode != "gdk":
             raise ConfigError("EXECUTOR_MODE 只支持 gdk")
 

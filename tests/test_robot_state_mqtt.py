@@ -18,6 +18,11 @@ from gsa_taskflow_executor.mqtt.robot_state import (
     parse_camera_capture_stop_request,
     parse_camera_frame_request,
     parse_current_pose_request,
+    parse_qr_build_map_request,
+    parse_qr_capture_start_request,
+    parse_qr_capture_stop_request,
+    parse_qr_pcd_preview_request,
+    parse_qr_project_snapshot_request,
 )
 from gsa_taskflow_executor.runtime.config import ExecutorSettings
 
@@ -205,6 +210,120 @@ def test_parse_camera_capture_stop_request_reads_session_id() -> None:
     assert request.session_id == "session-1"
 
 
+def test_parse_qr_project_snapshot_request_reads_project_identity() -> None:
+    request = parse_qr_project_snapshot_request(
+        json.dumps(
+            {
+                "type": "get_qr_project_snapshot",
+                "requestId": "req-project",
+                "replyTopic": "qr/project/snapshot/response",
+                "robotSerial": "G2A0004BC01053",
+                "projectName": "test10",
+                "imageLimit": 20,
+            }
+        ),
+        default_reply_topic="gsa/self/robot/qr_mapping/get_qr_project_snapshot/response",
+    )
+
+    assert request.request_id == "req-project"
+    assert request.reply_topic == "qr/project/snapshot/response"
+    assert request.robot_serial == "G2A0004BC01053"
+    assert request.project_name == "test10"
+    assert request.image_limit == 20
+
+
+def test_parse_qr_capture_start_request_reads_remote_project_params() -> None:
+    request = parse_qr_capture_start_request(
+        json.dumps(
+            {
+                "type": "start_qr_capture",
+                "requestId": "req-qr-start",
+                "sessionId": "session-qr",
+                "robotSerial": "G2A0004BC01053",
+                "projectName": "test10",
+                "cameraId": "hand_right_color",
+                "markerType": "ARUCO_MIP_36h12",
+                "markerSizeMeters": 0.04,
+                "captureRateFps": 5,
+                "timeoutMs": 2500,
+            }
+        ),
+        default_reply_topic="gsa/self/robot/qr_mapping/start_capture/response",
+        default_frame_topic_template="gsa/self/robot/qr_mapping/capture/{sessionId}/frame",
+    )
+
+    assert request.request_id == "req-qr-start"
+    assert request.reply_topic == "gsa/self/robot/qr_mapping/start_capture/response"
+    assert request.params.session_id == "session-qr"
+    assert request.params.frame_topic == "gsa/self/robot/qr_mapping/capture/session-qr/frame"
+    assert request.params.robot_serial == "G2A0004BC01053"
+    assert request.params.project_name == "test10"
+    assert request.params.camera_id == "hand_right_color"
+    assert request.params.marker_size_meters == 0.04
+    assert request.params.capture_rate_fps == 5
+
+
+def test_parse_qr_capture_stop_request_reads_session_id() -> None:
+    request = parse_qr_capture_stop_request(
+        json.dumps(
+            {
+                "type": "stop_qr_capture",
+                "requestId": "req-qr-stop",
+                "sessionId": "session-qr",
+            }
+        ),
+        default_reply_topic="gsa/self/robot/qr_mapping/stop_capture/response",
+    )
+
+    assert request.request_id == "req-qr-stop"
+    assert request.session_id == "session-qr"
+    assert request.reply_topic == "gsa/self/robot/qr_mapping/stop_capture/response"
+
+
+def test_parse_qr_build_map_request_reads_sdk_params() -> None:
+    request = parse_qr_build_map_request(
+        json.dumps(
+            {
+                "type": "build_qr_map",
+                "requestId": "req-build",
+                "robotSerial": "G2A0004BC01053",
+                "projectName": "test10",
+                "mapName": "map01",
+                "cameraId": "hand_left_color",
+                "markerType": "ARUCO_MIP_36h12",
+                "markerSizeMeters": 0.04,
+            }
+        ),
+        default_reply_topic="gsa/self/robot/qr_mapping/build_map/response",
+    )
+
+    assert request.request_id == "req-build"
+    assert request.robot_serial == "G2A0004BC01053"
+    assert request.project_name == "test10"
+    assert request.map_name == "map01"
+    assert request.camera_id == "hand_left_color"
+    assert request.marker_type == "ARUCO_MIP_36h12"
+    assert request.marker_size_meters == 0.04
+
+
+def test_parse_qr_pcd_preview_request_caps_max_points() -> None:
+    request = parse_qr_pcd_preview_request(
+        json.dumps(
+            {
+                "type": "read_qr_pcd_preview",
+                "requestId": "req-pcd",
+                "robotSerial": "G2A0004BC01053",
+                "projectName": "test10",
+                "mapName": "map01",
+                "maxPoints": 999999,
+            }
+        ),
+        default_reply_topic="gsa/self/robot/qr_mapping/read_pcd_preview/response",
+    )
+
+    assert request.max_points == 50000
+
+
 def test_handle_camera_frame_request_publishes_success_response() -> None:
     published: list[tuple[str, dict[str, object]]] = []
     snapshot = {
@@ -263,6 +382,89 @@ def test_handle_robot_state_request_dispatches_camera_frame_by_topic() -> None:
     assert topic == "gsa/self/robot/state/get_camera_frame/response"
     assert payload["type"] == "get_camera_frame"
     assert payload["data"]["cameraId"] == "head_color"
+
+
+def test_handle_robot_state_request_dispatches_qr_project_snapshot_by_topic() -> None:
+    published: list[tuple[str, dict[str, object]]] = []
+
+    handle_robot_state_request(
+        TaskflowMessage(
+            topic="gsa/self/robot/qr_mapping/get_qr_project_snapshot/request",
+            payload=json.dumps(
+                {
+                    "requestId": "req-project",
+                    "robotSerial": "G2A0004BC01053",
+                    "projectName": "test10",
+                    "imageLimit": 5,
+                }
+            ),
+            received_at="2026-07-27T00:00:00+00:00",
+        ),
+        settings=ExecutorSettings(executor_aid="aid-1"),
+        publish_response=lambda topic, payload: published.append((topic, dict(payload))),
+        get_qr_project_snapshot=lambda robot_serial, project_name, image_limit: {
+            "available": True,
+            "backend": "executor.filesystem",
+            "action": "get_qr_project_snapshot",
+            "robotSerial": robot_serial,
+            "projectName": project_name,
+            "projectRoot": "/data/gsa/G2A0004BC01053/qr_pose_skill_conf/test10",
+            "images": [],
+            "maps": [],
+            "imageLimit": image_limit,
+        },
+    )
+
+    [(topic, payload)] = published
+    assert topic == "gsa/self/robot/qr_mapping/get_qr_project_snapshot/response"
+    assert payload["type"] == "get_qr_project_snapshot"
+    assert payload["data"]["robotSerial"] == "G2A0004BC01053"
+    assert payload["data"]["imageLimit"] == 5
+
+
+def test_handle_robot_state_request_dispatches_qr_build_map_by_topic() -> None:
+    published: list[tuple[str, dict[str, object]]] = []
+
+    handle_robot_state_request(
+        TaskflowMessage(
+            topic="gsa/self/robot/qr_mapping/build_map/request",
+            payload=json.dumps(
+                {
+                    "requestId": "req-build",
+                    "robotSerial": "G2A0004BC01053",
+                    "projectName": "test10",
+                    "mapName": "map01",
+                    "cameraId": "hand_left_color",
+                    "markerType": "ARUCO_MIP_36h12",
+                    "markerSizeMeters": 0.04,
+                }
+            ),
+            received_at="2026-07-27T00:00:00+00:00",
+        ),
+        settings=ExecutorSettings(executor_aid="aid-1"),
+        publish_response=lambda topic, payload: published.append((topic, dict(payload))),
+        build_qr_map=lambda robot_serial, project_name, map_name, camera_id, marker_type, marker_size: {
+            "available": True,
+            "backend": "executor.qr_mapping_sdk",
+            "action": "build_qr_map",
+            "robotSerial": robot_serial,
+            "projectName": project_name,
+            "mapName": map_name,
+            "cameraId": camera_id,
+            "markerType": marker_type,
+            "markerSizeMeters": marker_size,
+            "mapYmlPath": "/data/gsa/G2A0004BC01053/qr_pose_skill_conf/test10/maps/map01.yml",
+            "status": "success",
+            "updatedAt": "2026-08-19T00:00:00+00:00",
+        },
+    )
+
+    [(topic, payload)] = published
+    assert topic == "gsa/self/robot/qr_mapping/build_map/response"
+    assert payload["type"] == "build_qr_map"
+    assert payload["ok"] is True
+    assert payload["data"]["mapName"] == "map01"
+    assert payload["data"]["markerSizeMeters"] == 0.04
 
 
 def test_handle_camera_calibration_request_publishes_success_response() -> None:

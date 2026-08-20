@@ -40,6 +40,11 @@ from .mqtt.robot_state import (
     CAMERA_CAPTURE_START_REQUEST_TYPE,
     CAMERA_CAPTURE_STOP_REQUEST_TYPE,
     CAMERA_FRAME_REQUEST_TYPE,
+    QR_BUILD_MAP_REQUEST_TYPE,
+    QR_CAPTURE_START_REQUEST_TYPE,
+    QR_CAPTURE_STOP_REQUEST_TYPE,
+    QR_DELETE_MAP_REQUEST_TYPE,
+    QR_PCD_PREVIEW_REQUEST_TYPE,
     handle_robot_state_request,
 )
 from .mqtt.status_reporter import StatusSequence, TaskflowStatusReporter
@@ -51,6 +56,9 @@ from .runtime.diagnostics import (
 )
 from .runtime.event_log import JsonlEventWriter, RuntimeEvent, configure_stdout_logging
 from .runtime.payload_sanitizer import summarize_variables
+from .qr_mapping.build_service import QrBuildService
+from .qr_mapping.capture_service import QrCaptureService
+from .qr_mapping.project_store import QrProjectStore
 from .skills.registry import SkillRegistry, SkillRegistryError
 from .skills.runtime import SkillRuntime
 from .taskflow.control import (
@@ -228,11 +236,25 @@ def main(argv: list[str] | None = None) -> int:
         # 共享基础设施（listen 生命周期内复用）
         writer = JsonlEventWriter.from_settings(settings)
         gdk_session = GdkSessionManager()
+        qr_project_store = QrProjectStore(settings.gsa_data_root)
         camera_capture_service = CameraCaptureService(
             session_manager=gdk_session,
             mqtt_broker_url=settings.mqtt_broker_url,
             mqtt_client_id=settings.mqtt_client_id,
             executor_aid=settings.executor_aid,
+        )
+        qr_capture_service = QrCaptureService(
+            session_manager=gdk_session,
+            project_store=qr_project_store,
+            mqtt_broker_url=settings.mqtt_broker_url,
+            mqtt_client_id=settings.mqtt_client_id,
+            executor_aid=settings.executor_aid,
+        )
+        qr_build_service = QrBuildService(
+            project_store=qr_project_store,
+            sdk_path=settings.qr_mapping_sdk_path,
+            sdk_python=settings.qr_mapping_sdk_python,
+            build_timeout_seconds=settings.qr_mapping_build_timeout_seconds,
         )
         skill_runtime = SkillRuntime(
             registry=skill_registry,
@@ -456,6 +478,36 @@ def main(argv: list[str] | None = None) -> int:
                 ),
                 start_camera_capture=camera_capture_service.start,
                 stop_camera_capture=camera_capture_service.stop,
+                start_qr_capture=qr_capture_service.start,
+                stop_qr_capture=qr_capture_service.stop,
+                build_qr_map=(
+                    lambda robot_serial, project_name, map_name, camera_id, marker_type, marker_size:
+                    qr_build_service.build_map(
+                        robot_serial=robot_serial,
+                        project_name=project_name,
+                        map_name=map_name,
+                        camera_id=camera_id,
+                        marker_type=marker_type,
+                        marker_size_meters=marker_size,
+                    )
+                ),
+                delete_qr_map=(
+                    lambda robot_serial, project_name, map_name:
+                    qr_build_service.delete_map(
+                        robot_serial=robot_serial,
+                        project_name=project_name,
+                        map_name=map_name,
+                    )
+                ),
+                read_qr_pcd_preview=(
+                    lambda robot_serial, project_name, map_name, max_points:
+                    qr_build_service.read_pcd_preview(
+                        robot_serial=robot_serial,
+                        project_name=project_name,
+                        map_name=map_name,
+                        max_points=max_points,
+                    )
+                ),
             )
 
         # taskflow 执行队列（单 worker FIFO）
@@ -629,6 +681,17 @@ def main(argv: list[str] | None = None) -> int:
             robot_state_queue.stop()
 
             camera_capture_shutdown = camera_capture_service.shutdown()
+            qr_capture_shutdown = qr_capture_service.shutdown()
+            writer.write(
+                RuntimeEvent(
+                    event_type="qr_capture_shutdown",
+                    level="info"
+                    if qr_capture_shutdown.get("success") is True
+                    else "warning",
+                    message="QR capture shutdown completed",
+                    payload={"qr_capture": qr_capture_shutdown},
+                )
+            )
             writer.write(
                 RuntimeEvent(
                     event_type="camera_capture_shutdown",
@@ -698,6 +761,27 @@ def publish_robot_state_queue_error(
     elif message.topic == settings.robot_camera_capture_stop_request_topic:
         response_topic = settings.robot_camera_capture_stop_response_topic
         response_type = CAMERA_CAPTURE_STOP_REQUEST_TYPE
+    elif message.topic == settings.qr_mapping_project_path_request_topic:
+        response_topic = settings.qr_mapping_project_path_response_topic
+        response_type = "get_qr_project_path"
+    elif message.topic == settings.qr_mapping_project_snapshot_request_topic:
+        response_topic = settings.qr_mapping_project_snapshot_response_topic
+        response_type = "get_qr_project_snapshot"
+    elif message.topic == settings.qr_mapping_capture_start_request_topic:
+        response_topic = settings.qr_mapping_capture_start_response_topic
+        response_type = QR_CAPTURE_START_REQUEST_TYPE
+    elif message.topic == settings.qr_mapping_capture_stop_request_topic:
+        response_topic = settings.qr_mapping_capture_stop_response_topic
+        response_type = QR_CAPTURE_STOP_REQUEST_TYPE
+    elif message.topic == settings.qr_mapping_build_map_request_topic:
+        response_topic = settings.qr_mapping_build_map_response_topic
+        response_type = QR_BUILD_MAP_REQUEST_TYPE
+    elif message.topic == settings.qr_mapping_delete_map_request_topic:
+        response_topic = settings.qr_mapping_delete_map_response_topic
+        response_type = QR_DELETE_MAP_REQUEST_TYPE
+    elif message.topic == settings.qr_mapping_pcd_preview_request_topic:
+        response_topic = settings.qr_mapping_pcd_preview_response_topic
+        response_type = QR_PCD_PREVIEW_REQUEST_TYPE
 
     publish_response(
         response_topic,
