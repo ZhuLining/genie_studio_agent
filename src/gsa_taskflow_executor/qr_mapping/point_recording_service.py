@@ -35,7 +35,6 @@ from gsa_taskflow_executor.gdk.control_probe import (
 )
 from gsa_taskflow_executor.gdk.readonly import GDK_BACKEND, GDK_MODULE_NAME, to_jsonable
 from gsa_taskflow_executor.gdk.session import GdkSessionManager
-from gsa_taskflow_executor.gdk.subprocess_runtime import run_gdk_subprocess
 from gsa_taskflow_executor.qr_mapping.build_service import (
     append_bounded,
     resolve_project_calibration_file,
@@ -140,6 +139,27 @@ LocalizeSdkRunner = Callable[
     [str, Path | None, Path, Path, Path, Path, Path, int, Path, float],
     Mapping[str, object],
 ]
+
+
+class QrLocalizeSdkError(RuntimeError):
+    """二维码定位 SDK 失败时保留诊断信息，便于现场判断是识别还是 PnP 问题。"""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        return_code: int,
+        stdout: str,
+        stderr: str,
+        stats_path: Path,
+        stats: Mapping[str, object],
+    ) -> None:
+        super().__init__(message)
+        self.return_code = return_code
+        self.stdout = stdout
+        self.stderr = stderr
+        self.stats_path = stats_path
+        self.stats = dict(stats)
 
 
 class PointRecordingService:
@@ -453,26 +473,30 @@ def collect_point_recording_gdk_snapshot(
     progress_path = build_camera_child_artifact_path("point_recording_progress")
     with lease:
         try:
-            result = run_gdk_subprocess(
-                operation=action,
+            from gsa_taskflow_executor.gdk.worker_runtime import (
+                run_point_recording_snapshot_in_worker,
+            )
+
+            # 点位录制会频繁读取 Robot 状态。G2 实测 Robot() 构造可能接近 30s，
+            # 因此这里走常驻 GDK worker，并在 worker 内复用 Robot，避免每个点位
+            # 都重新初始化 DDS/控制状态。
+            result = run_point_recording_snapshot_in_worker(
+                {
+                    "action": action,
+                    "arm": arm,
+                    "camera_id": camera_id,
+                    "timeout_ms": timeout_ms,
+                    "include_image": include_image,
+                    "temp_dir": str(temp_dir),
+                    "warmup_seconds": DEFAULT_CAMERA_WARMUP_SECONDS,
+                    "max_motion_mm": DEFAULT_MAX_MOTION_DURING_CAPTURE_MM,
+                    "max_rotation_deg": DEFAULT_MAX_ROTATION_DURING_CAPTURE_DEG,
+                    "progress_path": str(progress_path),
+                },
                 action=action,
-                backend=GDK_BACKEND,
                 timeout_seconds=build_gdk_snapshot_timeout_seconds(
                     timeout_ms,
                     include_image=include_image,
-                ),
-                child_target=point_recording_gdk_child,
-                child_args=(
-                    action,
-                    arm,
-                    camera_id,
-                    timeout_ms,
-                    include_image,
-                    str(temp_dir),
-                    DEFAULT_CAMERA_WARMUP_SECONDS,
-                    DEFAULT_MAX_MOTION_DURING_CAPTURE_MM,
-                    DEFAULT_MAX_ROTATION_DURING_CAPTURE_DEG,
-                    str(progress_path),
                 ),
                 safety_gate={
                     "enabled": False,
@@ -490,6 +514,181 @@ def collect_point_recording_gdk_snapshot(
 def build_gdk_snapshot_timeout_seconds(timeout_ms: int, *, include_image: bool) -> float:
     warmup = DEFAULT_CAMERA_WARMUP_SECONDS if include_image else 0.0
     return max(6.0, timeout_ms / 1000.0 + warmup + 6.0)
+
+
+def execute_point_recording_snapshot(
+    *,
+    agibot_gdk: Any,
+    robot: Any,
+    action: str,
+    arm: str,
+    camera_id: str,
+    timeout_ms: int,
+    include_image: bool,
+    temp_dir: str,
+    warmup_seconds: float,
+    max_motion_mm: float,
+    max_rotation_deg: float,
+    progress_path: str | None = None,
+) -> dict[str, object]:
+    """在已初始化的 GDK worker 内执行一次点位录制采样。
+
+    该函数只读 Robot 状态和相机图像，不调用运动控制。它被常驻 worker 调用，
+    这样可以复用 worker 内的 Robot()，减少连续保存点位时的初始化等待。
+    """
+
+    camera = None
+    write_point_recording_child_progress(
+        progress_path,
+        "validate_robot_status_started",
+        action=action,
+        arm=arm,
+    )
+    validate_robot_status_for_arm(robot, arm)
+    write_point_recording_child_progress(
+        progress_path,
+        "validate_robot_status_finished",
+        action=action,
+        arm=arm,
+    )
+
+    try:
+        if include_image:
+            gdk_camera_type = resolve_gdk_camera_type(agibot_gdk, camera_id)
+            write_point_recording_child_progress(
+                progress_path,
+                "camera_create_started",
+                action=action,
+                camera_id=camera_id,
+            )
+            camera = agibot_gdk.Camera()
+            write_point_recording_child_progress(
+                progress_path,
+                "camera_created",
+                action=action,
+                camera_id=camera_id,
+            )
+            if warmup_seconds > 0:
+                # Camera 初始化后首帧容易失败，沿用二维码建图采集的保守 warmup。
+                import time
+
+                write_point_recording_child_progress(
+                    progress_path,
+                    "camera_warmup_started",
+                    action=action,
+                    camera_id=camera_id,
+                    warmup_seconds=warmup_seconds,
+                )
+                time.sleep(warmup_seconds)
+                write_point_recording_child_progress(
+                    progress_path,
+                    "camera_warmup_finished",
+                    action=action,
+                    camera_id=camera_id,
+                )
+            write_point_recording_child_progress(
+                progress_path,
+                "read_before_pose_started",
+                action=action,
+                arm=arm,
+            )
+            before_pose = read_arm_end_pose(robot, arm)
+            write_point_recording_child_progress(
+                progress_path,
+                "get_latest_image_started",
+                action=action,
+                camera_id=camera_id,
+            )
+            image = camera.get_latest_image(gdk_camera_type, float(timeout_ms))
+            write_point_recording_child_progress(
+                progress_path,
+                "get_latest_image_returned",
+                action=action,
+                camera_id=camera_id,
+            )
+            if image is None:
+                raise RuntimeError("camera.get_latest_image() returned None")
+            write_point_recording_child_progress(
+                progress_path,
+                "read_after_pose_started",
+                action=action,
+                arm=arm,
+            )
+            after_pose = read_arm_end_pose(robot, arm)
+            motion = build_stationarity_payload(before_pose, after_pose)
+            if motion["motionMm"] > max_motion_mm or motion["rotationDeg"] > max_rotation_deg:
+                raise RuntimeError(
+                    "拍照期间末端发生移动: "
+                    f"{motion['motionMm']:.3f}mm/{motion['rotationDeg']:.3f}deg"
+                )
+            pose = mean_pose(before_pose, after_pose)
+            write_point_recording_child_progress(
+                progress_path,
+                "read_joint_positions_started",
+                action=action,
+            )
+            joints = read_joint_positions(robot)
+            write_point_recording_child_progress(
+                progress_path,
+                "encode_frame_started",
+                action=action,
+                camera_id=camera_id,
+            )
+            frame_snapshot = build_camera_frame_snapshot(
+                image,
+                camera_id=camera_id,
+                gdk_camera_type=str(gdk_camera_type),
+            )
+            if frame_snapshot.get("available") is not True:
+                raise RuntimeError(str(frame_snapshot.get("errorMsg") or "相机图像编码失败"))
+            image_file = write_temp_scan_image(frame_snapshot, Path(temp_dir))
+            return build_snapshot_result(
+                action,
+                arm=arm,
+                camera_id=camera_id,
+                pose=pose,
+                joints=joints,
+                extra={
+                    "imageTempPath": image_file["imageTempPath"],
+                    "scanImageFileName": image_file["scanImageFileName"],
+                    "mimeType": frame_snapshot.get("mimeType"),
+                    "width": frame_snapshot.get("width"),
+                    "height": frame_snapshot.get("height"),
+                    "encoding": frame_snapshot.get("encoding"),
+                    "timestampNs": frame_snapshot.get("timestampNs"),
+                    "imageSha256": frame_snapshot.get("imageSha256"),
+                    "stationarity": motion,
+                },
+            )
+
+        write_point_recording_child_progress(
+            progress_path,
+            "read_pose_started",
+            action=action,
+            arm=arm,
+        )
+        pose = read_arm_end_pose(robot, arm)
+        write_point_recording_child_progress(
+            progress_path,
+            "read_joint_positions_started",
+            action=action,
+        )
+        joints = read_joint_positions(robot)
+        return build_snapshot_result(
+            action,
+            arm=arm,
+            camera_id=camera_id,
+            pose=pose,
+            joints=joints,
+        )
+    finally:
+        if camera is not None:
+            close_camera = getattr(camera, "close_camera", None)
+            if callable(close_camera):
+                try:
+                    close_camera()
+                except Exception:
+                    pass
 
 
 def point_recording_gdk_child(
@@ -1168,9 +1367,17 @@ def run_qr_localize_sdk(
     stderr = append_bounded("", completed.stderr or "")
     if completed.returncode != 0:
         details = "\n".join(item for item in (stderr.strip(), stdout.strip()) if item)
-        raise RuntimeError(
+        message = (
             f"二维码定位 SDK 执行失败，退出码 {completed.returncode}"
             + (f": {details}" if details else "")
+        )
+        raise QrLocalizeSdkError(
+            message,
+            return_code=completed.returncode,
+            stdout=stdout,
+            stderr=stderr,
+            stats_path=stats_path,
+            stats=read_json_object(stats_path),
         )
     return {
         "python": sdk_python,
@@ -1306,7 +1513,7 @@ def busy_result(action: str, *, active_purpose: str | None) -> dict[str, object]
 
 
 def error_payload(action: str, error: Exception) -> dict[str, object]:
-    return {
+    result: dict[str, object] = {
         "available": False,
         "backend": "executor.point_recording",
         "action": action,
@@ -1315,6 +1522,16 @@ def error_payload(action: str, error: Exception) -> dict[str, object]:
         "errorMsg": str(error),
         "collectedAt": utc_now_iso(),
     }
+    if isinstance(error, QrLocalizeSdkError):
+        result["sdk"] = {
+            "returnCode": error.return_code,
+            "stdout": error.stdout,
+            "stderr": error.stderr,
+            "statsPath": str(error.stats_path),
+            "stats": dict(error.stats),
+            "quality": build_localize_quality(error.stats),
+        }
+    return result
 
 
 def error_code_from_exception(error: Exception) -> str:
@@ -1322,6 +1539,8 @@ def error_code_from_exception(error: Exception) -> str:
         return "QR_RESOURCE_NOT_FOUND"
     if isinstance(error, TimeoutError):
         return "QR_LOCALIZE_SDK_TIMEOUT"
+    if isinstance(error, QrLocalizeSdkError):
+        return "QR_LOCALIZE_SDK_FAILED"
     if isinstance(error, ValueError):
         return "POINT_RECORDING_INVALID"
     return "POINT_RECORDING_FAILED"

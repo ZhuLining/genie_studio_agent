@@ -1,10 +1,14 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from gsa_taskflow_executor.qr_mapping.point_recording_service import (
     PointRecordingSaveInitialPhotoParams,
     PointRecordingSaveTargetParams,
     PointRecordingService,
+    QrLocalizeSdkError,
+    run_qr_localize_sdk,
 )
 from gsa_taskflow_executor.qr_mapping.project_store import QrProjectStore
 
@@ -94,6 +98,46 @@ def test_project_snapshot_lists_point_recording_records(tmp_path) -> None:
     assert snapshot["initialPhotoPoints"][0]["tfBaselinkTagPath"].endswith(
         "tf_baselink_tag.json"
     )
+
+
+def test_qr_localize_sdk_failure_keeps_stats(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    stats_path = tmp_path / "locate_stats.json"
+
+    class Completed:
+        returncode = 1
+        stdout = ""
+        stderr = "定位失败: 可见 marker 少于 4 或 PnP 失败"
+
+    def fake_run(*_args, **_kwargs) -> Completed:
+        stats_path.write_text(
+            json.dumps({"ok": False, "n_markers": 2, "reproj_px": None}),
+            encoding="utf-8",
+        )
+        return Completed()
+
+    monkeypatch.setattr(
+        "gsa_taskflow_executor.qr_mapping.point_recording_service.subprocess.run",
+        fake_run,
+    )
+
+    with pytest.raises(QrLocalizeSdkError) as raised:
+        run_qr_localize_sdk(
+            "python3",
+            None,
+            tmp_path,
+            tmp_path / "map.yml",
+            tmp_path / "camera.yml",
+            tmp_path / "extrinsic.json",
+            tmp_path / "waypoints",
+            4,
+            stats_path,
+            5.0,
+        )
+
+    error = raised.value
+    assert error.return_code == 1
+    assert error.stats_path == stats_path
+    assert error.stats["n_markers"] == 2
 
 
 def make_service(tmp_path) -> tuple[QrProjectStore, PointRecordingService]:

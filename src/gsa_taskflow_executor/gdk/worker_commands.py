@@ -34,6 +34,7 @@ class WorkerGdkState:
     """worker 子进程内的 GDK 状态。懒初始化，失败可重试。"""
 
     agibot_gdk: Any | None = None
+    robot: Any | None = None
     init_attempted: bool = False
     gdk_initialized: bool = False
     init_result: dict[str, object] = field(default_factory=lambda: default_gdk_init_result())
@@ -42,6 +43,27 @@ class WorkerGdkState:
         if self.agibot_gdk is None:
             raise RuntimeError("GDK worker missing initialized agibot_gdk module")
         return self.agibot_gdk
+
+    def require_robot(self, progress_path: str | None, action: str) -> Any:
+        if self.robot is None:
+            from gsa_taskflow_executor.qr_mapping.point_recording_service import (
+                write_point_recording_child_progress,
+            )
+
+            write_point_recording_child_progress(
+                progress_path,
+                "robot_create_started",
+                action=action,
+                reusedWorker=True,
+            )
+            self.robot = self.require_agibot_gdk().Robot()
+            write_point_recording_child_progress(
+                progress_path,
+                "robot_created",
+                action=action,
+                reusedWorker=True,
+            )
+        return self.robot
 
 
 def gdk_worker_main(command_queue: Any, result_queue: Any) -> None:
@@ -111,6 +133,8 @@ def execute_worker_command(
         return execute_end_effector_command(payload, state)
     if kind == "code_script":
         return execute_code_script_command(payload, state)
+    if kind == "point_recording_snapshot":
+        return execute_point_recording_snapshot_command(payload, command, state)
     return worker_command_failed_result(
         command=command,
         stage="validate_worker_command",
@@ -264,6 +288,60 @@ def execute_code_script_command(
         purpose=f"code_script:{script_id}",
         init_result=state.init_result,
     )
+    return result
+
+
+def execute_point_recording_snapshot_command(
+    payload: Mapping[str, object],
+    command: Mapping[str, object],
+    state: WorkerGdkState,
+) -> dict[str, object]:
+    """执行点位录制只读采样：复用 worker 内 Robot，按需读取相机帧。
+
+    该命令不执行机器人控制，但读取 Robot 状态仍可能被 GDK C 扩展阻塞；父进程通过
+    worker timeout/cancel 负责恢复 executor，不保证取消机器人侧正在等待的 DDS 调用。
+    """
+
+    from gsa_taskflow_executor.qr_mapping import point_recording_service
+
+    action = read_string_field(payload, "action") or "point_recording_snapshot"
+    progress_path = read_string_field(payload, "progress_path")
+    init_error = ensure_gdk_ready(state)
+    if init_error is not None:
+        error = cast(Exception, init_error["error"])
+        result = point_recording_service.unavailable_result(action, str(init_error["stage"]), error)
+    else:
+        try:
+            agibot_gdk = state.require_agibot_gdk()
+            robot = state.require_robot(progress_path, action)
+            result = point_recording_service.execute_point_recording_snapshot(
+                agibot_gdk=agibot_gdk,
+                robot=robot,
+                action=action,
+                arm=read_required_string(payload, "arm"),
+                camera_id=read_required_string(payload, "camera_id"),
+                timeout_ms=read_int_field(payload, "timeout_ms"),
+                include_image=read_bool_field(payload, "include_image"),
+                temp_dir=read_required_string(payload, "temp_dir"),
+                warmup_seconds=read_float_field(payload, "warmup_seconds"),
+                max_motion_mm=read_float_field(payload, "max_motion_mm"),
+                max_rotation_deg=read_float_field(payload, "max_rotation_deg"),
+                progress_path=progress_path,
+            )
+        except Exception as error:
+            result = point_recording_service.unavailable_result(
+                action,
+                "execute_point_recording_snapshot",
+                error,
+            )
+
+    attach_worker_gdk_payload(
+        result,
+        purpose=action,
+        init_result=state.init_result,
+    )
+    # 保留原始 command 里的安全门，方便现场看清这是只读采样，不是控制动作。
+    result.setdefault("safety_gate", read_mapping_field(command, "safety_gate") or {})
     return result
 
 
@@ -578,3 +656,31 @@ def read_string_mapping(value: object) -> dict[str, str]:
         if isinstance(key, str) and isinstance(item, str):
             result[key] = item
     return result
+
+
+def read_required_string(mapping: Mapping[str, object], key: str) -> str:
+    value = read_string_field(mapping, key)
+    if value is None:
+        raise ValueError(f"worker payload missing string field: {key}")
+    return value
+
+
+def read_int_field(mapping: Mapping[str, object], key: str) -> int:
+    value = mapping.get(key)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"worker payload field {key} must be int")
+    return value
+
+
+def read_float_field(mapping: Mapping[str, object], key: str) -> float:
+    value = mapping.get(key)
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise ValueError(f"worker payload field {key} must be number")
+    return float(value)
+
+
+def read_bool_field(mapping: Mapping[str, object], key: str) -> bool:
+    value = mapping.get(key)
+    if not isinstance(value, bool):
+        raise ValueError(f"worker payload field {key} must be bool")
+    return value

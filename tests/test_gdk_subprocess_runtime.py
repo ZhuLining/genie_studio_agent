@@ -5,11 +5,17 @@ import time
 from threading import Thread
 from typing import Any
 
+import pytest
+
 from gsa_taskflow_executor.gdk.recovery import GDK_OPERATION_CANCELLED_CODE
 from gsa_taskflow_executor.gdk.subprocess_runtime import (
     GDK_OPERATION_TIMEOUT_CODE,
     GDK_SUBPROCESS_POLICY,
     run_gdk_subprocess,
+)
+from gsa_taskflow_executor.gdk.worker_commands import (
+    WorkerGdkState,
+    execute_point_recording_snapshot_command,
 )
 from gsa_taskflow_executor.gdk.worker_runtime import GDK_WORKER_POLICY, GdkWorkerProcessManager
 
@@ -238,3 +244,68 @@ def test_gdk_worker_cancel_active_command_returns_cancelled_result() -> None:
     assert results[0]["error_code"] == GDK_OPERATION_CANCELLED_CODE
     assert results[0]["subprocess"]["terminated"] is True
     assert results[0]["subprocess"]["timed_out"] is False
+
+
+def test_point_recording_worker_command_reuses_robot(monkeypatch: pytest.MonkeyPatch) -> None:
+    from gsa_taskflow_executor.qr_mapping import point_recording_service
+
+    class FakeAgibotGdk:
+        def __init__(self) -> None:
+            self.robot_create_count = 0
+
+        def Robot(self) -> dict[str, object]:
+            self.robot_create_count += 1
+            return {"robot_id": self.robot_create_count}
+
+    fake_agibot_gdk = FakeAgibotGdk()
+    state = WorkerGdkState(
+        agibot_gdk=fake_agibot_gdk,
+        init_attempted=True,
+        gdk_initialized=True,
+        init_result={"called": True, "success": True, "return": "ok"},
+    )
+    calls: list[dict[str, object]] = []
+
+    def fake_execute_point_recording_snapshot(**kwargs: object) -> dict[str, object]:
+        calls.append(dict(kwargs))
+        return {
+            "available": True,
+            "backend": "fake.gdk",
+            "action": str(kwargs["action"]),
+            "robotId": dict(kwargs["robot"])["robot_id"],
+        }
+
+    monkeypatch.setattr(
+        point_recording_service,
+        "execute_point_recording_snapshot",
+        fake_execute_point_recording_snapshot,
+    )
+
+    payload = {
+        "action": "save_qr_target_point",
+        "arm": "left_arm",
+        "camera_id": "hand_left_color",
+        "timeout_ms": 60000,
+        "include_image": False,
+        "temp_dir": "/tmp",
+        "warmup_seconds": 3.0,
+        "max_motion_mm": 1.0,
+        "max_rotation_deg": 0.5,
+    }
+    command = {
+        "safety_gate": {
+            "enabled": False,
+            "confirmed": True,
+            "reason": "read_only_point_recording",
+        }
+    }
+
+    first = execute_point_recording_snapshot_command(payload, command, state)
+    second = execute_point_recording_snapshot_command(payload, command, state)
+
+    assert fake_agibot_gdk.robot_create_count == 1
+    assert len(calls) == 2
+    assert first["robotId"] == 1
+    assert second["robotId"] == 1
+    assert first["gdk_session"]["policy"] == GDK_WORKER_POLICY
+    assert second["gdk_session"]["policy"] == GDK_WORKER_POLICY

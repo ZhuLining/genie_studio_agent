@@ -646,6 +646,29 @@ def run_code_script_in_worker(
     )
 
 
+def run_point_recording_snapshot_in_worker(
+    payload: Mapping[str, object],
+    *,
+    action: str,
+    timeout_seconds: float,
+    safety_gate: Mapping[str, object],
+) -> dict[str, object]:
+    """通过持久 worker 执行点位录制只读采样。
+
+    点位录制需要 Robot 读取末端位姿和关节；G2 实测 Robot() 首次构造可接近 30s，
+    因此复用常驻 worker 内的 Robot，避免每个点位都重新等待 DDS/控制栈初始化。
+    """
+
+    return get_default_gdk_worker_manager().run_command(
+        kind="point_recording_snapshot",
+        payload=payload,
+        action=action,
+        backend=GDK_BACKEND,
+        timeout_seconds=timeout_seconds,
+        safety_gate=safety_gate,
+    )
+
+
 def shutdown_default_gdk_worker(
     timeout_seconds: float = DEFAULT_WORKER_SHUTDOWN_TIMEOUT_SECONDS,
 ) -> dict[str, object]:
