@@ -175,3 +175,25 @@ def test_health_check_cli_prints_json_and_returns_health_exit_code(
     printed = json.loads(capsys.readouterr().out)
     assert printed["type"] == "executor_health_check"
     assert printed["status"] == "error"
+
+
+def test_publish_robot_state_queue_error_uses_point_recording_response_topic() -> None:
+    published: list[tuple[str, dict[str, object]]] = []
+
+    cli.publish_robot_state_queue_error(
+        cli.TaskflowMessage(
+            topic="gsa/self/robot/qr_mapping/save_initial_photo_point/request",
+            payload=json.dumps({"requestId": "req-photo"}),
+            received_at="2026-08-20T00:00:00+00:00",
+        ),
+        settings=cli.ExecutorSettings(executor_aid="aid-1"),
+        publish_response=lambda topic, payload: published.append((topic, dict(payload))),
+        error_message="robot_state queue is full",
+    )
+
+    [(topic, payload)] = published
+    assert topic == "gsa/self/robot/qr_mapping/save_initial_photo_point/response"
+    assert payload["type"] == "save_qr_initial_photo_point"
+    assert payload["requestId"] == "req-photo"
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "QUEUE_UNAVAILABLE"

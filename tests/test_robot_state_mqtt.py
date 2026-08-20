@@ -22,6 +22,8 @@ from gsa_taskflow_executor.mqtt.robot_state import (
     parse_qr_capture_start_request,
     parse_qr_capture_stop_request,
     parse_qr_pcd_preview_request,
+    parse_point_recording_save_initial_photo_request,
+    parse_point_recording_save_target_request,
     parse_qr_project_snapshot_request,
 )
 from gsa_taskflow_executor.runtime.config import ExecutorSettings
@@ -324,6 +326,57 @@ def test_parse_qr_pcd_preview_request_caps_max_points() -> None:
     assert request.max_points == 50000
 
 
+def test_parse_point_recording_save_target_request_reads_params() -> None:
+    request = parse_point_recording_save_target_request(
+        json.dumps(
+            {
+                "type": "save_qr_target_point",
+                "requestId": "req-target",
+                "robotSerial": "G2A0004BC01053",
+                "projectName": "test10",
+                "pointName": "grasp_1",
+                "arm": "right_arm",
+                "timeoutMs": 2500,
+            }
+        ),
+        default_reply_topic="gsa/self/robot/qr_mapping/save_target_point/response",
+    )
+
+    assert request.request_id == "req-target"
+    assert request.params.robot_serial == "G2A0004BC01053"
+    assert request.params.project_name == "test10"
+    assert request.params.point_name == "grasp_1"
+    assert request.params.arm == "right_arm"
+    assert request.params.camera_id == "hand_right_color"
+    assert request.params.timeout_ms == 2500
+
+
+def test_parse_point_recording_save_initial_photo_request_reads_params() -> None:
+    request = parse_point_recording_save_initial_photo_request(
+        json.dumps(
+            {
+                "type": "save_qr_initial_photo_point",
+                "requestId": "req-photo",
+                "robotSerial": "G2A0004BC01053",
+                "projectName": "test10",
+                "pointName": "photo_001",
+                "arm": "left_arm",
+                "cameraId": "hand_left_color",
+                "mapName": "map01",
+                "minMarkers": 5,
+            }
+        ),
+        default_reply_topic="gsa/self/robot/qr_mapping/save_initial_photo_point/response",
+    )
+
+    assert request.request_id == "req-photo"
+    assert request.params.point_name == "photo_001"
+    assert request.params.arm == "left_arm"
+    assert request.params.camera_id == "hand_left_color"
+    assert request.params.map_name == "map01"
+    assert request.params.min_markers == 5
+
+
 def test_handle_camera_frame_request_publishes_success_response() -> None:
     published: list[tuple[str, dict[str, object]]] = []
     snapshot = {
@@ -357,6 +410,122 @@ def test_handle_camera_frame_request_publishes_success_response() -> None:
     assert payload["executorAid"] == "aid-1"
     assert payload["data"]["cameraId"] == "hand_left_color"
     assert payload["data"]["timeoutMs"] == 3000
+
+
+def test_handle_robot_state_request_dispatches_point_recording_target_by_topic() -> None:
+    published: list[tuple[str, dict[str, object]]] = []
+
+    handle_robot_state_request(
+        TaskflowMessage(
+            topic="gsa/self/robot/qr_mapping/save_target_point/request",
+            payload=json.dumps(
+                {
+                    "requestId": "req-target",
+                    "robotSerial": "G2A0004BC01053",
+                    "projectName": "test10",
+                    "pointName": "grasp_1",
+                    "arm": "left_arm",
+                    "cameraId": "hand_left_color",
+                }
+            ),
+            received_at="2026-07-27T00:00:00+00:00",
+        ),
+        settings=ExecutorSettings(executor_aid="aid-1"),
+        publish_response=lambda topic, payload: published.append((topic, dict(payload))),
+        save_point_recording_target=lambda params: {
+            "available": True,
+            "backend": "executor.point_recording",
+            "action": "save_qr_target_point",
+            "robotSerial": params.robot_serial,
+            "projectName": params.project_name,
+            "pointKind": "target",
+            "pointName": params.point_name,
+            "arm": params.arm,
+            "cameraId": params.camera_id,
+        },
+    )
+
+    [(topic, payload)] = published
+    assert topic == "gsa/self/robot/qr_mapping/save_target_point/response"
+    assert payload["type"] == "save_qr_target_point"
+    assert payload["ok"] is True
+    assert payload["data"]["pointName"] == "grasp_1"
+
+
+def test_handle_robot_state_request_dispatches_point_recording_initial_photo_by_topic() -> None:
+    published: list[tuple[str, dict[str, object]]] = []
+
+    handle_robot_state_request(
+        TaskflowMessage(
+            topic="gsa/self/robot/qr_mapping/save_initial_photo_point/request",
+            payload=json.dumps(
+                {
+                    "requestId": "req-photo",
+                    "robotSerial": "G2A0004BC01053",
+                    "projectName": "test10",
+                    "pointName": "photo_001",
+                    "arm": "left_arm",
+                    "cameraId": "hand_left_color",
+                }
+            ),
+            received_at="2026-07-27T00:00:00+00:00",
+        ),
+        settings=ExecutorSettings(executor_aid="aid-1"),
+        publish_response=lambda topic, payload: published.append((topic, dict(payload))),
+        save_point_recording_initial_photo=lambda params: {
+            "available": True,
+            "backend": "executor.qr_localize_sdk",
+            "action": "save_qr_initial_photo_point",
+            "robotSerial": params.robot_serial,
+            "projectName": params.project_name,
+            "pointKind": "initial_photo",
+            "pointName": params.point_name,
+            "arm": params.arm,
+            "cameraId": params.camera_id,
+        },
+    )
+
+    [(topic, payload)] = published
+    assert topic == "gsa/self/robot/qr_mapping/save_initial_photo_point/response"
+    assert payload["type"] == "save_qr_initial_photo_point"
+    assert payload["ok"] is True
+    assert payload["data"]["pointKind"] == "initial_photo"
+
+
+def test_handle_robot_state_request_dispatches_point_recording_submit_by_topic() -> None:
+    published: list[tuple[str, dict[str, object]]] = []
+
+    handle_robot_state_request(
+        TaskflowMessage(
+            topic="gsa/self/robot/qr_mapping/submit_point_recording/request",
+            payload=json.dumps(
+                {
+                    "requestId": "req-submit",
+                    "robotSerial": "G2A0004BC01053",
+                    "projectName": "test10",
+                }
+            ),
+            received_at="2026-07-27T00:00:00+00:00",
+        ),
+        settings=ExecutorSettings(executor_aid="aid-1"),
+        publish_response=lambda topic, payload: published.append((topic, dict(payload))),
+        submit_point_recording=lambda params: {
+            "available": True,
+            "backend": "executor.filesystem",
+            "action": "submit_point_recording",
+            "robotSerial": params.robot_serial,
+            "projectName": params.project_name,
+            "targetPointCount": 1,
+            "initialPhotoPointCount": 1,
+            "submittedAt": "2026-08-20T00:00:00+00:00",
+        },
+    )
+
+    [(topic, payload)] = published
+    assert topic == "gsa/self/robot/qr_mapping/submit_point_recording/response"
+    assert payload["type"] == "submit_point_recording"
+    assert payload["ok"] is True
+    assert payload["data"]["targetPointCount"] == 1
 
 
 def test_handle_robot_state_request_dispatches_camera_frame_by_topic() -> None:

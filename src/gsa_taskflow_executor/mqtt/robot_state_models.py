@@ -42,6 +42,16 @@ from gsa_taskflow_executor.qr_mapping.project_store import (
     DEFAULT_IMAGE_LIMIT,
     MAX_IMAGE_LIMIT,
 )
+from gsa_taskflow_executor.qr_mapping.point_recording_service import (
+    ACTION_SAVE_QR_INITIAL_PHOTO_POINT,
+    ACTION_SAVE_QR_TARGET_POINT,
+    ACTION_SUBMIT_POINT_RECORDING,
+    DEFAULT_MIN_MARKERS,
+    DEFAULT_POINT_RECORDING_TIMEOUT_MS,
+    PointRecordingSaveInitialPhotoParams,
+    PointRecordingSaveTargetParams,
+    PointRecordingSubmitParams,
+)
 
 # 请求类型常量
 CURRENT_POSE_REQUEST_TYPE = "get_current_pose"
@@ -56,6 +66,9 @@ QR_CAPTURE_STOP_REQUEST_TYPE = ACTION_STOP_QR_CAPTURE
 QR_BUILD_MAP_REQUEST_TYPE = ACTION_BUILD_QR_MAP
 QR_DELETE_MAP_REQUEST_TYPE = ACTION_DELETE_QR_MAP
 QR_PCD_PREVIEW_REQUEST_TYPE = ACTION_READ_QR_PCD_PREVIEW
+POINT_RECORDING_SAVE_TARGET_REQUEST_TYPE = ACTION_SAVE_QR_TARGET_POINT
+POINT_RECORDING_SAVE_INITIAL_PHOTO_REQUEST_TYPE = ACTION_SAVE_QR_INITIAL_PHOTO_POINT
+POINT_RECORDING_SUBMIT_REQUEST_TYPE = ACTION_SUBMIT_POINT_RECORDING
 
 
 @dataclass(frozen=True)
@@ -179,6 +192,33 @@ class QrPcdPreviewRequest:
     project_name: str
     map_name: str
     max_points: int
+
+
+@dataclass(frozen=True)
+class PointRecordingSaveTargetRequest:
+    """点位录制保存目标点位请求。"""
+
+    request_id: str
+    reply_topic: str
+    params: PointRecordingSaveTargetParams
+
+
+@dataclass(frozen=True)
+class PointRecordingSaveInitialPhotoRequest:
+    """点位录制保存初始拍照点位请求。"""
+
+    request_id: str
+    reply_topic: str
+    params: PointRecordingSaveInitialPhotoParams
+
+
+@dataclass(frozen=True)
+class PointRecordingSubmitRequest:
+    """点位录制提交请求。"""
+
+    request_id: str
+    reply_topic: str
+    params: PointRecordingSubmitParams
 
 
 def parse_current_pose_request(payload: str, *, default_reply_topic: str) -> CurrentPoseRequest:
@@ -664,6 +704,106 @@ def parse_qr_pcd_preview_request(
     )
 
 
+def parse_point_recording_save_target_request(
+    payload: str,
+    *,
+    default_reply_topic: str,
+) -> PointRecordingSaveTargetRequest:
+    """解析点位录制保存目标点位请求。"""
+
+    decoded = parse_json_object(payload, "点位录制目标点位请求")
+    request_type = read_optional_string(decoded, "type")
+    if request_type is not None and request_type != POINT_RECORDING_SAVE_TARGET_REQUEST_TYPE:
+        raise ValueError(f"不支持的点位录制请求类型: {request_type}")
+    request_id = read_request_id_from_object(decoded)
+    if not request_id:
+        raise ValueError("点位录制目标点位请求缺少 requestId")
+    robot_serial, project_name = read_qr_project_identity(decoded, "点位录制目标点位请求")
+    point_name = read_point_recording_point_name(decoded, "点位录制目标点位请求")
+    arm = read_point_recording_arm(decoded)
+    camera_id = read_point_recording_camera_id(decoded, arm)
+    return PointRecordingSaveTargetRequest(
+        request_id=request_id,
+        reply_topic=read_reply_topic(decoded, default_reply_topic),
+        params=PointRecordingSaveTargetParams(
+            robot_serial=robot_serial,
+            project_name=project_name,
+            point_name=point_name,
+            arm=arm,
+            camera_id=camera_id,
+            map_name=read_optional_string(decoded, "mapName")
+            or read_optional_string(decoded, "map_name"),
+            timeout_ms=read_positive_int(
+                decoded.get("timeoutMs"),
+                DEFAULT_POINT_RECORDING_TIMEOUT_MS,
+            ),
+        ),
+    )
+
+
+def parse_point_recording_save_initial_photo_request(
+    payload: str,
+    *,
+    default_reply_topic: str,
+) -> PointRecordingSaveInitialPhotoRequest:
+    """解析点位录制保存初始拍照点位请求。"""
+
+    decoded = parse_json_object(payload, "点位录制初始拍照点位请求")
+    request_type = read_optional_string(decoded, "type")
+    if request_type is not None and request_type != POINT_RECORDING_SAVE_INITIAL_PHOTO_REQUEST_TYPE:
+        raise ValueError(f"不支持的点位录制请求类型: {request_type}")
+    request_id = read_request_id_from_object(decoded)
+    if not request_id:
+        raise ValueError("点位录制初始拍照点位请求缺少 requestId")
+    robot_serial, project_name = read_qr_project_identity(decoded, "点位录制初始拍照点位请求")
+    point_name = read_point_recording_point_name(decoded, "点位录制初始拍照点位请求")
+    arm = read_point_recording_arm(decoded)
+    camera_id = read_point_recording_camera_id(decoded, arm)
+    return PointRecordingSaveInitialPhotoRequest(
+        request_id=request_id,
+        reply_topic=read_reply_topic(decoded, default_reply_topic),
+        params=PointRecordingSaveInitialPhotoParams(
+            robot_serial=robot_serial,
+            project_name=project_name,
+            point_name=point_name,
+            arm=arm,
+            camera_id=camera_id,
+            map_name=read_optional_string(decoded, "mapName")
+            or read_optional_string(decoded, "map_name"),
+            timeout_ms=read_positive_int(
+                decoded.get("timeoutMs"),
+                DEFAULT_POINT_RECORDING_TIMEOUT_MS,
+            ),
+            min_markers=read_positive_int(decoded.get("minMarkers"), DEFAULT_MIN_MARKERS),
+        ),
+    )
+
+
+def parse_point_recording_submit_request(
+    payload: str,
+    *,
+    default_reply_topic: str,
+) -> PointRecordingSubmitRequest:
+    """解析点位录制提交请求。"""
+
+    decoded = parse_json_object(payload, "点位录制提交请求")
+    request_type = read_optional_string(decoded, "type")
+    if request_type is not None and request_type != POINT_RECORDING_SUBMIT_REQUEST_TYPE:
+        raise ValueError(f"不支持的点位录制请求类型: {request_type}")
+    request_id = read_request_id_from_object(decoded)
+    if not request_id:
+        raise ValueError("点位录制提交请求缺少 requestId")
+    robot_serial, project_name = read_qr_project_identity(decoded, "点位录制提交请求")
+    return PointRecordingSubmitRequest(
+        request_id=request_id,
+        reply_topic=read_reply_topic(decoded, default_reply_topic),
+        params=PointRecordingSubmitParams(
+            robot_serial=robot_serial,
+            project_name=project_name,
+        ),
+    )
+
+
 def read_qr_project_identity(
     value: Mapping[str, Any],
     label: str,
@@ -682,6 +822,35 @@ def read_qr_project_identity(
     if not project_name:
         raise ValueError(f"{label}缺少 projectName")
     return robot_serial, project_name
+
+
+def read_point_recording_point_name(value: Mapping[str, Any], label: str) -> str:
+    point_name = read_optional_string(value, "pointName") or read_optional_string(
+        value,
+        "point_name",
+    )
+    if not point_name:
+        raise ValueError(f"{label}缺少 pointName")
+    return point_name
+
+
+def read_point_recording_arm(value: Mapping[str, Any]) -> str:
+    arm = read_optional_string(value, "arm") or read_optional_string(value, "targetArm")
+    if arm in {"left", "left_arm"}:
+        return "left_arm"
+    if arm in {"right", "right_arm"}:
+        return "right_arm"
+    raise ValueError("点位录制执行手臂必须是 left_arm 或 right_arm")
+
+
+def read_point_recording_camera_id(value: Mapping[str, Any], arm: str) -> str:
+    camera_id = read_optional_string(value, "cameraId") or read_optional_string(
+        value,
+        "camera_id",
+    )
+    if camera_id:
+        return camera_id
+    return "hand_right_color" if arm == "right_arm" else "hand_left_color"
 
 
 def read_optional_string(value: Mapping[str, Any], key: str) -> str | None:

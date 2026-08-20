@@ -20,6 +20,9 @@ from gsa_taskflow_executor.mqtt.robot_state_models import (
     QR_CAPTURE_STOP_REQUEST_TYPE,
     QR_DELETE_MAP_REQUEST_TYPE,
     QR_PCD_PREVIEW_REQUEST_TYPE,
+    POINT_RECORDING_SAVE_INITIAL_PHOTO_REQUEST_TYPE,
+    POINT_RECORDING_SAVE_TARGET_REQUEST_TYPE,
+    POINT_RECORDING_SUBMIT_REQUEST_TYPE,
     QR_PROJECT_PATH_REQUEST_TYPE,
     QR_PROJECT_SNAPSHOT_REQUEST_TYPE,
 )
@@ -357,6 +360,60 @@ def build_qr_pcd_preview_response(
         snapshot=result,
         fallback_code="QR_PCD_PREVIEW_FAILED",
         fallback_message="二维码 PCD 预览读取失败",
+    )
+
+
+def build_point_recording_save_target_response(
+    *,
+    request_id: str,
+    executor_aid: str,
+    result: Mapping[str, object],
+) -> dict[str, object]:
+    """构建点位录制目标点位保存响应。"""
+
+    return build_qr_mapping_response(
+        response_type=POINT_RECORDING_SAVE_TARGET_REQUEST_TYPE,
+        request_id=request_id,
+        executor_aid=executor_aid,
+        snapshot=result,
+        fallback_code="POINT_RECORDING_SAVE_TARGET_FAILED",
+        fallback_message="目标点位保存失败",
+    )
+
+
+def build_point_recording_save_initial_photo_response(
+    *,
+    request_id: str,
+    executor_aid: str,
+    result: Mapping[str, object],
+) -> dict[str, object]:
+    """构建点位录制初始拍照点位保存响应。"""
+
+    return build_qr_mapping_response(
+        response_type=POINT_RECORDING_SAVE_INITIAL_PHOTO_REQUEST_TYPE,
+        request_id=request_id,
+        executor_aid=executor_aid,
+        snapshot=result,
+        fallback_code="POINT_RECORDING_SAVE_INITIAL_PHOTO_FAILED",
+        fallback_message="初始拍照点位保存失败",
+    )
+
+
+def build_point_recording_submit_response(
+    *,
+    request_id: str,
+    executor_aid: str,
+    result: Mapping[str, object],
+) -> dict[str, object]:
+    """构建点位录制提交响应。"""
+
+    return build_qr_mapping_response(
+        response_type=POINT_RECORDING_SUBMIT_REQUEST_TYPE,
+        request_id=request_id,
+        executor_aid=executor_aid,
+        snapshot=result,
+        fallback_code="POINT_RECORDING_SUBMIT_FAILED",
+        fallback_message="点位录制提交失败",
     )
 
 

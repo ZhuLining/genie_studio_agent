@@ -98,6 +98,8 @@ class QrProjectStore:
         manifest = read_json_object(paths.manifest_path)
         images = list_image_records(paths.images_dir, limit=image_limit)
         maps = list_map_records(paths.maps_dir, manifest=manifest)
+        target_points = list_target_point_records(paths)
+        initial_photo_points = list_initial_photo_records(paths, manifest=manifest)
         for item in maps:
             item.setdefault("robotSerial", robot_serial.strip())
             item.setdefault("projectName", project_name.strip())
@@ -118,6 +120,8 @@ class QrProjectStore:
             "imageCount": count_images(paths.images_dir),
             "images": images,
             "maps": maps,
+            "targetPoints": target_points,
+            "initialPhotoPoints": initial_photo_points,
             "activeMapName": active_map_name,
             "manifest": manifest,
             "warnings": build_snapshot_warnings(paths, manifest=manifest, maps=maps),
@@ -331,6 +335,117 @@ def read_map_quality(stats_path: Path) -> dict[str, object] | None:
         "reprojRmsPxFinal": stats.get("reproj_rms_px_final"),
         "message": stats.get("message"),
     }
+
+
+def list_target_point_records(paths: QrProjectPaths) -> list[dict[str, object]]:
+    """列出点位录制目标点。只读索引函数，供桌面端刷新远端项目快照使用。"""
+
+    file_path = paths.point_dir / "grasp_points.json"
+    points = read_json_list(file_path)
+    records: list[dict[str, object]] = []
+    for item in points:
+        point_name = item.get("grasp_name")
+        if not isinstance(point_name, str) or not point_name.strip():
+            continue
+        abs_joints = item.get("abs_joints")
+        records.append(
+            {
+                "pointKind": "target",
+                "pointName": point_name.strip(),
+                "arm": item.get("arm"),
+                "cameraId": item.get("camera_id"),
+                "mapName": item.get("map_name"),
+                "savedAt": item.get("recorded_at") or file_mtime_iso(file_path),
+                "pointFilePath": str(file_path),
+                "absJointsCount": len(abs_joints) if isinstance(abs_joints, list) else 0,
+            }
+        )
+    return records
+
+
+def list_initial_photo_records(
+    paths: QrProjectPaths,
+    *,
+    manifest: Mapping[str, Any],
+) -> list[dict[str, object]]:
+    """列出 qr_localize SDK 已生成的初始拍照点 waypoint 目录。"""
+
+    if not paths.waypoints_dir.exists() or not paths.waypoints_dir.is_dir():
+        return []
+    point_recording = manifest.get("pointRecording")
+    metadata_by_name: dict[str, Mapping[str, Any]] = {}
+    if isinstance(point_recording, Mapping):
+        raw_initial = point_recording.get("initialPhotoPoints")
+        if isinstance(raw_initial, list):
+            for item in raw_initial:
+                if isinstance(item, Mapping) and isinstance(item.get("pointName"), str):
+                    metadata_by_name[str(item["pointName"])] = item
+
+    records: list[dict[str, object]] = []
+    for waypoint_dir in paths.waypoints_dir.iterdir():
+        if not waypoint_dir.is_dir():
+            continue
+        point_name = waypoint_dir.name
+        stats_path = waypoint_dir / "locate_stats.json"
+        stats = read_json_object(stats_path)
+        metadata = metadata_by_name.get(point_name, {})
+        records.append(
+            {
+                "pointKind": "initial_photo",
+                "pointName": point_name,
+                "arm": metadata.get("arm"),
+                "cameraId": metadata.get("cameraId"),
+                "mapName": metadata.get("mapName"),
+                "savedAt": metadata.get("savedAt") or file_mtime_iso(waypoint_dir),
+                "waypointDir": str(waypoint_dir),
+                "tfBaselinkTagPath": str(waypoint_dir / "tf_baselink_tag.json")
+                if (waypoint_dir / "tf_baselink_tag.json").exists()
+                else None,
+                "tfTagEePath": str(waypoint_dir / "tf_tag_ee.json")
+                if (waypoint_dir / "tf_tag_ee.json").exists()
+                else None,
+                "jointsPath": str(waypoint_dir / "joints.json")
+                if (waypoint_dir / "joints.json").exists()
+                else None,
+                "statsPath": str(stats_path) if stats_path.exists() else None,
+                "quality": build_localize_quality(stats),
+            }
+        )
+    records.sort(key=lambda item: str(item.get("savedAt") or ""), reverse=True)
+    return records
+
+
+def read_json_list(path: Path) -> list[Mapping[str, Any]]:
+    if not path.exists() or not path.is_file():
+        return []
+    try:
+        decoded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(decoded, list):
+        return []
+    return [item for item in decoded if isinstance(item, Mapping)]
+
+
+def build_localize_quality(stats: Mapping[str, Any]) -> dict[str, object] | None:
+    if not stats:
+        return None
+    return {
+        "ok": stats.get("ok"),
+        "nMarkers": stats.get("n_markers"),
+        "usedIds": stats.get("used_ids"),
+        "reprojPx": stats.get("reproj_px"),
+        "dictName": stats.get("dict_name"),
+        "message": stats.get("message"),
+    }
+
+
+def file_mtime_iso(path: Path) -> str:
+    try:
+        stat_target = path if path.is_file() else next(path.iterdir())
+        return datetime.fromtimestamp(stat_target.stat().st_mtime, timezone.utc).isoformat()
+    except Exception:
+        return utc_now_iso()
 
 
 def build_snapshot_warnings(

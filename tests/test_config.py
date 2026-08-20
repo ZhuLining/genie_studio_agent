@@ -73,9 +73,28 @@ def test_default_status_topic() -> None:
         settings.qr_mapping_pcd_preview_request_topic
         == "gsa/self/robot/qr_mapping/read_pcd_preview/request"
     )
+    assert (
+        settings.point_recording_save_target_request_topic
+        == "gsa/self/robot/qr_mapping/save_target_point/request"
+    )
+    assert (
+        settings.point_recording_save_initial_photo_request_topic
+        == "gsa/self/robot/qr_mapping/save_initial_photo_point/request"
+    )
+    assert (
+        settings.point_recording_submit_request_topic
+        == "gsa/self/robot/qr_mapping/submit_point_recording/request"
+    )
     assert settings.qr_mapping_sdk_path == ""
     assert settings.qr_mapping_sdk_python == "python3"
     assert settings.qr_mapping_build_timeout_seconds == 300.0
+    assert settings.qr_localize_sdk_path == ""
+    assert settings.qr_localize_sdk_python == "python3"
+    assert settings.qr_localize_timeout_seconds == 120.0
+    assert (
+        "gsa/self/robot/qr_mapping/save_target_point/request"
+        in settings.robot_state_request_topics
+    )
     assert settings.taskflow_cancel_topic_filter == "gsa/self/taskflow/+/cancel"
     assert settings.mqtt_status_qos == 0
     assert settings.mqtt_terminal_status_qos == 1
@@ -125,9 +144,24 @@ def test_env_overrides(monkeypatch) -> None:
     monkeypatch.setenv("QR_MAPPING_DELETE_MAP_RESPONSE_TOPIC", "qr/delete/response")
     monkeypatch.setenv("QR_MAPPING_PCD_PREVIEW_REQUEST_TOPIC", "qr/pcd/request")
     monkeypatch.setenv("QR_MAPPING_PCD_PREVIEW_RESPONSE_TOPIC", "qr/pcd/response")
+    monkeypatch.setenv("POINT_RECORDING_SAVE_TARGET_REQUEST_TOPIC", "point/target/request")
+    monkeypatch.setenv("POINT_RECORDING_SAVE_TARGET_RESPONSE_TOPIC", "point/target/response")
+    monkeypatch.setenv(
+        "POINT_RECORDING_SAVE_INITIAL_PHOTO_REQUEST_TOPIC",
+        "point/photo/request",
+    )
+    monkeypatch.setenv(
+        "POINT_RECORDING_SAVE_INITIAL_PHOTO_RESPONSE_TOPIC",
+        "point/photo/response",
+    )
+    monkeypatch.setenv("POINT_RECORDING_SUBMIT_REQUEST_TOPIC", "point/submit/request")
+    monkeypatch.setenv("POINT_RECORDING_SUBMIT_RESPONSE_TOPIC", "point/submit/response")
     monkeypatch.setenv("QR_MAPPING_SDK_PATH", "/opt/qr_mapping_sdk")
     monkeypatch.setenv("QR_MAPPING_SDK_PYTHON", "/opt/venv/bin/python")
     monkeypatch.setenv("QR_MAPPING_BUILD_TIMEOUT_SECONDS", "123.5")
+    monkeypatch.setenv("QR_LOCALIZE_SDK_PATH", "/opt/qr_localize_sdk")
+    monkeypatch.setenv("QR_LOCALIZE_SDK_PYTHON", "/opt/localize-venv/bin/python")
+    monkeypatch.setenv("QR_LOCALIZE_TIMEOUT_SECONDS", "45.5")
     monkeypatch.setenv("TASKFLOW_CANCEL_TOPIC_FILTER", "robot/taskflow/+/cancel")
     monkeypatch.setenv("MQTT_STATUS_QOS", "1")
     monkeypatch.setenv("MQTT_TERMINAL_STATUS_QOS", "2")
@@ -174,9 +208,18 @@ def test_env_overrides(monkeypatch) -> None:
     assert settings.qr_mapping_delete_map_response_topic == "qr/delete/response"
     assert settings.qr_mapping_pcd_preview_request_topic == "qr/pcd/request"
     assert settings.qr_mapping_pcd_preview_response_topic == "qr/pcd/response"
+    assert settings.point_recording_save_target_request_topic == "point/target/request"
+    assert settings.point_recording_save_target_response_topic == "point/target/response"
+    assert settings.point_recording_save_initial_photo_request_topic == "point/photo/request"
+    assert settings.point_recording_save_initial_photo_response_topic == "point/photo/response"
+    assert settings.point_recording_submit_request_topic == "point/submit/request"
+    assert settings.point_recording_submit_response_topic == "point/submit/response"
     assert settings.qr_mapping_sdk_path == "/opt/qr_mapping_sdk"
     assert settings.qr_mapping_sdk_python == "/opt/venv/bin/python"
     assert settings.qr_mapping_build_timeout_seconds == 123.5
+    assert settings.qr_localize_sdk_path == "/opt/qr_localize_sdk"
+    assert settings.qr_localize_sdk_python == "/opt/localize-venv/bin/python"
+    assert settings.qr_localize_timeout_seconds == 45.5
     assert settings.taskflow_cancel_topic_filter == "robot/taskflow/+/cancel"
     assert settings.mqtt_status_qos == 1
     assert settings.mqtt_terminal_status_qos == 2

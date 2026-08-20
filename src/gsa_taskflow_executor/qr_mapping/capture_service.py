@@ -47,6 +47,7 @@ from gsa_taskflow_executor.qr_mapping.calibration_store import save_camera_calib
 from gsa_taskflow_executor.qr_mapping.project_store import (
     QrProjectPaths,
     QrProjectStore,
+    count_images,
     paths_to_payload,
 )
 
@@ -77,6 +78,7 @@ class QrCaptureStartParams:
 class ActiveQrCaptureSession:
     session_id: str
     params: QrCaptureStartParams
+    paths: QrProjectPaths
     lease: GdkSessionLease
     process: Any
     stop_event: Any
@@ -219,6 +221,7 @@ class QrCaptureService:
             session = ActiveQrCaptureSession(
                 session_id=params.session_id,
                 params=params,
+                paths=paths,
                 lease=lease,
                 process=process,
                 stop_event=stop_event,
@@ -266,6 +269,7 @@ class QrCaptureService:
 
         session.completed.wait(1.0)
         final_result = session.final_result or build_session_exit_result(session)
+        final_result = reconcile_stop_result_with_filesystem(final_result, session)
         final_result["stopForced"] = forced
         final_result["stopKilled"] = killed
         return final_result
@@ -281,6 +285,7 @@ class QrCaptureService:
     def _monitor_session(self, session: ActiveQrCaptureSession) -> None:
         session.process.join()
         result = read_summary_queue(session.summary_queue) or build_session_exit_result(session)
+        result = reconcile_stop_result_with_filesystem(result, session)
         result.setdefault("stopped", True)
         result.setdefault("sessionId", session.session_id)
         result.setdefault("backend", GDK_BACKEND)
@@ -360,6 +365,7 @@ def qr_capture_child(
     duplicate_timestamp_count = 0
     reopened_camera_count = 0
     last_timestamp_key: str | None = None
+    calibration = read_payload_mapping(payload, "calibration")
     last_error: dict[str, object] | None = None
     agibot_gdk = None
     camera = None
@@ -382,7 +388,7 @@ def qr_capture_child(
             paths=paths,
             payload=payload,
             status="capturing",
-            calibration=read_payload_mapping(payload, "calibration"),
+            calibration=calibration,
             active_map_name=None,
         )
 
@@ -850,6 +856,7 @@ def busy_result(
 
 
 def build_session_exit_result(session: ActiveQrCaptureSession) -> dict[str, object]:
+    image_count = read_saved_image_count(session.paths)
     return {
         "stopped": True,
         "backend": GDK_BACKEND,
@@ -861,8 +868,39 @@ def build_session_exit_result(session: ActiveQrCaptureSession) -> dict[str, obje
         "captureRateFps": session.params.capture_rate_fps,
         "framesCaptured": 0,
         "framesPublished": 0,
-        "framesSaved": 0,
+        "framesSaved": image_count,
+        "imageCount": image_count,
         "startedAt": session.started_at,
         "stoppedAt": utc_now_iso(),
         "stopReason": "process_exited_without_summary",
+        "framesSavedSource": "filesystem_fallback",
     }
+
+
+def reconcile_stop_result_with_filesystem(
+    result: Mapping[str, object],
+    session: ActiveQrCaptureSession,
+) -> dict[str, object]:
+    """停止响应必须以落盘文件为准，避免子进程 summary 丢失时前端误报 0 张。"""
+
+    reconciled = dict(result)
+    image_count = read_saved_image_count(session.paths)
+    frames_saved = read_non_negative_int(reconciled.get("framesSaved"))
+    if frames_saved is None or image_count > frames_saved:
+        reconciled["framesSaved"] = image_count
+        reconciled["framesSavedSource"] = "filesystem_reconciled"
+    reconciled["imageCount"] = max(image_count, read_non_negative_int(reconciled.get("imageCount")) or 0)
+    return reconciled
+
+
+def read_saved_image_count(paths: QrProjectPaths) -> int:
+    try:
+        return count_images(paths.images_dir)
+    except OSError:
+        return 0
+
+
+def read_non_negative_int(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if value >= 0 else None

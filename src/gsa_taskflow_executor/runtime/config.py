@@ -121,9 +121,30 @@ class ExecutorSettings:
     qr_mapping_pcd_preview_response_topic: str = (
         "gsa/self/robot/qr_mapping/read_pcd_preview/response"
     )
+    point_recording_save_target_request_topic: str = (
+        "gsa/self/robot/qr_mapping/save_target_point/request"
+    )
+    point_recording_save_target_response_topic: str = (
+        "gsa/self/robot/qr_mapping/save_target_point/response"
+    )
+    point_recording_save_initial_photo_request_topic: str = (
+        "gsa/self/robot/qr_mapping/save_initial_photo_point/request"
+    )
+    point_recording_save_initial_photo_response_topic: str = (
+        "gsa/self/robot/qr_mapping/save_initial_photo_point/response"
+    )
+    point_recording_submit_request_topic: str = (
+        "gsa/self/robot/qr_mapping/submit_point_recording/request"
+    )
+    point_recording_submit_response_topic: str = (
+        "gsa/self/robot/qr_mapping/submit_point_recording/response"
+    )
     qr_mapping_sdk_path: str = ""
     qr_mapping_sdk_python: str = "python3"
     qr_mapping_build_timeout_seconds: float = 300.0
+    qr_localize_sdk_path: str = ""
+    qr_localize_sdk_python: str = "python3"
+    qr_localize_timeout_seconds: float = 120.0
     # executor 标识
     executor_aid: str = "gsa-dev"
     executor_mode: str = "gdk"
@@ -318,6 +339,30 @@ class ExecutorSettings:
                 "QR_MAPPING_PCD_PREVIEW_RESPONSE_TOPIC",
                 cls.qr_mapping_pcd_preview_response_topic,
             ).strip(),
+            point_recording_save_target_request_topic=source.get(
+                "POINT_RECORDING_SAVE_TARGET_REQUEST_TOPIC",
+                cls.point_recording_save_target_request_topic,
+            ).strip(),
+            point_recording_save_target_response_topic=source.get(
+                "POINT_RECORDING_SAVE_TARGET_RESPONSE_TOPIC",
+                cls.point_recording_save_target_response_topic,
+            ).strip(),
+            point_recording_save_initial_photo_request_topic=source.get(
+                "POINT_RECORDING_SAVE_INITIAL_PHOTO_REQUEST_TOPIC",
+                cls.point_recording_save_initial_photo_request_topic,
+            ).strip(),
+            point_recording_save_initial_photo_response_topic=source.get(
+                "POINT_RECORDING_SAVE_INITIAL_PHOTO_RESPONSE_TOPIC",
+                cls.point_recording_save_initial_photo_response_topic,
+            ).strip(),
+            point_recording_submit_request_topic=source.get(
+                "POINT_RECORDING_SUBMIT_REQUEST_TOPIC",
+                cls.point_recording_submit_request_topic,
+            ).strip(),
+            point_recording_submit_response_topic=source.get(
+                "POINT_RECORDING_SUBMIT_RESPONSE_TOPIC",
+                cls.point_recording_submit_response_topic,
+            ).strip(),
             qr_mapping_sdk_path=source.get(
                 "QR_MAPPING_SDK_PATH",
                 cls.qr_mapping_sdk_path,
@@ -330,6 +375,19 @@ class ExecutorSettings:
                 source,
                 "QR_MAPPING_BUILD_TIMEOUT_SECONDS",
                 cls.qr_mapping_build_timeout_seconds,
+            ),
+            qr_localize_sdk_path=source.get(
+                "QR_LOCALIZE_SDK_PATH",
+                cls.qr_localize_sdk_path,
+            ).strip(),
+            qr_localize_sdk_python=source.get(
+                "QR_LOCALIZE_SDK_PYTHON",
+                cls.qr_localize_sdk_python,
+            ).strip(),
+            qr_localize_timeout_seconds=read_float(
+                source,
+                "QR_LOCALIZE_TIMEOUT_SECONDS",
+                cls.qr_localize_timeout_seconds,
             ),
             executor_aid=source.get("EXECUTOR_AID", cls.executor_aid).strip(),
             executor_mode=source.get("EXECUTOR_MODE", cls.executor_mode).strip(),
@@ -368,6 +426,9 @@ class ExecutorSettings:
             self.qr_mapping_build_map_request_topic,
             self.qr_mapping_delete_map_request_topic,
             self.qr_mapping_pcd_preview_request_topic,
+            self.point_recording_save_target_request_topic,
+            self.point_recording_save_initial_photo_request_topic,
+            self.point_recording_submit_request_topic,
         )
 
     @property
@@ -491,7 +552,32 @@ class ExecutorSettings:
             "QR_MAPPING_PCD_PREVIEW_RESPONSE_TOPIC",
             self.qr_mapping_pcd_preview_response_topic,
         )
+        require_non_empty(
+            "POINT_RECORDING_SAVE_TARGET_REQUEST_TOPIC",
+            self.point_recording_save_target_request_topic,
+        )
+        require_non_empty(
+            "POINT_RECORDING_SAVE_TARGET_RESPONSE_TOPIC",
+            self.point_recording_save_target_response_topic,
+        )
+        require_non_empty(
+            "POINT_RECORDING_SAVE_INITIAL_PHOTO_REQUEST_TOPIC",
+            self.point_recording_save_initial_photo_request_topic,
+        )
+        require_non_empty(
+            "POINT_RECORDING_SAVE_INITIAL_PHOTO_RESPONSE_TOPIC",
+            self.point_recording_save_initial_photo_response_topic,
+        )
+        require_non_empty(
+            "POINT_RECORDING_SUBMIT_REQUEST_TOPIC",
+            self.point_recording_submit_request_topic,
+        )
+        require_non_empty(
+            "POINT_RECORDING_SUBMIT_RESPONSE_TOPIC",
+            self.point_recording_submit_response_topic,
+        )
         require_non_empty("QR_MAPPING_SDK_PYTHON", self.qr_mapping_sdk_python)
+        require_non_empty("QR_LOCALIZE_SDK_PYTHON", self.qr_localize_sdk_python)
         require_non_empty("EXECUTOR_AID", self.executor_aid)
         require_non_empty("EXECUTOR_MODE", self.executor_mode)
         require_non_empty("EXECUTOR_LOG_DIR", self.executor_log_dir)
@@ -533,6 +619,8 @@ class ExecutorSettings:
             raise ConfigError("QR_MAPPING_CAPTURE_FRAME_TOPIC_TEMPLATE 必须包含 {sessionId}")
         if self.qr_mapping_build_timeout_seconds <= 0:
             raise ConfigError("QR_MAPPING_BUILD_TIMEOUT_SECONDS 必须大于 0")
+        if self.qr_localize_timeout_seconds <= 0:
+            raise ConfigError("QR_LOCALIZE_TIMEOUT_SECONDS 必须大于 0")
         if self.executor_mode != "gdk":
             raise ConfigError("EXECUTOR_MODE 只支持 gdk")
 

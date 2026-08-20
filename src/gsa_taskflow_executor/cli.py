@@ -45,6 +45,9 @@ from .mqtt.robot_state import (
     QR_CAPTURE_STOP_REQUEST_TYPE,
     QR_DELETE_MAP_REQUEST_TYPE,
     QR_PCD_PREVIEW_REQUEST_TYPE,
+    POINT_RECORDING_SAVE_INITIAL_PHOTO_REQUEST_TYPE,
+    POINT_RECORDING_SAVE_TARGET_REQUEST_TYPE,
+    POINT_RECORDING_SUBMIT_REQUEST_TYPE,
     handle_robot_state_request,
 )
 from .mqtt.status_reporter import StatusSequence, TaskflowStatusReporter
@@ -58,6 +61,7 @@ from .runtime.event_log import JsonlEventWriter, RuntimeEvent, configure_stdout_
 from .runtime.payload_sanitizer import summarize_variables
 from .qr_mapping.build_service import QrBuildService
 from .qr_mapping.capture_service import QrCaptureService
+from .qr_mapping.point_recording_service import PointRecordingService
 from .qr_mapping.project_store import QrProjectStore
 from .skills.registry import SkillRegistry, SkillRegistryError
 from .skills.runtime import SkillRuntime
@@ -255,6 +259,13 @@ def main(argv: list[str] | None = None) -> int:
             sdk_path=settings.qr_mapping_sdk_path,
             sdk_python=settings.qr_mapping_sdk_python,
             build_timeout_seconds=settings.qr_mapping_build_timeout_seconds,
+        )
+        point_recording_service = PointRecordingService(
+            project_store=qr_project_store,
+            session_manager=gdk_session,
+            localize_sdk_path=settings.qr_localize_sdk_path,
+            localize_sdk_python=settings.qr_localize_sdk_python,
+            localize_timeout_seconds=settings.qr_localize_timeout_seconds,
         )
         skill_runtime = SkillRuntime(
             registry=skill_registry,
@@ -508,6 +519,11 @@ def main(argv: list[str] | None = None) -> int:
                         max_points=max_points,
                     )
                 ),
+                save_point_recording_target=point_recording_service.save_target_point,
+                save_point_recording_initial_photo=(
+                    point_recording_service.save_initial_photo_point
+                ),
+                submit_point_recording=point_recording_service.submit_recording,
             )
 
         # taskflow 执行队列（单 worker FIFO）
@@ -782,6 +798,15 @@ def publish_robot_state_queue_error(
     elif message.topic == settings.qr_mapping_pcd_preview_request_topic:
         response_topic = settings.qr_mapping_pcd_preview_response_topic
         response_type = QR_PCD_PREVIEW_REQUEST_TYPE
+    elif message.topic == settings.point_recording_save_target_request_topic:
+        response_topic = settings.point_recording_save_target_response_topic
+        response_type = POINT_RECORDING_SAVE_TARGET_REQUEST_TYPE
+    elif message.topic == settings.point_recording_save_initial_photo_request_topic:
+        response_topic = settings.point_recording_save_initial_photo_response_topic
+        response_type = POINT_RECORDING_SAVE_INITIAL_PHOTO_REQUEST_TYPE
+    elif message.topic == settings.point_recording_submit_request_topic:
+        response_topic = settings.point_recording_submit_response_topic
+        response_type = POINT_RECORDING_SUBMIT_REQUEST_TYPE
 
     publish_response(
         response_topic,

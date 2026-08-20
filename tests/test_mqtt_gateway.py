@@ -205,6 +205,9 @@ def test_on_connect_subscribes_robot_state_topic_when_handler_configured() -> No
         ("gsa/self/robot/qr_mapping/build_map/request", 0),
         ("gsa/self/robot/qr_mapping/delete_map/request", 0),
         ("gsa/self/robot/qr_mapping/read_pcd_preview/request", 0),
+        ("gsa/self/robot/qr_mapping/save_target_point/request", 0),
+        ("gsa/self/robot/qr_mapping/save_initial_photo_point/request", 0),
+        ("gsa/self/robot/qr_mapping/submit_point_recording/request", 0),
     ]
 
 
