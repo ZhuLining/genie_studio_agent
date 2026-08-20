@@ -19,7 +19,7 @@ from threading import Event, Lock, Thread
 from typing import Any
 from uuid import uuid4
 
-from gsa_taskflow_executor.gdk.camera_calibration import collect_camera_calibration
+from gsa_taskflow_executor.gdk.camera_calibration import run_gdk_camera_calibration_snapshot
 from gsa_taskflow_executor.gdk.camera_capture import (
     STALE_FRAME_REOPEN_THRESHOLD,
     CAPTURE_RATE_FPS_MAX,
@@ -142,6 +142,23 @@ class QrCaptureService:
                 )
 
             try:
+                paths = self._project_store.ensure_project_layout(
+                    robot_serial=params.robot_serial,
+                    project_name=params.project_name,
+                )
+                calibration = prepare_capture_calibration(
+                    params=params,
+                    paths=paths,
+                    session_manager=self._session_manager,
+                )
+            except Exception as error:
+                return unavailable_result(
+                    "prepare_camera_calibration",
+                    error,
+                    extra=paths_to_payload(paths),
+                )
+
+            try:
                 lease = self._session_manager.acquire(
                     blocking=False,
                     initialize=False,
@@ -168,6 +185,7 @@ class QrCaptureService:
                     build_child_payload(
                         params,
                         paths=paths,
+                        calibration=calibration,
                         mqtt_broker_url=self._mqtt_broker_url,
                         mqtt_client_id=self._mqtt_client_id,
                         executor_aid=self._executor_aid,
@@ -287,6 +305,41 @@ class QrCaptureService:
             self._active = None
 
 
+def prepare_capture_calibration(
+    *,
+    params: QrCaptureStartParams,
+    paths: QrProjectPaths,
+    session_manager: GdkSessionManager,
+) -> dict[str, object]:
+    """独立读取并保存标定，避免污染后续 Camera 连续取流的 GDK 会话。
+
+    旧的实时预览链路是“标定/单帧请求子进程结束后，再启动独立采集子进程”。
+    真机上 `get_camera_intrinsic` 与 `get_latest_image` 放在同一 GDK 会话里可能导致
+    后续图像卡在缓存帧，因此这里先完成标定并释放 GDK，再进入长期采集会话。
+    """
+
+    snapshot = run_gdk_camera_calibration_snapshot(
+        camera_ids=(params.camera_id,),
+        timeout_ms=params.timeout_ms,
+        include_extrinsics=True,
+        session_manager=session_manager,
+    )
+    if snapshot.get("available") is not True:
+        message = (
+            snapshot.get("errorMsg")
+            or snapshot.get("error_msg")
+            or snapshot.get("errorCode")
+            or snapshot.get("error_code")
+            or "相机标定读取失败"
+        )
+        raise RuntimeError(str(message))
+    return save_camera_calibration_files(
+        paths=paths,
+        camera_id=params.camera_id,
+        calibration_snapshot=snapshot,
+    )
+
+
 def qr_capture_child(
     ready_queue: Any,
     summary_queue: Any,
@@ -325,25 +378,11 @@ def qr_capture_child(
             raise RuntimeError("agibot_gdk.gdk_init() did not return success")
         gdk_initialized = bool(init_result.get("called"))
 
-        calibration_snapshot = collect_camera_calibration(
-            agibot_gdk=agibot_gdk,
-            camera_ids=(camera_id,),
-            timeout_ms=timeout_ms,
-            include_extrinsics=True,
-            warmup_seconds=DEFAULT_CAMERA_WARMUP_SECONDS,
-        )
-        if calibration_snapshot.get("available") is not True:
-            raise RuntimeError(str(calibration_snapshot.get("errorMsg") or "相机标定读取失败"))
-        calibration = save_camera_calibration_files(
-            paths=paths,
-            camera_id=camera_id,
-            calibration_snapshot=calibration_snapshot,
-        )
         write_project_manifest(
             paths=paths,
             payload=payload,
             status="capturing",
-            calibration=calibration,
+            calibration=read_payload_mapping(payload, "calibration"),
             active_map_name=None,
         )
 
@@ -521,6 +560,7 @@ def build_child_payload(
     params: QrCaptureStartParams,
     *,
     paths: QrProjectPaths,
+    calibration: Mapping[str, object],
     mqtt_broker_url: str,
     mqtt_client_id: str,
     executor_aid: str,
@@ -535,11 +575,17 @@ def build_child_payload(
         "markerSizeMeters": params.marker_size_meters,
         "captureRateFps": params.capture_rate_fps,
         "timeoutMs": params.timeout_ms,
+        "calibration": dict(calibration),
         "mqttBrokerUrl": mqtt_broker_url,
         "mqttClientId": f"{mqtt_client_id}-qr-capture-{params.session_id}",
         "executorAid": executor_aid,
         **paths_to_payload(paths),
     }
+
+
+def read_payload_mapping(payload: Mapping[str, object], key: str) -> dict[str, object]:
+    value = payload.get(key)
+    return dict(value) if isinstance(value, Mapping) else {}
 
 
 def save_captured_frame(
