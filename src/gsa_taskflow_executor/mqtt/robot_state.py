@@ -46,6 +46,7 @@ from gsa_taskflow_executor.mqtt.robot_state_models import (
     POINT_RECORDING_SAVE_INITIAL_PHOTO_REQUEST_TYPE,
     POINT_RECORDING_SAVE_TARGET_REQUEST_TYPE,
     POINT_RECORDING_SUBMIT_REQUEST_TYPE,
+    QR_PROJECT_LIST_REQUEST_TYPE,
     QR_PROJECT_PATH_REQUEST_TYPE,
     QR_PROJECT_SNAPSHOT_REQUEST_TYPE,
     CameraCalibrationRequest,
@@ -61,6 +62,7 @@ from gsa_taskflow_executor.mqtt.robot_state_models import (
     PointRecordingSaveInitialPhotoRequest,
     PointRecordingSaveTargetRequest,
     PointRecordingSubmitRequest,
+    QrProjectListRequest,
     QrProjectPathRequest,
     QrProjectSnapshotRequest,
     parse_camera_calibration_request,
@@ -77,6 +79,7 @@ from gsa_taskflow_executor.mqtt.robot_state_models import (
     parse_point_recording_save_initial_photo_request,
     parse_point_recording_save_target_request,
     parse_point_recording_submit_request,
+    parse_qr_project_list_request,
     parse_qr_project_path_request,
     parse_qr_project_snapshot_request,
     read_bool,
@@ -105,6 +108,7 @@ from gsa_taskflow_executor.mqtt.robot_state_responses import (
     build_point_recording_save_initial_photo_response,
     build_point_recording_save_target_response,
     build_point_recording_submit_response,
+    build_qr_project_list_response,
     build_qr_project_path_response,
     build_qr_project_snapshot_response,
     error_response,
@@ -116,6 +120,7 @@ from gsa_taskflow_executor.runtime.event_log import JsonlEventWriter, RuntimeEve
 from gsa_taskflow_executor.qr_mapping.project_store import (
     ACTION_GET_QR_PROJECT_PATH,
     ACTION_GET_QR_PROJECT_SNAPSHOT,
+    ACTION_LIST_QR_PROJECTS,
     QrProjectStore,
 )
 
@@ -135,6 +140,7 @@ __all__ = [
     "POINT_RECORDING_SAVE_INITIAL_PHOTO_REQUEST_TYPE",
     "POINT_RECORDING_SAVE_TARGET_REQUEST_TYPE",
     "POINT_RECORDING_SUBMIT_REQUEST_TYPE",
+    "QR_PROJECT_LIST_REQUEST_TYPE",
     "QR_PROJECT_PATH_REQUEST_TYPE",
     "QR_PROJECT_SNAPSHOT_REQUEST_TYPE",
     "ROBOT_BUSY_ERROR_CODE",
@@ -152,6 +158,7 @@ __all__ = [
     "PointRecordingSaveInitialPhotoRequest",
     "PointRecordingSaveTargetRequest",
     "PointRecordingSubmitRequest",
+    "QrProjectListRequest",
     "QrProjectPathRequest",
     "QrProjectSnapshotRequest",
     "build_camera_calibration_response",
@@ -167,6 +174,7 @@ __all__ = [
     "build_point_recording_save_initial_photo_response",
     "build_point_recording_save_target_response",
     "build_point_recording_submit_response",
+    "build_qr_project_list_response",
     "build_qr_project_path_response",
     "build_qr_project_snapshot_response",
     "error_response",
@@ -198,6 +206,7 @@ __all__ = [
     "parse_point_recording_save_initial_photo_request",
     "parse_point_recording_save_target_request",
     "parse_point_recording_submit_request",
+    "parse_qr_project_list_request",
     "parse_qr_project_path_request",
     "parse_qr_project_snapshot_request",
     "read_bool",
@@ -221,6 +230,7 @@ CameraCaptureStartCollector = Callable[[CameraCaptureStartParams], Mapping[str, 
 CameraCaptureStopCollector = Callable[[str], Mapping[str, object]]
 QrProjectPathCollector = Callable[[str, str], Mapping[str, object]]
 QrProjectSnapshotCollector = Callable[[str, str, int], Mapping[str, object]]
+QrProjectListCollector = Callable[[str], Mapping[str, object]]
 QrCaptureStartCollector = Callable[[QrCaptureStartParams], Mapping[str, object]]
 QrCaptureStopCollector = Callable[[str], Mapping[str, object]]
 QrBuildMapCollector = Callable[[str, str, str, str, str, float], Mapping[str, object]]
@@ -250,6 +260,7 @@ def handle_robot_state_request(
     stop_camera_capture: CameraCaptureStopCollector | None = None,
     get_qr_project_path: QrProjectPathCollector | None = None,
     get_qr_project_snapshot: QrProjectSnapshotCollector | None = None,
+    list_qr_projects: QrProjectListCollector | None = None,
     start_qr_capture: QrCaptureStartCollector | None = None,
     stop_qr_capture: QrCaptureStopCollector | None = None,
     build_qr_map: QrBuildMapCollector | None = None,
@@ -363,6 +374,19 @@ def handle_robot_state_request(
             publish_response=publish_response,
             event_writer=event_writer,
             read_qr_pcd_preview=read_qr_pcd_preview,
+        )
+        return
+
+    if (
+        request_type == QR_PROJECT_LIST_REQUEST_TYPE
+        or message.topic == settings.qr_mapping_project_list_request_topic
+    ):
+        handle_qr_project_list_request(
+            message,
+            settings=settings,
+            publish_response=publish_response,
+            event_writer=event_writer,
+            collect_projects=list_qr_projects,
         )
         return
 
@@ -995,6 +1019,56 @@ def handle_qr_project_path_request(
     )
 
 
+def handle_qr_project_list_request(
+    message: TaskflowMessage,
+    *,
+    settings: ExecutorSettings,
+    publish_response: RobotStatePublisher,
+    event_writer: JsonlEventWriter | None = None,
+    collect_projects: QrProjectListCollector | None = None,
+) -> None:
+    """处理二维码项目列表查询。"""
+
+    try:
+        request = parse_qr_project_list_request(
+            message.payload,
+            default_reply_topic=settings.qr_mapping_project_list_response_topic,
+        )
+    except Exception as error:
+        response = error_response(
+            response_type=QR_PROJECT_LIST_REQUEST_TYPE,
+            request_id="",
+            executor_aid=settings.executor_aid,
+            code="INVALID_REQUEST",
+            message=str(error),
+        )
+        publish_response(settings.qr_mapping_project_list_response_topic, response)
+        write_robot_state_event(
+            event_writer,
+            event_type="qr_project_list_request_error",
+            message=str(error),
+            topic=message.topic,
+            response=response,
+        )
+        return
+
+    collector = collect_projects or default_qr_project_list_collector(settings)
+    snapshot = collector(request.robot_serial)
+    response = build_qr_project_list_response(
+        request_id=request.request_id,
+        executor_aid=settings.executor_aid,
+        snapshot=snapshot,
+    )
+    publish_response(request.reply_topic, response)
+    write_robot_state_event(
+        event_writer,
+        event_type="qr_project_list_response_published",
+        message="QR project list response published",
+        topic=request.reply_topic,
+        response=response,
+    )
+
+
 def handle_qr_project_snapshot_request(
     message: TaskflowMessage,
     *,
@@ -1277,6 +1351,18 @@ def default_qr_project_snapshot_collector(settings: ExecutorSettings) -> QrProje
             )
         except Exception as error:
             return qr_project_error_payload(ACTION_GET_QR_PROJECT_SNAPSHOT, error)
+
+    return collect
+
+
+def default_qr_project_list_collector(settings: ExecutorSettings) -> QrProjectListCollector:
+    store = QrProjectStore(settings.gsa_data_root)
+
+    def collect(robot_serial: str) -> Mapping[str, object]:
+        try:
+            return store.list_projects(robot_serial=robot_serial)
+        except Exception as error:
+            return qr_project_error_payload(ACTION_LIST_QR_PROJECTS, error)
 
     return collect
 

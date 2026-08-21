@@ -200,6 +200,7 @@ def test_on_connect_subscribes_robot_state_topic_when_handler_configured() -> No
         ("gsa/self/robot/state/camera_capture/stop/request", 0),
         ("gsa/self/robot/qr_mapping/get_qr_project_path/request", 0),
         ("gsa/self/robot/qr_mapping/get_qr_project_snapshot/request", 0),
+        ("gsa/self/robot/qr_mapping/list_qr_projects/request", 0),
         ("gsa/self/robot/qr_mapping/start_capture/request", 0),
         ("gsa/self/robot/qr_mapping/stop_capture/request", 0),
         ("gsa/self/robot/qr_mapping/build_map/request", 0),

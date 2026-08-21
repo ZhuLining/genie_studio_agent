@@ -39,6 +39,7 @@ from gsa_taskflow_executor.qr_mapping.capture_service import (
 from gsa_taskflow_executor.qr_mapping.project_store import (
     ACTION_GET_QR_PROJECT_PATH,
     ACTION_GET_QR_PROJECT_SNAPSHOT,
+    ACTION_LIST_QR_PROJECTS,
     DEFAULT_IMAGE_LIMIT,
     MAX_IMAGE_LIMIT,
 )
@@ -61,6 +62,7 @@ CAMERA_CAPTURE_START_REQUEST_TYPE = ACTION_START_CAMERA_CAPTURE
 CAMERA_CAPTURE_STOP_REQUEST_TYPE = ACTION_STOP_CAMERA_CAPTURE
 QR_PROJECT_PATH_REQUEST_TYPE = ACTION_GET_QR_PROJECT_PATH
 QR_PROJECT_SNAPSHOT_REQUEST_TYPE = ACTION_GET_QR_PROJECT_SNAPSHOT
+QR_PROJECT_LIST_REQUEST_TYPE = ACTION_LIST_QR_PROJECTS
 QR_CAPTURE_START_REQUEST_TYPE = ACTION_START_QR_CAPTURE
 QR_CAPTURE_STOP_REQUEST_TYPE = ACTION_STOP_QR_CAPTURE
 QR_BUILD_MAP_REQUEST_TYPE = ACTION_BUILD_QR_MAP
@@ -137,6 +139,15 @@ class QrProjectSnapshotRequest:
     robot_serial: str
     project_name: str
     image_limit: int
+
+
+@dataclass(frozen=True)
+class QrProjectListRequest:
+    """二维码建图项目列表请求。"""
+
+    request_id: str
+    reply_topic: str
+    robot_serial: str
 
 
 @dataclass(frozen=True)
@@ -490,6 +501,36 @@ def parse_qr_project_snapshot_request(
         robot_serial=robot_serial,
         project_name=project_name,
         image_limit=image_limit,
+    )
+
+
+def parse_qr_project_list_request(
+    payload: str,
+    *,
+    default_reply_topic: str,
+) -> QrProjectListRequest:
+    """解析二维码项目列表请求。"""
+
+    decoded = parse_json_object(payload, "二维码建图项目列表请求")
+    request_type = read_optional_string(decoded, "type")
+    if request_type is not None and request_type != QR_PROJECT_LIST_REQUEST_TYPE:
+        raise ValueError(f"不支持的二维码建图请求类型: {request_type}")
+
+    request_id = read_request_id_from_object(decoded)
+    if not request_id:
+        raise ValueError("二维码建图项目列表请求缺少 requestId")
+
+    robot_serial = read_optional_string(decoded, "robotSerial") or read_optional_string(
+        decoded,
+        "robot_serial",
+    )
+    if not robot_serial:
+        raise ValueError("二维码建图项目列表请求缺少 robotSerial")
+
+    return QrProjectListRequest(
+        request_id=request_id,
+        reply_topic=read_reply_topic(decoded, default_reply_topic),
+        robot_serial=robot_serial,
     )
 
 

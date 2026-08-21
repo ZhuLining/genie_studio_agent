@@ -17,6 +17,7 @@ from gsa_taskflow_executor.taskflow.parser import (
     parse_script_params,
     parse_taskflow_yaml,
 )
+from gsa_taskflow_executor.taskflow.skill_params import parse_qr_pose_params
 
 
 def test_parse_valid_right_arm_abs_joint_yaml() -> None:
@@ -82,13 +83,15 @@ def test_variable_reference_action_data_is_allowed() -> None:
           - -0.621
           - -0.169
           - 1.122""",
-        "        action_data: $.variables.二维码定位.detail.action_data.抓取点A",
+        "        action_data: $.variables.二维码定位.detail.outputs.action_data.抓取点A",
     )
 
     taskflow = parse_taskflow_yaml(yaml_payload)
     params = parse_motion_plan_params(taskflow.worker_nodes[0].params_template, "params_template")
 
-    assert params.targets[0].action_data == "$.variables.二维码定位.detail.action_data.抓取点A"
+    assert params.targets[0].action_data == (
+        "$.variables.二维码定位.detail.outputs.action_data.抓取点A"
+    )
 
 
 def test_parse_script_skill_params() -> None:
@@ -426,11 +429,14 @@ def test_reject_duplicate_success_transition_during_parse() -> None:
         parse_taskflow_yaml(yaml_payload)
 
 
-def test_reject_non_abs_joint() -> None:
-    with pytest.raises(TaskflowParseError, match="只支持 ABS_JOINT"):
-        parse_taskflow_yaml(
-            VALID_RIGHT_ARM_YAML.replace("control_type: ABS_JOINT", "control_type: ABS_POSE")
-        )
+def test_parse_motion_plan_params_accepts_abs_pose_shape() -> None:
+    taskflow = parse_taskflow_yaml(
+        VALID_RIGHT_ARM_YAML.replace("control_type: ABS_JOINT", "control_type: ABS_POSE")
+    )
+    params = parse_motion_plan_params(taskflow.worker_nodes[0].params_template, "params_template")
+
+    assert params.targets[0].control_type == "ABS_POSE"
+    assert len(params.targets[0].action_data) == 7
 
 
 def test_reject_wrong_joint_count() -> None:
@@ -450,9 +456,44 @@ def test_reject_non_finite_motion_speed() -> None:
         parse_taskflow_yaml(VALID_RIGHT_ARM_YAML.replace("speed: 0.05", "speed: .nan"))
 
 
-def test_parser_allows_structural_worker_skill_name() -> None:
-    taskflow = parse_taskflow_yaml(
-        VALID_RIGHT_ARM_YAML.replace("motion_plan_skill", "qr_pose_skill")
-    )
+def test_parse_qr_pose_skill_params() -> None:
+    yaml_payload = """
+start_node: 开始
+app_execution_id: qr-pose-run
+nodes:
+  - id: 开始
+    type: assign
+    assignments: {}
+  - id: 二维码定位
+    type: worker
+    skill_name: qr_pose_skill
+    params_template:
+      robot_serial: G2A0004BC01053
+      project_name: test10
+      map_name: test10
+      initial_photo_point_name: paizhao001
+      arm: left_arm
+      camera_id: hand_left_color
+      timeout: 60
+      min_markers: 3
+    capture_state_detail: true
+    output_var: 二维码定位
+    output_contract: {}
+  - id: 结束
+    type: end
+transitions:
+  - from: 开始
+    outcome: success
+    to: 二维码定位
+  - from: 二维码定位
+    outcome: success
+    to: 结束
+"""
+    taskflow = parse_taskflow_yaml(yaml_payload)
+    params = parse_qr_pose_params(taskflow.worker_nodes[0].params_template, "params_template")
 
     assert taskflow.worker_nodes[0].skill_name == "qr_pose_skill"
+    assert params.robot_serial == "G2A0004BC01053"
+    assert params.project_name == "test10"
+    assert params.initial_photo_point_name == "paizhao001"
+    assert params.camera_id == "hand_left_color"

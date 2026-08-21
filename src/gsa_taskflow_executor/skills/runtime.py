@@ -7,7 +7,8 @@ SkillRuntime.run(node, context) 分发逻辑::
       ├─ motion_plan  → MotionPlanSkillGdk  → run_gdk_motion_plan_abs_joint()
       ├─ script       → ScriptSkillGdk       → run_code_script()
       ├─ end_effector → EndEffectorSkillGdk  → run_gdk_end_effector_control()
-      └─ force_control→ ForceControlSkillGdk → 硬阻断
+      ├─ force_control→ ForceControlSkillGdk → 硬阻断
+      └─ qr_pose      → QrPoseSkillGdk       → 只读二维码定位
 
 变量解析策略:
 - motion/end_effector: 整体 resolve params_template（$.variables.* → 实际值）
@@ -27,6 +28,7 @@ from gsa_taskflow_executor.gdk.end_effector_runtime import run_gdk_end_effector_
 from gsa_taskflow_executor.gdk.force_control_runtime import run_gdk_force_control_unverified
 from gsa_taskflow_executor.gdk.motion_runtime import run_gdk_motion_plan_abs_joint
 from gsa_taskflow_executor.gdk.session import GdkSessionManager
+from gsa_taskflow_executor.qr_mapping.pose_service import QrPoseService
 from gsa_taskflow_executor.skills.registry import (
     SkillDefinition,
     SkillRegistry,
@@ -36,6 +38,7 @@ from gsa_taskflow_executor.taskflow.models import (
     EndEffectorParams,
     ForceControlParams,
     MotionPlanParams,
+    QrPoseParams,
     ScriptInputMapping,
     ScriptOutputVariable,
     ScriptParams,
@@ -46,6 +49,7 @@ from gsa_taskflow_executor.taskflow.skill_params import (
     parse_end_effector_params,
     parse_force_control_params,
     parse_motion_plan_params,
+    parse_qr_pose_params,
     parse_script_params,
 )
 from gsa_taskflow_executor.taskflow.variables import VariableStore, VariableStoreError
@@ -353,6 +357,54 @@ class ForceControlSkillGdk:
         )
 
 
+class QrPoseSkillGdk:
+    """qr_pose_skill — 只读二维码定位，输出目标点 pose/action_data。
+
+    该 skill 复用二维码建图/点位录制产物和 GDK 只读采样。它不调用任何
+    move_* 接口，后续是否运动由下游 motion_plan_skill 决定。
+    """
+
+    def __init__(self, service: QrPoseService | None = None) -> None:
+        self.service = service
+
+    def run(self, node: TaskflowNode, context: SkillExecutionContext) -> SkillResult:
+        resolved_params = context.variable_store.resolve_value(node.params_template)
+        if not isinstance(resolved_params, Mapping):
+            raise SkillRuntimeError(f"{node.node_id}.params_template 解析后不是对象")
+        if self.service is None:
+            raise SkillRuntimeError("executor 未配置二维码定位服务")
+
+        try:
+            qr_pose_params = parse_qr_pose_params(resolved_params, "params_template")
+        except TaskflowParseError as error:
+            raise SkillRuntimeError(str(error)) from error
+
+        result = self.service.locate(qr_pose_params)
+        if result.get("available") is not True:
+            message = str(result.get("errorMsg") or "二维码定位失败")
+            raise SkillRuntimeError(message, detail=build_gdk_error_detail(message, result))
+
+        outputs = build_qr_pose_outputs(
+            app_execution_id=context.app_execution_id,
+            skill_name=node.skill_name,
+            mode=context.mode,
+            params_template=resolved_params,
+            qr_pose_params=qr_pose_params,
+            result=result,
+        )
+        return SkillResult(
+            outcome="success",
+            detail={
+                "skill_name": node.skill_name,
+                "mode": context.mode,
+                "adapter": "gdk",
+                "params_template": deepcopy(dict(resolved_params)),
+                "qr_pose_result": deepcopy(result),
+            },
+            outputs=outputs,
+        )
+
+
 # ============================================================
 # SkillRuntime — 中心分发器
 # ============================================================
@@ -370,6 +422,7 @@ class SkillRuntime:
         registry: SkillRegistry | None = None,
         environ: Mapping[str, str] | None = None,
         gdk_session_manager: GdkSessionManager | None = None,
+        qr_pose_service: QrPoseService | None = None,
     ) -> None:
         self.registry = registry or SkillRegistry.default()
         self.assign_skill = AssignSkill()
@@ -388,6 +441,7 @@ class SkillRuntime:
                 gdk_session_manager=gdk_session_manager,
             ),
             "force_control": ForceControlSkillGdk(),
+            "qr_pose": QrPoseSkillGdk(service=qr_pose_service),
         }
 
     def run(self, node: TaskflowNode, context: SkillExecutionContext) -> SkillResult:
@@ -458,6 +512,36 @@ def build_motion_plan_outputs(
         "requested_speed": motion_params.speed,
         "requested_speed_unit": "gdk_velocity",
         "timeout": motion_params.timeout,
+        "resolved_params_template": deepcopy(dict(params_template)),
+    }
+
+
+def build_qr_pose_outputs(
+    *,
+    app_execution_id: str,
+    skill_name: str | None,
+    mode: str,
+    params_template: Mapping[str, Any],
+    qr_pose_params: QrPoseParams,
+    result: Mapping[str, object],
+) -> dict[str, object]:
+    """构建二维码定位 outputs。action_data 按目标点名称索引，供下游变量引用。"""
+
+    return {
+        "app_execution_id": app_execution_id,
+        "skill_name": skill_name,
+        "mode": mode,
+        "robot_serial": qr_pose_params.robot_serial,
+        "project_name": qr_pose_params.project_name,
+        "map_name": result.get("mapName"),
+        "initial_photo_point_name": qr_pose_params.initial_photo_point_name,
+        "target_point_names": deepcopy(result.get("targetPointNames")),
+        "pose": deepcopy(result.get("pose")),
+        "poses": deepcopy(result.get("poses")),
+        "action_data": deepcopy(result.get("action_data")),
+        "current_tag_pose": deepcopy(result.get("currentTagPose")),
+        "quality": deepcopy(result.get("quality")),
+        "artifact_paths": deepcopy(result.get("artifactPaths")),
         "resolved_params_template": deepcopy(dict(params_template)),
     }
 

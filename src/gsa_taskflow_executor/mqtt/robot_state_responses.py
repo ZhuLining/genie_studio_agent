@@ -23,6 +23,7 @@ from gsa_taskflow_executor.mqtt.robot_state_models import (
     POINT_RECORDING_SAVE_INITIAL_PHOTO_REQUEST_TYPE,
     POINT_RECORDING_SAVE_TARGET_REQUEST_TYPE,
     POINT_RECORDING_SUBMIT_REQUEST_TYPE,
+    QR_PROJECT_LIST_REQUEST_TYPE,
     QR_PROJECT_PATH_REQUEST_TYPE,
     QR_PROJECT_SNAPSHOT_REQUEST_TYPE,
 )
@@ -242,6 +243,24 @@ def build_qr_project_snapshot_response(
         snapshot=snapshot,
         fallback_code="QR_PROJECT_SNAPSHOT_UNAVAILABLE",
         fallback_message="二维码建图项目快照读取失败",
+    )
+
+
+def build_qr_project_list_response(
+    *,
+    request_id: str,
+    executor_aid: str,
+    snapshot: Mapping[str, object],
+) -> dict[str, object]:
+    """构建二维码项目列表响应。"""
+
+    return build_qr_mapping_response(
+        response_type=QR_PROJECT_LIST_REQUEST_TYPE,
+        request_id=request_id,
+        executor_aid=executor_aid,
+        snapshot=snapshot,
+        fallback_code="QR_PROJECT_LIST_UNAVAILABLE",
+        fallback_message="二维码项目列表读取失败",
     )
 
 

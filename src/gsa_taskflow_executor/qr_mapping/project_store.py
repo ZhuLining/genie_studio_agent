@@ -17,6 +17,7 @@ from typing import Any
 
 ACTION_GET_QR_PROJECT_PATH = "get_qr_project_path"
 ACTION_GET_QR_PROJECT_SNAPSHOT = "get_qr_project_snapshot"
+ACTION_LIST_QR_PROJECTS = "list_qr_projects"
 
 DEFAULT_IMAGE_LIMIT = 50
 MAX_IMAGE_LIMIT = 200
@@ -87,6 +88,28 @@ class QrProjectStore:
             "collectedAt": utc_now_iso(),
         }
 
+    def list_projects(self, *, robot_serial: str) -> dict[str, object]:
+        """列出指定机器人 SN 下的二维码项目。只返回轻量索引，供应用节点下拉使用。"""
+
+        robot_segment = validate_safe_segment(robot_serial, "robotSerial")
+        data_root = self._data_root
+        robot_root = data_root / robot_segment
+        project_parent = robot_root / "qr_pose_skill_conf"
+        ensure_project_parent_under_data_root(data_root, robot_root, project_parent)
+        projects = list_project_records(self, robot_segment, project_parent)
+        return {
+            "available": True,
+            "backend": "executor.filesystem",
+            "action": ACTION_LIST_QR_PROJECTS,
+            "robotSerial": robot_segment,
+            "dataRoot": str(data_root),
+            "robotRoot": str(robot_root),
+            "projectParent": str(project_parent),
+            "projects": projects,
+            "projectCount": len(projects),
+            "collectedAt": utc_now_iso(),
+        }
+
     def get_project_snapshot(
         self,
         *,
@@ -148,6 +171,59 @@ class QrProjectStore:
         )
         ensure_under_data_root(paths)
         return paths
+
+
+def ensure_project_parent_under_data_root(
+    data_root: Path,
+    robot_root: Path,
+    project_parent: Path,
+) -> None:
+    root = data_root.resolve(strict=False)
+    for path in (robot_root, project_parent):
+        try:
+            path.resolve(strict=False).relative_to(root)
+        except ValueError as error:
+            raise QrProjectStoreError("二维码项目列表路径越过 GSA_DATA_ROOT，已拒绝") from error
+
+
+def list_project_records(
+    store: QrProjectStore,
+    robot_serial: str,
+    project_parent: Path,
+) -> list[dict[str, object]]:
+    if not project_parent.exists() or not project_parent.is_dir():
+        return []
+    records: list[dict[str, object]] = []
+    for project_dir in sorted(project_parent.iterdir(), key=lambda item: item.name):
+        if not project_dir.is_dir():
+            continue
+        project_name = project_dir.name
+        try:
+            paths = store.build_paths(robot_serial=robot_serial, project_name=project_name)
+        except QrProjectStoreError:
+            continue
+        manifest = read_json_object(paths.manifest_path)
+        maps = list_map_records(paths.maps_dir, manifest=manifest)
+        targets = list_target_point_records(paths)
+        initial_photos = list_initial_photo_records(paths, manifest=manifest)
+        records.append(
+            {
+                "projectName": project_name,
+                "projectRoot": str(paths.project_root),
+                "projectStatus": infer_project_status(
+                    paths,
+                    images=[],
+                    maps=maps,
+                    manifest=manifest,
+                ),
+                "mapCount": len(maps),
+                "targetPointCount": len(targets),
+                "initialPhotoPointCount": len(initial_photos),
+                "activeMapName": read_optional_string(manifest, "activeMapName"),
+                "updatedAt": file_mtime_iso(project_dir),
+            }
+        )
+    return records
 
 
 def validate_safe_segment(value: str, field_name: str) -> str:

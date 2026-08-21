@@ -88,6 +88,12 @@ class ExecutorSettings:
     qr_mapping_project_snapshot_response_topic: str = (
         "gsa/self/robot/qr_mapping/get_qr_project_snapshot/response"
     )
+    qr_mapping_project_list_request_topic: str = (
+        "gsa/self/robot/qr_mapping/list_qr_projects/request"
+    )
+    qr_mapping_project_list_response_topic: str = (
+        "gsa/self/robot/qr_mapping/list_qr_projects/response"
+    )
     qr_mapping_capture_start_request_topic: str = (
         "gsa/self/robot/qr_mapping/start_capture/request"
     )
@@ -295,6 +301,14 @@ class ExecutorSettings:
                 "QR_MAPPING_PROJECT_SNAPSHOT_RESPONSE_TOPIC",
                 cls.qr_mapping_project_snapshot_response_topic,
             ).strip(),
+            qr_mapping_project_list_request_topic=source.get(
+                "QR_MAPPING_PROJECT_LIST_REQUEST_TOPIC",
+                cls.qr_mapping_project_list_request_topic,
+            ).strip(),
+            qr_mapping_project_list_response_topic=source.get(
+                "QR_MAPPING_PROJECT_LIST_RESPONSE_TOPIC",
+                cls.qr_mapping_project_list_response_topic,
+            ).strip(),
             qr_mapping_capture_start_request_topic=source.get(
                 "QR_MAPPING_CAPTURE_START_REQUEST_TOPIC",
                 cls.qr_mapping_capture_start_request_topic,
@@ -421,6 +435,7 @@ class ExecutorSettings:
             self.robot_camera_capture_stop_request_topic,
             self.qr_mapping_project_path_request_topic,
             self.qr_mapping_project_snapshot_request_topic,
+            self.qr_mapping_project_list_request_topic,
             self.qr_mapping_capture_start_request_topic,
             self.qr_mapping_capture_stop_request_topic,
             self.qr_mapping_build_map_request_topic,
@@ -507,6 +522,14 @@ class ExecutorSettings:
         require_non_empty(
             "QR_MAPPING_PROJECT_SNAPSHOT_RESPONSE_TOPIC",
             self.qr_mapping_project_snapshot_response_topic,
+        )
+        require_non_empty(
+            "QR_MAPPING_PROJECT_LIST_REQUEST_TOPIC",
+            self.qr_mapping_project_list_request_topic,
+        )
+        require_non_empty(
+            "QR_MAPPING_PROJECT_LIST_RESPONSE_TOPIC",
+            self.qr_mapping_project_list_response_topic,
         )
         require_non_empty(
             "QR_MAPPING_CAPTURE_START_REQUEST_TOPIC",

@@ -1,6 +1,7 @@
 """技能注册表 — 白名单管理的技能定义。
 
-内置 4 种技能: motion_plan_skill, script_skill, control_end_effector_skill, force_control_skill。
+内置技能: motion_plan_skill, script_skill, control_end_effector_skill,
+force_control_skill, qr_pose_skill。
 支持从 YAML 文件扩展（通过 ExecutorSettings.skill_registry_file）。
 validate_taskflow() 校验每个 worker 节点的 skill_name 在白名单内且参数 schema 合法。
 """
@@ -24,11 +25,12 @@ from gsa_taskflow_executor.taskflow.skill_params import (
     parse_end_effector_params,
     parse_force_control_params,
     parse_motion_plan_params,
+    parse_qr_pose_params,
     parse_script_params,
 )
 
 SkillAdapter = Literal["gdk"]
-SkillImplementation = Literal["motion_plan", "script", "end_effector", "force_control"]
+SkillImplementation = Literal["motion_plan", "script", "end_effector", "force_control", "qr_pose"]
 YamlMapping = Mapping[str, Any]
 
 
@@ -85,6 +87,12 @@ class SkillRegistry:
                     adapter="gdk",
                     implementation="force_control",
                     description="GDK force-control skill, blocked until robot verification.",
+                ),
+                "qr_pose_skill": SkillDefinition(
+                    name="qr_pose_skill",
+                    adapter="gdk",
+                    implementation="qr_pose",
+                    description="GDK QR pose localization skill.",
                 ),
             }
         )
@@ -170,6 +178,14 @@ class SkillRegistry:
                     )
                 except TaskflowParseError as error:
                     raise SkillRegistryError(str(error)) from error
+            if skill.implementation == "qr_pose":
+                try:
+                    parse_qr_pose_params(
+                        node.params_template,
+                        f"nodes[{node.node_id}].params_template",
+                    )
+                except TaskflowParseError as error:
+                    raise SkillRegistryError(str(error)) from error
 
     def summary(self) -> dict[str, object]:
         return {
@@ -191,12 +207,13 @@ def parse_skill_definition(name: str, raw_config: Any) -> SkillDefinition:
         "script_skill": "script",
         "control_end_effector_skill": "end_effector",
         "force_control_skill": "force_control",
+        "qr_pose_skill": "qr_pose",
     }
     expected_implementation = allowed_implementations.get(name)
     if expected_implementation is None:
         raise SkillRegistryError(
             "MVP 当前只支持 motion_plan_skill、script_skill、"
-            "control_end_effector_skill 和 force_control_skill"
+            "control_end_effector_skill、force_control_skill 和 qr_pose_skill"
         )
     implementation_value = read_optional_string(
         config,

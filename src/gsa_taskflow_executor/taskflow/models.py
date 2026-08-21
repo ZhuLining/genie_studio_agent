@@ -100,6 +100,20 @@ class ForceControlParams:
 
 
 @dataclass(frozen=True)
+class QrPoseParams:
+    """qr_pose_skill 参数。只做二维码定位和目标位姿计算，不触发机器人运动。"""
+
+    robot_serial: str
+    project_name: str
+    initial_photo_point_name: str
+    map_name: str | None
+    arm: str
+    camera_id: str
+    timeout: float
+    min_markers: int
+
+
+@dataclass(frozen=True)
 class TimerParams:
     """timer 节点参数。v1 只支持 rel 模式。"""
 

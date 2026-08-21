@@ -62,6 +62,7 @@ from .runtime.payload_sanitizer import summarize_variables
 from .qr_mapping.build_service import QrBuildService
 from .qr_mapping.capture_service import QrCaptureService
 from .qr_mapping.point_recording_service import PointRecordingService
+from .qr_mapping.pose_service import QrPoseService
 from .qr_mapping.project_store import QrProjectStore
 from .skills.registry import SkillRegistry, SkillRegistryError
 from .skills.runtime import SkillRuntime
@@ -267,10 +268,18 @@ def main(argv: list[str] | None = None) -> int:
             localize_sdk_python=settings.qr_localize_sdk_python,
             localize_timeout_seconds=settings.qr_localize_timeout_seconds,
         )
+        qr_pose_service = QrPoseService(
+            project_store=qr_project_store,
+            session_manager=gdk_session,
+            localize_sdk_path=settings.qr_localize_sdk_path,
+            localize_sdk_python=settings.qr_localize_sdk_python,
+            localize_timeout_seconds=settings.qr_localize_timeout_seconds,
+        )
         skill_runtime = SkillRuntime(
             registry=skill_registry,
             environ=runtime_env,
             gdk_session_manager=gdk_session,
+            qr_pose_service=qr_pose_service,
         )
         # 单调递增序列号，保证桌面端即使 MQTT 乱序也能正确排序状态
         status_sequence = StatusSequence()

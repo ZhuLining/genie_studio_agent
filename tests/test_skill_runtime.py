@@ -97,15 +97,25 @@ def test_motion_plan_skill_gdk_resolves_variable_reference(monkeypatch) -> None:
           - -0.621
           - -0.169
           - 1.122""",
-        "        action_data: $.variables.二维码定位.detail.action_data.抓取点A",
+        "        action_data: $.variables.二维码定位.detail.outputs.action_data.抓取点A",
     )
     taskflow = parse_taskflow_yaml(yaml_payload)
     store = VariableStore(
         variables={
             "二维码定位": {
                 "detail": {
-                    "action_data": {
-                        "抓取点A": [0.282, -1.039, -0.304, -1.751, -0.621, -0.169, 1.122],
+                    "outputs": {
+                        "action_data": {
+                            "抓取点A": [
+                                0.282,
+                                -1.039,
+                                -0.304,
+                                -1.751,
+                                -0.621,
+                                -0.169,
+                                1.122,
+                            ],
+                        }
                     }
                 }
             }
@@ -137,6 +147,58 @@ def test_motion_plan_skill_gdk_resolves_variable_reference(monkeypatch) -> None:
         -0.169,
         1.122,
     ]
+
+
+def test_qr_pose_skill_gdk_outputs_action_data() -> None:
+    node = TaskflowNode(
+        node_id="二维码定位",
+        node_type="worker",
+        assignments={},
+        skill_name="qr_pose_skill",
+        params_template={
+            "robot_serial": "G2A0004BC01053",
+            "project_name": "test10",
+            "map_name": "test10",
+            "initial_photo_point_name": "paizhao001",
+            "arm": "left_arm",
+            "camera_id": "hand_left_color",
+            "timeout": 60,
+            "min_markers": 3,
+        },
+        capture_state_detail=True,
+        output_var="二维码定位",
+        output_contract={},
+    )
+
+    class FakeQrPoseService:
+        def locate(self, _params: object) -> dict[str, object]:
+            return {
+                "available": True,
+                "mapName": "test10",
+                "targetPointNames": ["zhua1"],
+                "pose": [1, 2, 3, 0, 0, 0, 1],
+                "poses": {"zhua1": [1, 2, 3, 0, 0, 0, 1]},
+                "action_data": {"zhua1": [1, 2, 3, 0, 0, 0, 1]},
+                "currentTagPose": [0, 0, 0, 0, 0, 0, 1],
+                "quality": {"ok": True},
+                "artifactPaths": {"projectRoot": "/home/u/gsa_data/G2A0004BC01053"},
+            }
+
+    runtime = SkillRuntime(qr_pose_service=FakeQrPoseService())
+    result = runtime.run(
+        node,
+        SkillExecutionContext(
+            app_execution_id="qr-pose-run",
+            variable_store=VariableStore(),
+            mode="gdk",
+        ),
+    )
+
+    assert result.outcome == "success"
+    assert result.outputs is not None
+    assert result.outputs["project_name"] == "test10"
+    assert result.outputs["action_data"] == {"zhua1": [1, 2, 3, 0, 0, 0, 1]}
+    assert result.outputs["pose"] == [1, 2, 3, 0, 0, 0, 1]
 
 
 def test_motion_plan_skill_gdk_adapter_calls_gdk_runtime(monkeypatch) -> None:

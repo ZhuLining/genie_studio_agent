@@ -23,6 +23,7 @@ def test_default_registry_contains_gdk_motion_plan() -> None:
     script_skill = registry.require("script_skill")
     end_effector_skill = registry.require("control_end_effector_skill")
     force_control_skill = registry.require("force_control_skill")
+    qr_pose_skill = registry.require("qr_pose_skill")
 
     assert skill.adapter == "gdk"
     assert skill.implementation == "motion_plan"
@@ -32,7 +33,9 @@ def test_default_registry_contains_gdk_motion_plan() -> None:
     assert end_effector_skill.implementation == "end_effector"
     assert force_control_skill.adapter == "gdk"
     assert force_control_skill.implementation == "force_control"
-    assert registry.summary()["skill_count"] == 4
+    assert qr_pose_skill.adapter == "gdk"
+    assert qr_pose_skill.implementation == "qr_pose"
+    assert registry.summary()["skill_count"] == 5
 
 
 def test_registry_loads_from_mapping() -> None:
@@ -59,6 +62,11 @@ def test_registry_loads_from_mapping() -> None:
                     "implementation": "force_control",
                     "description": "blocked gdk force-control skill",
                 },
+                "qr_pose_skill": {
+                    "adapter": "gdk",
+                    "implementation": "qr_pose",
+                    "description": "read-only qr pose skill",
+                },
             }
         }
     )
@@ -67,6 +75,7 @@ def test_registry_loads_from_mapping() -> None:
     script_skill = registry.require("script_skill")
     end_effector_skill = registry.require("control_end_effector_skill")
     force_control_skill = registry.require("force_control_skill")
+    qr_pose_skill = registry.require("qr_pose_skill")
 
     assert skill.adapter == "gdk"
     assert skill.implementation == "motion_plan"
@@ -80,6 +89,9 @@ def test_registry_loads_from_mapping() -> None:
     assert force_control_skill.adapter == "gdk"
     assert force_control_skill.implementation == "force_control"
     assert force_control_skill.description == "blocked gdk force-control skill"
+    assert qr_pose_skill.adapter == "gdk"
+    assert qr_pose_skill.implementation == "qr_pose"
+    assert qr_pose_skill.description == "read-only qr pose skill"
 
 
 def test_registry_loads_from_settings_file(tmp_path) -> None:
@@ -118,6 +130,9 @@ def test_registry_accepts_gdk_motion_plan_adapter() -> None:
                 "force_control_skill": {
                     "adapter": "gdk",
                 },
+                "qr_pose_skill": {
+                    "adapter": "gdk",
+                },
             }
         }
     )
@@ -126,6 +141,7 @@ def test_registry_accepts_gdk_motion_plan_adapter() -> None:
     script_skill = registry.require("script_skill")
     end_effector_skill = registry.require("control_end_effector_skill")
     force_control_skill = registry.require("force_control_skill")
+    qr_pose_skill = registry.require("qr_pose_skill")
 
     assert skill.adapter == "gdk"
     assert skill.implementation == "motion_plan"
@@ -135,6 +151,8 @@ def test_registry_accepts_gdk_motion_plan_adapter() -> None:
     assert end_effector_skill.implementation == "end_effector"
     assert force_control_skill.adapter == "gdk"
     assert force_control_skill.implementation == "force_control"
+    assert qr_pose_skill.adapter == "gdk"
+    assert qr_pose_skill.implementation == "qr_pose"
 
 
 def test_registry_rejects_non_motion_plan_implementation() -> None:
@@ -193,6 +211,20 @@ def test_registry_rejects_non_force_control_implementation() -> None:
         )
 
 
+def test_registry_rejects_non_qr_pose_implementation() -> None:
+    with pytest.raises(SkillRegistryError, match="implementation 只支持 qr_pose"):
+        SkillRegistry.from_mapping(
+            {
+                "skills": {
+                    "qr_pose_skill": {
+                        "adapter": "gdk",
+                        "implementation": "motion_plan",
+                    }
+                }
+            }
+        )
+
+
 def test_registry_rejects_mock_adapter() -> None:
     with pytest.raises(SkillRegistryError, match="adapter 只支持 gdk"):
         SkillRegistry.from_mapping(
@@ -211,7 +243,7 @@ def test_registry_rejects_non_mvp_skill() -> None:
         SkillRegistryError,
         match=(
             "MVP 当前只支持 motion_plan_skill、script_skill、"
-            "control_end_effector_skill 和 force_control_skill"
+            "control_end_effector_skill、force_control_skill 和 qr_pose_skill"
         ),
     ):
         SkillRegistry.from_mapping(

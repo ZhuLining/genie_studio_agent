@@ -15,6 +15,7 @@ from gsa_taskflow_executor.taskflow.models import (
     LoopParams,
     MotionPlanParams,
     MotionPlanTarget,
+    QrPoseParams,
     ScriptInputMapping,
     ScriptOutputVariable,
     ScriptParams,
@@ -45,6 +46,9 @@ MOTION_SPEED_MAX = 0.1
 DEFAULT_SCRIPT_TIMEOUT = 50.0
 DEFAULT_END_EFFECTOR_TIMEOUT = 20.0
 DEFAULT_FORCE_CONTROL_TIMEOUT = 50.0
+DEFAULT_QR_POSE_TIMEOUT = 60.0
+DEFAULT_QR_POSE_MIN_MARKERS = 3
+MAX_QR_POSE_MIN_MARKERS = 32
 
 # 末端执行器默认值
 DEFAULT_END_EFFECTOR_POST_WAIT_SECONDS = 1.0  # 动作完成后的稳定等待
@@ -121,6 +125,8 @@ def validate_worker_params(skill_name: str, params: YamlMapping, path: str) -> N
         parse_end_effector_params(params, f"{path}.params_template")
     elif skill_name == "force_control_skill":
         parse_force_control_params(params, f"{path}.params_template")
+    elif skill_name == "qr_pose_skill":
+        parse_qr_pose_params(params, f"{path}.params_template")
 
 
 def parse_timer_params(params: YamlMapping, path: str) -> TimerParams:
@@ -182,6 +188,46 @@ def parse_motion_plan_params(params: YamlMapping, path: str) -> MotionPlanParams
         raise TaskflowParseError(f"{path} 至少需要 left_arm/right_arm/waist 之一")
 
     return MotionPlanParams(targets=tuple(targets), speed=speed, timeout=timeout)
+
+
+def parse_qr_pose_params(params: YamlMapping, path: str) -> QrPoseParams:
+    """解析二维码定位节点参数。
+
+    该 skill 在应用运行时重新拍照定位二维码，输出目标点 pose/action_data。
+    它不调用运动控制；下游是否运动由 motion_plan_skill 单独负责。
+    """
+
+    arm = read_required_string(params, "arm", path)
+    if arm not in {"left_arm", "right_arm"}:
+        raise TaskflowParseError(f"{path}.arm 必须是 left_arm 或 right_arm")
+    camera_id = read_required_string(params, "camera_id", path)
+    expected_camera = "hand_left_color" if arm == "left_arm" else "hand_right_color"
+    if camera_id != expected_camera:
+        raise TaskflowParseError(f"{path}.camera_id 与 {arm} 不匹配，应为 {expected_camera}")
+    return QrPoseParams(
+        robot_serial=read_required_string(params, "robot_serial", path),
+        project_name=read_required_string(params, "project_name", path),
+        initial_photo_point_name=read_required_string(
+            params,
+            "initial_photo_point_name",
+            path,
+        ),
+        map_name=read_optional_string(params.get("map_name"), f"{path}.map_name"),
+        arm=arm,
+        camera_id=camera_id,
+        timeout=read_positive_number_with_default(
+            params.get("timeout"),
+            f"{path}.timeout",
+            DEFAULT_QR_POSE_TIMEOUT,
+        ),
+        min_markers=read_positive_int(
+            params.get("min_markers"),
+            f"{path}.min_markers",
+            maximum=MAX_QR_POSE_MIN_MARKERS,
+        )
+        if params.get("min_markers") is not None
+        else DEFAULT_QR_POSE_MIN_MARKERS,
+    )
 
 
 def parse_script_params(params: YamlMapping, path: str) -> ScriptParams:
@@ -426,13 +472,15 @@ def parse_action_data(raw: Any, body_part: str, control_type: str, path: str) ->
         if value.startswith("$.variables."):
             return value
 
-    if control_type != "ABS_JOINT":
-        raise TaskflowParseError(f"{path} 第一阶段只支持 ABS_JOINT，当前为 {control_type}")
+    if control_type not in {"ABS_JOINT", "ABS_POSE", "DELTA_POSE"}:
+        raise TaskflowParseError(f"{path}.control_type 不支持: {control_type}")
 
     if not isinstance(raw, list):
-        raise TaskflowParseError(f"{path} 必须是关节数组")
+        raise TaskflowParseError(f"{path} 必须是数值数组")
 
-    expected_length = 5 if body_part == "waist" else 7
+    if body_part == "waist" and control_type != "ABS_JOINT":
+        raise TaskflowParseError(f"{path} 腰部第一阶段只支持 ABS_JOINT")
+    expected_length = 5 if body_part == "waist" and control_type == "ABS_JOINT" else 7
     if len(raw) != expected_length:
         raise TaskflowParseError(
             f"{path} 长度必须是 {expected_length}，当前为 {len(raw)}"
