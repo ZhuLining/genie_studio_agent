@@ -15,3 +15,6 @@ skills:
     adapter: gdk
     implementation: force_control
     description: Blocked GDK force-control skill until robot verification is complete.
+  qr_pose_skill:
+    adapter: gdk
+    implementation: qr_pose
