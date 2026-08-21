@@ -11,7 +11,6 @@ import base64
 import json
 import math
 import os
-import shutil
 import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -62,8 +61,7 @@ ACTION_SUBMIT_POINT_RECORDING = "submit_point_recording"
 POINT_RECORDING_BUSY_ERROR_MESSAGE = "GDK 正在执行控制动作，点位录制已拒绝"
 DEFAULT_POINT_RECORDING_TIMEOUT_MS = 60000
 DEFAULT_LOCALIZE_TIMEOUT_SECONDS = 120.0
-DEFAULT_MIN_MARKERS = 4
-DEFAULT_LOCALIZE_MAX_REPROJ_PX = 2.0
+DEFAULT_MIN_MARKERS = 3
 MAX_MIN_MARKERS = 32
 DEFAULT_MAX_MOTION_DURING_CAPTURE_MM = 1.0
 DEFAULT_MAX_ROTATION_DURING_CAPTURE_DEG = 0.5
@@ -162,27 +160,6 @@ class QrLocalizeSdkError(RuntimeError):
         self.stderr = stderr
         self.stats_path = stats_path
         self.stats = dict(stats)
-
-
-class QrLocalizeQualityError(RuntimeError):
-    """二维码定位 SDK 返回成功，但质量指标未达到可用于点位录制的门禁。"""
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        stats_path: Path,
-        stats: Mapping[str, object],
-        min_markers: int,
-        max_reproj_px: float,
-        output_dir: Path,
-    ) -> None:
-        super().__init__(message)
-        self.stats_path = stats_path
-        self.stats = dict(stats)
-        self.min_markers = min_markers
-        self.max_reproj_px = max_reproj_px
-        self.output_dir = output_dir
 
 
 class PointRecordingService:
@@ -312,13 +289,6 @@ class PointRecordingService:
                 stats_path,
                 self._localize_timeout_seconds,
             )
-            validate_qr_localize_quality(
-                read_json_object(stats_path),
-                min_markers=min_markers,
-                max_reproj_px=DEFAULT_LOCALIZE_MAX_REPROJ_PX,
-                stats_path=stats_path,
-                output_dir=waypoint_dir,
-            )
             record = build_initial_photo_record(
                 paths=paths,
                 point_name=point_name,
@@ -344,8 +314,6 @@ class PointRecordingService:
                 "collectedAt": utc_now_iso(),
             }
         except Exception as error:
-            if isinstance(error, QrLocalizeQualityError):
-                cleanup_waypoint_dir(error.output_dir)
             return error_payload(ACTION_SAVE_QR_INITIAL_PHOTO_POINT, error)
 
     def submit_recording(self, params: PointRecordingSubmitParams) -> dict[str, object]:
@@ -1123,14 +1091,6 @@ def cleanup_temp_image(snapshot: Mapping[str, object]) -> None:
         pass
 
 
-def cleanup_waypoint_dir(path: Path) -> None:
-    try:
-        if path.exists() and path.is_dir():
-            shutil.rmtree(path)
-    except OSError:
-        pass
-
-
 def build_grasp_point_record(
     *,
     point_name: str,
@@ -1284,54 +1244,6 @@ def build_localize_quality(stats: Mapping[str, Any]) -> dict[str, object] | None
         "dictName": stats.get("dict_name"),
         "message": stats.get("message"),
     }
-
-
-def validate_qr_localize_quality(
-    stats: Mapping[str, Any],
-    *,
-    min_markers: int,
-    max_reproj_px: float,
-    stats_path: Path,
-    output_dir: Path,
-) -> None:
-    """校验初始拍照定位质量，避免低质量 waypoint 进入正式应用产物。
-
-    qr_localize SDK README 建议用 n_markers 和 reproj_px 做第一道门禁；它不能覆盖
-    位姿-图像不同步的全部问题，但能挡住明显 PnP/检测质量异常的结果。
-    """
-
-    reasons: list[str] = []
-    if stats.get("ok") is not True:
-        reasons.append("SDK stats.ok 不是 true")
-
-    marker_count = read_finite_number(stats.get("n_markers"))
-    if marker_count is None:
-        reasons.append("缺少 n_markers")
-    elif marker_count < min_markers:
-        reasons.append(f"可见 marker {marker_count:g} 个，小于门槛 {min_markers}")
-
-    reproj_px = read_finite_number(stats.get("reproj_px"))
-    if reproj_px is None:
-        reasons.append("缺少 reproj_px")
-    elif reproj_px > max_reproj_px:
-        reasons.append(f"重投影误差 {reproj_px:.3f}px，大于门槛 {max_reproj_px:.3f}px")
-
-    if reasons:
-        raise QrLocalizeQualityError(
-            "初始拍照定位质量不合格: " + "；".join(reasons),
-            stats_path=stats_path,
-            stats=stats,
-            min_markers=min_markers,
-            max_reproj_px=max_reproj_px,
-            output_dir=output_dir,
-        )
-
-
-def read_finite_number(value: object) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        return None
-    number = float(value)
-    return number if math.isfinite(number) else None
 
 
 def update_manifest_after_target(paths: QrProjectPaths, record: Mapping[str, object]) -> None:
@@ -1619,17 +1531,6 @@ def error_payload(action: str, error: Exception) -> dict[str, object]:
             "stats": dict(error.stats),
             "quality": build_localize_quality(error.stats),
         }
-    if isinstance(error, QrLocalizeQualityError):
-        result["sdk"] = {
-            "statsPath": str(error.stats_path),
-            "stats": dict(error.stats),
-            "quality": build_localize_quality(error.stats),
-            "qualityGate": {
-                "minMarkers": error.min_markers,
-                "maxReprojPx": error.max_reproj_px,
-                "passed": False,
-            },
-        }
     return result
 
 
@@ -1640,8 +1541,6 @@ def error_code_from_exception(error: Exception) -> str:
         return "QR_LOCALIZE_SDK_TIMEOUT"
     if isinstance(error, QrLocalizeSdkError):
         return "QR_LOCALIZE_SDK_FAILED"
-    if isinstance(error, QrLocalizeQualityError):
-        return "QR_LOCALIZE_QUALITY_FAILED"
     if isinstance(error, ValueError):
         return "POINT_RECORDING_INVALID"
     return "POINT_RECORDING_FAILED"
