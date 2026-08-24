@@ -232,7 +232,11 @@ def execute_abs_joint_targets(
     *,
     agibot_gdk: Any | None = None,
 ) -> dict[str, object]:
-    """执行所有 ABS_JOINT targets：先 arm，再 waist。"""
+    """执行所有 ABS_JOINT targets。
+
+    arm 目标会合并成一次 move_arm_joint；waist 和 arm 的先后顺序尊重 YAML target
+    首次出现顺序，二维码定位回初始拍照点位依赖“先腰部、再手臂”恢复视角。
+    """
     targets_by_part = {
         target.body_part: read_abs_joint_action_data(target)
         for target in motion_params.targets
@@ -246,26 +250,26 @@ def execute_abs_joint_targets(
         if body_part in targets_by_part
     }
     velocity = float(motion_params.speed)
-    if arm_targets:
-        executed_groups.append(
-            execute_arm_abs_joint_targets(
-                robot,
-                arm_targets,
-                velocity,
-                agibot_gdk=agibot_gdk,
+    group_order = ordered_abs_joint_groups(motion_params.targets)
+    for group in group_order:
+        if group == "waist" and "waist" in targets_by_part:
+            executed_groups.append(
+                execute_waist_abs_joint_target(
+                    robot,
+                    targets_by_part["waist"],
+                    velocity,
+                    agibot_gdk=agibot_gdk,
+                )
             )
-        )
-
-    # 腰部单独执行
-    if "waist" in targets_by_part:
-        executed_groups.append(
-            execute_waist_abs_joint_target(
-                robot,
-                targets_by_part["waist"],
-                velocity,
-                agibot_gdk=agibot_gdk,
+        elif group == "arms" and arm_targets:
+            executed_groups.append(
+                execute_arm_abs_joint_targets(
+                    robot,
+                    arm_targets,
+                    velocity,
+                    agibot_gdk=agibot_gdk,
+                )
             )
-        )
 
     return {
         "available": True,
@@ -288,6 +292,16 @@ def execute_abs_joint_targets(
             "expected_confirmation": TASKFLOW_ABS_JOINT_CONFIRMATION,
         },
     }
+
+
+def ordered_abs_joint_groups(targets: Sequence[MotionPlanTarget]) -> list[str]:
+    """按 target 首次出现顺序返回执行组；左右臂归并为同一个 arms 组。"""
+    ordered: list[str] = []
+    for target in targets:
+        group = "arms" if target.body_part in {"left_arm", "right_arm"} else target.body_part
+        if group in {"arms", "waist"} and group not in ordered:
+            ordered.append(group)
+    return ordered
 
 
 def execute_arm_abs_joint_targets(

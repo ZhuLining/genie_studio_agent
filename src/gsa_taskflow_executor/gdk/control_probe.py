@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import importlib
+import inspect
 import os
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -35,20 +36,32 @@ RIGHT_ARM_JOINTS = [
     "idx67_arm_r_joint7",
 ]
 DUAL_ARM_JOINTS = LEFT_ARM_JOINTS + RIGHT_ARM_JOINTS
+ARM_FRAME_NAMES = {
+    "left_arm": "arm_l_end_link",
+    "right_arm": "arm_r_end_link",
+}
 CONTROL_GROUP_LEFT_ARM = 0
 CONTROL_GROUP_RIGHT_ARM = 1
 CONTROL_GROUP_DUAL_ARM = 2
 DEFAULT_VELOCITY = 0.02
 NUDGE_J7_DELTA_RAD = 0.005
+ABS_POSE_LIFE_TIME_SECONDS = 0.5
+ABS_POSE_CONTROL_METHOD = "end_effector_pose_control"
 
 ACTION_HOLD_CURRENT = "hold_current"
 ACTION_NUDGE_LEFT_J7 = "nudge_left_j7_0p005"
 ACTION_NUDGE_RIGHT_J7 = "nudge_right_j7_0p005"
+ACTION_ABS_POSE_DRY_RUN = "abs_pose_dry_run"
+ACTION_ABS_POSE_HOLD_CURRENT_LEFT = "abs_pose_hold_current_left"
+ACTION_ABS_POSE_HOLD_CURRENT_RIGHT = "abs_pose_hold_current_right"
 
 ACTION_CONFIRMATION_TOKENS = {
     ACTION_HOLD_CURRENT: "HOLD_CURRENT_DUAL_ARM",
     ACTION_NUDGE_LEFT_J7: "NUDGE_LEFT_J7_0P005",
     ACTION_NUDGE_RIGHT_J7: "NUDGE_RIGHT_J7_0P005",
+    ACTION_ABS_POSE_DRY_RUN: "ABS_POSE_DRY_RUN",
+    ACTION_ABS_POSE_HOLD_CURRENT_LEFT: "ABS_POSE_HOLD_CURRENT_LEFT",
+    ACTION_ABS_POSE_HOLD_CURRENT_RIGHT: "ABS_POSE_HOLD_CURRENT_RIGHT",
 }
 
 ALLOWED_ACTIONS = tuple(ACTION_CONFIRMATION_TOKENS)
@@ -59,6 +72,12 @@ class JointSnapshot:
     positions: list[float]
     motion_status: object
     whole_body_status: Mapping[str, Any]
+
+
+@dataclass(frozen=True)
+class AbsPoseTarget:
+    end_pose: object
+    group_value: object
 
 
 def run_gdk_control_probe(
@@ -117,6 +136,7 @@ def run_gdk_control_probe(
         result = execute_action(
             action=action,
             robot=robot,
+            agibot_gdk=agibot_gdk,
             sleep=sleep,
             settle_seconds=settle_seconds,
         )
@@ -135,6 +155,7 @@ def execute_action(
     *,
     action: str,
     robot: Any,
+    agibot_gdk: Any,
     sleep: Callable[[float], None],
     settle_seconds: float,
 ) -> dict[str, object]:
@@ -180,6 +201,36 @@ def execute_action(
             joint_index=len(DUAL_ARM_JOINTS) - 1,
             joint_name=RIGHT_ARM_JOINTS[-1],
             diff_key="mid_right_j7_diff",
+            sleep=sleep,
+            settle_seconds=settle_seconds,
+        )
+
+    if action == ACTION_ABS_POSE_DRY_RUN:
+        return execute_abs_pose_dry_run(
+            action=action,
+            agibot_gdk=agibot_gdk,
+            robot=robot,
+            origin=origin,
+        )
+
+    if action == ACTION_ABS_POSE_HOLD_CURRENT_LEFT:
+        return execute_abs_pose_hold_current(
+            action=action,
+            arm="left_arm",
+            agibot_gdk=agibot_gdk,
+            robot=robot,
+            origin=origin,
+            sleep=sleep,
+            settle_seconds=settle_seconds,
+        )
+
+    if action == ACTION_ABS_POSE_HOLD_CURRENT_RIGHT:
+        return execute_abs_pose_hold_current(
+            action=action,
+            arm="right_arm",
+            agibot_gdk=agibot_gdk,
+            robot=robot,
+            origin=origin,
             sleep=sleep,
             settle_seconds=settle_seconds,
         )
@@ -232,6 +283,359 @@ def execute_j7_nudge_action(
     result["mid_diffs"] = position_diffs(mid.positions, origin.positions)
     result[diff_key] = mid.positions[joint_index] - origin.positions[joint_index]
     return result
+
+
+def execute_abs_pose_dry_run(
+    *,
+    action: str,
+    agibot_gdk: Any,
+    robot: Any,
+    origin: JointSnapshot,
+) -> dict[str, object]:
+    frame_poses = extract_arm_frame_poses(origin.motion_status)
+    dry_run_targets = {
+        arm: build_abs_pose_target_summary(
+            agibot_gdk=agibot_gdk,
+            frame_poses=frame_poses,
+            arm=arm,
+        )
+        for arm in ("left_arm", "right_arm")
+    }
+    return {
+        "available": True,
+        "executed": False,
+        "probe_succeeded": True,
+        "motion_attempted": False,
+        "backend": GDK_BACKEND,
+        "action": action,
+        "collected_at": utc_now_iso(),
+        "control_method": ABS_POSE_CONTROL_METHOD,
+        "control_method_available": callable(getattr(robot, ABS_POSE_CONTROL_METHOD, None)),
+        "candidate_methods": discover_abs_pose_methods(robot),
+        "frame_names": motion_frame_names(origin.motion_status),
+        "current_frame_poses": serializable_frame_poses(frame_poses),
+        "dry_run_targets": dry_run_targets,
+        "safety_note": (
+            "只构造 EndEffectorPose，不调用位姿控制；正式运动前仍需单独执行 "
+            "hold-current 探针并以后置 motion_status 为准。"
+        ),
+        "safety_gate": {
+            "enabled": True,
+            "confirmed": True,
+            "expected_confirmation": ACTION_CONFIRMATION_TOKENS[action],
+        },
+        "raw": {
+            "motion_status": to_jsonable(origin.motion_status),
+            "whole_body_status": to_jsonable(origin.whole_body_status),
+        },
+    }
+
+
+def execute_abs_pose_hold_current(
+    *,
+    action: str,
+    arm: str,
+    agibot_gdk: Any,
+    robot: Any,
+    origin: JointSnapshot,
+    sleep: Callable[[float], None],
+    settle_seconds: float,
+) -> dict[str, object]:
+    frame_poses = extract_arm_frame_poses(origin.motion_status)
+    target = build_abs_pose_target(
+        agibot_gdk=agibot_gdk,
+        frame_poses=frame_poses,
+        arm=arm,
+        life_time_seconds=ABS_POSE_LIFE_TIME_SECONDS,
+    )
+    control_method = getattr(robot, ABS_POSE_CONTROL_METHOD, None)
+    if not callable(control_method):
+        raise RuntimeError(f"robot.{ABS_POSE_CONTROL_METHOD} is unavailable")
+
+    # ABS_POSE 的最小真机探针只保持当前末端位姿，不叠加偏移；GDK 返回值
+    # 不能单独代表安全成功，必须同步记录后置 motion_status/whole_body_status。
+    control_return = control_method(target.end_pose)
+    sleep(settle_seconds)
+    after_motion_status = robot.get_motion_control_status()
+    after_whole_body_status = robot.get_whole_body_status()
+    after_positions = read_dual_arm_positions_without_status_validation(robot)
+    diffs = position_diffs(after_positions, origin.positions)
+    motion_error_code = getattr(after_motion_status, "error_code", 0)
+    motion_error_msg = getattr(after_motion_status, "error_msg", "")
+    whole_body_error = validate_whole_body_status_error(after_whole_body_status)
+    return {
+        "available": True,
+        "executed": True,
+        "probe_succeeded": True,
+        "motion_attempted": True,
+        "backend": GDK_BACKEND,
+        "action": action,
+        "collected_at": utc_now_iso(),
+        "control_method": ABS_POSE_CONTROL_METHOD,
+        "arm": arm,
+        "arm_frame_name": ARM_FRAME_NAMES[arm],
+        "end_effector_group": to_jsonable(target.group_value),
+        "life_time_seconds": ABS_POSE_LIFE_TIME_SECONDS,
+        "control_return": to_jsonable(control_return),
+        "origin_positions": origin.positions,
+        "after_positions": after_positions,
+        "diffs": diffs,
+        "max_abs_diff": max((abs(diff) for diff in diffs), default=0.0),
+        "motion_status_ok_after": is_zero_error(motion_error_code),
+        "motion_error_code_after": to_jsonable(motion_error_code),
+        "motion_error_msg_after": str(motion_error_msg),
+        "whole_body_status_ok_after": whole_body_error is None,
+        "whole_body_status_error_after": whole_body_error,
+        "current_frame_poses": serializable_frame_poses(frame_poses),
+        "after_frame_poses": serializable_frame_poses(extract_arm_frame_poses(after_motion_status)),
+        "safety_gate": {
+            "enabled": True,
+            "confirmed": True,
+            "expected_confirmation": ACTION_CONFIRMATION_TOKENS[action],
+        },
+        "raw": {
+            "motion_status_before": to_jsonable(origin.motion_status),
+            "whole_body_status_before": to_jsonable(origin.whole_body_status),
+            "motion_status_after": to_jsonable(after_motion_status),
+            "whole_body_status_after": to_jsonable(after_whole_body_status),
+        },
+    }
+
+
+def build_abs_pose_target_summary(
+    *,
+    agibot_gdk: Any,
+    frame_poses: Mapping[str, Mapping[str, object]],
+    arm: str,
+) -> dict[str, object]:
+    target = build_abs_pose_target(
+        agibot_gdk=agibot_gdk,
+        frame_poses=frame_poses,
+        arm=arm,
+        life_time_seconds=ABS_POSE_LIFE_TIME_SECONDS,
+    )
+    return {
+        "arm": arm,
+        "arm_frame_name": ARM_FRAME_NAMES[arm],
+        "group": to_jsonable(target.group_value),
+        "life_time_seconds": ABS_POSE_LIFE_TIME_SECONDS,
+        "left_end_effector_pose": pose_to_dict(
+            getattr(target.end_pose, "left_end_effector_pose", None)
+        ),
+        "right_end_effector_pose": pose_to_dict(
+            getattr(target.end_pose, "right_end_effector_pose", None)
+        ),
+    }
+
+
+def build_abs_pose_target(
+    *,
+    agibot_gdk: Any,
+    frame_poses: Mapping[str, Mapping[str, object]],
+    arm: str,
+    life_time_seconds: float,
+) -> AbsPoseTarget:
+    left_frame = ARM_FRAME_NAMES["left_arm"]
+    right_frame = ARM_FRAME_NAMES["right_arm"]
+    left_pose = frame_poses.get(left_frame, {}).get("raw_pose")
+    right_pose = frame_poses.get(right_frame, {}).get("raw_pose")
+    if left_pose is None:
+        raise RuntimeError(f"No {left_frame} pose in motion_control_status")
+    if right_pose is None:
+        raise RuntimeError(f"No {right_frame} pose in motion_control_status")
+
+    end_pose_cls = getattr(agibot_gdk, "EndEffectorPose", None)
+    if not callable(end_pose_cls):
+        raise RuntimeError("agibot_gdk.EndEffectorPose is unavailable")
+
+    end_pose = end_pose_cls()
+    group_value = get_abs_pose_group_value(agibot_gdk, arm)
+    end_pose.group = group_value
+    end_pose.life_time = float(life_time_seconds)
+    end_pose.left_end_effector_pose = copy_gdk_pose(agibot_gdk, left_pose)
+    end_pose.right_end_effector_pose = copy_gdk_pose(agibot_gdk, right_pose)
+    return AbsPoseTarget(end_pose=end_pose, group_value=group_value)
+
+
+def get_abs_pose_group_value(agibot_gdk: Any, arm: str) -> object:
+    if arm == "left_arm":
+        name = "kLeftArm"
+    elif arm == "right_arm":
+        name = "kRightArm"
+    else:
+        raise ValueError(f"unsupported ABS_POSE arm: {arm}")
+
+    value = getattr(agibot_gdk, name, None)
+    if value is not None:
+        return value
+
+    enum_cls = getattr(agibot_gdk, "EndEffectorControlGroup", None)
+    if enum_cls is not None:
+        value = getattr(enum_cls, name, None)
+        if value is not None:
+            return value
+    raise RuntimeError(f"agibot_gdk.{name} is unavailable")
+
+
+def copy_gdk_pose(agibot_gdk: Any, pose: Any) -> Any:
+    pose_cls = getattr(agibot_gdk, "Pose", None)
+    if not callable(pose_cls):
+        raise RuntimeError("agibot_gdk.Pose is unavailable")
+    copied = pose_cls()
+    copied.position.x = float(pose.position.x)
+    copied.position.y = float(pose.position.y)
+    copied.position.z = float(pose.position.z)
+    copied.orientation.x = float(pose.orientation.x)
+    copied.orientation.y = float(pose.orientation.y)
+    copied.orientation.z = float(pose.orientation.z)
+    copied.orientation.w = float(pose.orientation.w)
+    return copied
+
+
+def extract_arm_frame_poses(motion_status: Any) -> dict[str, dict[str, object]]:
+    names = motion_frame_names(motion_status)
+    poses = list(getattr(motion_status, "frame_poses", []))
+    result: dict[str, dict[str, object]] = {}
+    for frame_name in ARM_FRAME_NAMES.values():
+        try:
+            index = names.index(frame_name)
+        except ValueError:
+            continue
+        if index >= len(poses):
+            continue
+        pose = poses[index]
+        pose_dict = pose_to_dict(pose)
+        if pose_dict is None:
+            continue
+        result[frame_name] = {**pose_dict, "raw_pose": pose}
+    return result
+
+
+def serializable_frame_poses(
+    frame_poses: Mapping[str, Mapping[str, object]],
+) -> dict[str, dict[str, object]]:
+    return {
+        frame_name: {
+            key: value
+            for key, value in pose_data.items()
+            if key != "raw_pose"
+        }
+        for frame_name, pose_data in frame_poses.items()
+    }
+
+
+def motion_frame_names(motion_status: Any) -> list[str]:
+    return [str(value) for value in getattr(motion_status, "frame_names", [])]
+
+
+def pose_to_dict(pose: Any) -> dict[str, list[float]] | None:
+    if pose is None:
+        return None
+    position = getattr(pose, "position", None)
+    orientation = getattr(pose, "orientation", None)
+    if position is None or orientation is None:
+        return None
+    return {
+        "position": [
+            float(position.x),
+            float(position.y),
+            float(position.z),
+        ],
+        "orientation": [
+            float(orientation.x),
+            float(orientation.y),
+            float(orientation.z),
+            float(orientation.w),
+        ],
+    }
+
+
+def discover_abs_pose_methods(robot: Any) -> list[dict[str, object]]:
+    explicit_names = {
+        "end_effector_pose_control",
+        "motion_plan_request",
+        "motion_plan_request_full",
+        "multi_motion_plan_request",
+        "force_position_control",
+    }
+    discovered = set(explicit_names)
+    for name in dir(robot):
+        lower = name.lower()
+        if name.startswith("_"):
+            continue
+        if (
+            any(keyword in lower for keyword in ("pose", "cartesian"))
+            and any(keyword in lower for keyword in ("move", "control", "plan", "request"))
+        ):
+            discovered.add(name)
+
+    methods: list[dict[str, object]] = []
+    for name in sorted(discovered):
+        try:
+            value = getattr(robot, name)
+        except Exception as error:
+            methods.append(
+                {
+                    "name": name,
+                    "available": False,
+                    "error_type": type(error).__name__,
+                    "error_msg": str(error),
+                }
+            )
+            continue
+        if not callable(value):
+            continue
+        methods.append(
+            {
+                "name": name,
+                "available": True,
+                "signature": callable_signature(value),
+                "doc": compact_doc(getattr(value, "__doc__", None)),
+            }
+        )
+    return methods
+
+
+def callable_signature(value: Any) -> str:
+    try:
+        return str(inspect.signature(value))
+    except Exception as error:
+        return f"unavailable: {type(error).__name__}: {error}"
+
+
+def compact_doc(doc: Any) -> str | None:
+    if not isinstance(doc, str):
+        return None
+    return " ".join(doc.strip().split())[:500]
+
+
+def read_dual_arm_positions_without_status_validation(robot: Any) -> list[float]:
+    joint_states = robot.get_joint_states()
+    if not isinstance(joint_states, Mapping):
+        raise TypeError("robot.get_joint_states() did not return a mapping")
+    states = joint_states.get("states")
+    if not isinstance(states, Sequence) or isinstance(states, str | bytes | bytearray):
+        raise TypeError("joint_states['states'] is not a sequence")
+    states_by_name = {
+        state["name"]: state
+        for state in states
+        if isinstance(state, Mapping) and isinstance(state.get("name"), str)
+    }
+    positions: list[float] = []
+    for joint_name in DUAL_ARM_JOINTS:
+        state = states_by_name.get(joint_name)
+        if state is None:
+            raise RuntimeError(f"missing joint state: {joint_name}")
+        positions.append(read_joint_position(state))
+    return positions
+
+
+def validate_whole_body_status_error(whole_body_status: Any) -> str | None:
+    try:
+        validate_whole_body_status(whole_body_status)
+    except Exception as error:
+        return str(error)
+    return None
 
 
 def collect_dual_arm_snapshot(robot: Any) -> JointSnapshot:

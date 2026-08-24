@@ -258,10 +258,10 @@ class QrPoseService:
                     "waypointDir": str(waypoint_dir),
                     "sourceIndexName": INITIAL_PHOTO_SCAN_INDEX_NAME,
                     "bodyPart": params.arm,
-                    "bodyParts": [params.arm, "waist"],
+                    "bodyParts": ["waist", params.arm],
                 },
             ) from error
-        # 二维码定位节点内部会触发真实手臂和腰部运动；这里不绕过安全门，
+        # 二维码定位节点内部会触发真实腰部和手臂运动；这里不绕过安全门，
         # 统一复用 Taskflow ABS_JOINT 的 ENABLE/CONFIRM 双确认和恢复门。
         result = run_gdk_motion_plan_abs_joint(
             motion_params,
@@ -276,7 +276,7 @@ class QrPoseService:
             "jointsPath": str(joints_path),
             "sourceIndexName": INITIAL_PHOTO_SCAN_INDEX_NAME,
             "bodyPart": params.arm,
-            "bodyParts": [params.arm, "waist"],
+            "bodyParts": ["waist", params.arm],
         }
         if result.get("executed") is not True:
             message = str(result.get("error_msg") or "回初始拍照点位失败")
@@ -314,14 +314,14 @@ def build_initial_photo_return_motion_params(
         MotionPlanParams(
             targets=(
                 MotionPlanTarget(
-                    body_part=params.arm,
-                    control_type="ABS_JOINT",
-                    action_data=arm_action_data,
-                ),
-                MotionPlanTarget(
                     body_part="waist",
                     control_type="ABS_JOINT",
                     action_data=waist_action_data,
+                ),
+                MotionPlanTarget(
+                    body_part=params.arm,
+                    control_type="ABS_JOINT",
+                    action_data=arm_action_data,
                 ),
             ),
             speed=params.return_pose_speed,

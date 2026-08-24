@@ -82,8 +82,10 @@ def test_qr_pose_service_outputs_target_action_data(tmp_path, monkeypatch) -> No
 
     def fake_return_motion(motion_params, **_kwargs) -> dict[str, object]:
         calls.append("return_motion")
-        assert motion_params.targets[0].body_part == "left_arm"
-        assert motion_params.targets[0].action_data == [
+        assert motion_params.targets[0].body_part == "waist"
+        assert motion_params.targets[0].action_data == [0.01, 0.02, 0.03, 0.04, 0.05]
+        assert motion_params.targets[1].body_part == "left_arm"
+        assert motion_params.targets[1].action_data == [
             0.11,
             0.12,
             0.13,
@@ -92,8 +94,6 @@ def test_qr_pose_service_outputs_target_action_data(tmp_path, monkeypatch) -> No
             0.16,
             0.17,
         ]
-        assert motion_params.targets[1].body_part == "waist"
-        assert motion_params.targets[1].action_data == [0.01, 0.02, 0.03, 0.04, 0.05]
         assert motion_params.speed == 0.03
         assert motion_params.timeout == 50
         return {"available": True, "executed": True, "groups": []}
@@ -187,7 +187,7 @@ def test_qr_pose_service_outputs_target_action_data(tmp_path, monkeypatch) -> No
     assert calls == ["return_motion", "collect_snapshot"]
     assert result["targetPointNames"] == ["zhua1"]
     assert result["initialPhotoReturn"]["executed"] is True
-    assert result["initialPhotoReturn"]["bodyParts"] == ["left_arm", "waist"]
+    assert result["initialPhotoReturn"]["bodyParts"] == ["waist", "left_arm"]
     assert result["action_data"] == {"zhua1": [1.1, 2.2, 3.3, 0.0, 0.0, 0.0, 1.0]}
     assert result["pose"] == {
         "position": [1.1, 2.2, 3.3],
@@ -302,7 +302,7 @@ def test_qr_pose_service_reports_initial_photo_return_failure(tmp_path, monkeypa
     assert result["available"] is False
     assert result["errorCode"] == "QR_POSE_INITIAL_RETURN_FAILED"
     assert result["initialPhotoReturn"]["bodyPart"] == "right_arm"
-    assert result["initialPhotoReturn"]["bodyParts"] == ["right_arm", "waist"]
+    assert result["initialPhotoReturn"]["bodyParts"] == ["waist", "right_arm"]
     assert result["initialPhotoReturn"]["executed"] is False
 
 

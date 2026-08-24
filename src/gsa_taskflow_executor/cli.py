@@ -40,17 +40,22 @@ from .mqtt.robot_state import (
     CAMERA_CAPTURE_START_REQUEST_TYPE,
     CAMERA_CAPTURE_STOP_REQUEST_TYPE,
     CAMERA_FRAME_REQUEST_TYPE,
+    POINT_RECORDING_SAVE_INITIAL_PHOTO_REQUEST_TYPE,
+    POINT_RECORDING_SAVE_TARGET_REQUEST_TYPE,
+    POINT_RECORDING_SUBMIT_REQUEST_TYPE,
     QR_BUILD_MAP_REQUEST_TYPE,
     QR_CAPTURE_START_REQUEST_TYPE,
     QR_CAPTURE_STOP_REQUEST_TYPE,
     QR_DELETE_MAP_REQUEST_TYPE,
     QR_PCD_PREVIEW_REQUEST_TYPE,
-    POINT_RECORDING_SAVE_INITIAL_PHOTO_REQUEST_TYPE,
-    POINT_RECORDING_SAVE_TARGET_REQUEST_TYPE,
-    POINT_RECORDING_SUBMIT_REQUEST_TYPE,
     handle_robot_state_request,
 )
 from .mqtt.status_reporter import StatusSequence, TaskflowStatusReporter
+from .qr_mapping.build_service import QrBuildService
+from .qr_mapping.capture_service import QrCaptureService
+from .qr_mapping.point_recording_service import PointRecordingService
+from .qr_mapping.pose_service import QrPoseService
+from .qr_mapping.project_store import QrProjectStore
 from .runtime.config import ConfigError, ExecutorSettings, build_env_source
 from .runtime.diagnostics import (
     build_health_check_payload,
@@ -59,11 +64,6 @@ from .runtime.diagnostics import (
 )
 from .runtime.event_log import JsonlEventWriter, RuntimeEvent, configure_stdout_logging
 from .runtime.payload_sanitizer import summarize_variables
-from .qr_mapping.build_service import QrBuildService
-from .qr_mapping.capture_service import QrCaptureService
-from .qr_mapping.point_recording_service import PointRecordingService
-from .qr_mapping.pose_service import QrPoseService
-from .qr_mapping.project_store import QrProjectStore
 from .skills.registry import SkillRegistry, SkillRegistryError
 from .skills.runtime import SkillRuntime
 from .taskflow.control import (
@@ -211,10 +211,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.gdk_control_probe:
         writer = JsonlEventWriter.from_settings(settings)
         result = run_gdk_control_probe(args.gdk_control_probe, environ=runtime_env)
+        probe_ok = result.get("executed") is True or result.get("probe_succeeded") is True
         writer.write(
             RuntimeEvent(
                 event_type="gdk_control_probe",
-                level="info" if result.get("executed") is True else "warning",
+                level="info" if probe_ok else "warning",
                 message="GDK manual control probe completed",
                 payload={"probe": result},
             )
@@ -502,7 +503,12 @@ def main(argv: list[str] | None = None) -> int:
                 start_qr_capture=qr_capture_service.start,
                 stop_qr_capture=qr_capture_service.stop,
                 build_qr_map=(
-                    lambda robot_serial, project_name, map_name, camera_id, marker_type, marker_size:
+                    lambda robot_serial,
+                    project_name,
+                    map_name,
+                    camera_id,
+                    marker_type,
+                    marker_size:
                     qr_build_service.build_map(
                         robot_serial=robot_serial,
                         project_name=project_name,
