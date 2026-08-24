@@ -31,6 +31,11 @@ def test_qr_pose_service_outputs_target_action_data(tmp_path, monkeypatch) -> No
                     {
                         "index_name": "scan",
                         "joint_names": [
+                            "idx01_body_joint1",
+                            "idx02_body_joint2",
+                            "idx03_body_joint3",
+                            "idx04_body_joint4",
+                            "idx05_body_joint5",
                             "idx21_arm_l_joint1",
                             "idx22_arm_l_joint2",
                             "idx23_arm_l_joint3",
@@ -39,7 +44,20 @@ def test_qr_pose_service_outputs_target_action_data(tmp_path, monkeypatch) -> No
                             "idx26_arm_l_joint6",
                             "idx27_arm_l_joint7",
                         ],
-                        "joint_positions": [0.11, 0.12, 0.13, 0.14, 0.15, 0.16, 0.17],
+                        "joint_positions": [
+                            0.01,
+                            0.02,
+                            0.03,
+                            0.04,
+                            0.05,
+                            0.11,
+                            0.12,
+                            0.13,
+                            0.14,
+                            0.15,
+                            0.16,
+                            0.17,
+                        ],
                     }
                 ]
             }
@@ -74,6 +92,8 @@ def test_qr_pose_service_outputs_target_action_data(tmp_path, monkeypatch) -> No
             0.16,
             0.17,
         ]
+        assert motion_params.targets[1].body_part == "waist"
+        assert motion_params.targets[1].action_data == [0.01, 0.02, 0.03, 0.04, 0.05]
         assert motion_params.speed == 0.03
         assert motion_params.timeout == 50
         return {"available": True, "executed": True, "groups": []}
@@ -167,6 +187,7 @@ def test_qr_pose_service_outputs_target_action_data(tmp_path, monkeypatch) -> No
     assert calls == ["return_motion", "collect_snapshot"]
     assert result["targetPointNames"] == ["zhua1"]
     assert result["initialPhotoReturn"]["executed"] is True
+    assert result["initialPhotoReturn"]["bodyParts"] == ["left_arm", "waist"]
     assert result["action_data"] == {"zhua1": [1.1, 2.2, 3.3, 0.0, 0.0, 0.0, 1.0]}
     assert result["pose"] == {
         "position": [1.1, 2.2, 3.3],
@@ -199,6 +220,11 @@ def test_qr_pose_service_reports_initial_photo_return_failure(tmp_path, monkeypa
                     {
                         "index_name": "scan",
                         "joint_names": [
+                            "idx01_body_joint1",
+                            "idx02_body_joint2",
+                            "idx03_body_joint3",
+                            "idx04_body_joint4",
+                            "idx05_body_joint5",
                             "idx61_arm_r_joint1",
                             "idx62_arm_r_joint2",
                             "idx63_arm_r_joint3",
@@ -207,7 +233,20 @@ def test_qr_pose_service_reports_initial_photo_return_failure(tmp_path, monkeypa
                             "idx66_arm_r_joint6",
                             "idx67_arm_r_joint7",
                         ],
-                        "joint_positions": [0.21, 0.22, 0.23, 0.24, 0.25, 0.26, 0.27],
+                        "joint_positions": [
+                            0.01,
+                            0.02,
+                            0.03,
+                            0.04,
+                            0.05,
+                            0.21,
+                            0.22,
+                            0.23,
+                            0.24,
+                            0.25,
+                            0.26,
+                            0.27,
+                        ],
                     }
                 ]
             }
@@ -263,6 +302,7 @@ def test_qr_pose_service_reports_initial_photo_return_failure(tmp_path, monkeypa
     assert result["available"] is False
     assert result["errorCode"] == "QR_POSE_INITIAL_RETURN_FAILED"
     assert result["initialPhotoReturn"]["bodyPart"] == "right_arm"
+    assert result["initialPhotoReturn"]["bodyParts"] == ["right_arm", "waist"]
     assert result["initialPhotoReturn"]["executed"] is False
 
 

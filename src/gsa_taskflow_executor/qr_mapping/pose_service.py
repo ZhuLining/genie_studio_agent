@@ -1,8 +1,8 @@
 """应用工作流二维码定位服务。
 
 二维码建图和点位录制产物都保存在 executor 所在 Ubuntu 主机。应用运行时
-`qr_pose_skill` 默认先把执行手臂回到初始拍照点位，再重新拍照计算当前
-二维码/tag 在 base 下的位姿，最后乘以点位录制阶段保存的 `T_tag_ee`，
+`qr_pose_skill` 默认先把执行手臂和腰部回到初始拍照点位，再重新拍照计算
+当前二维码/tag 在 base 下的位姿，最后乘以点位录制阶段保存的 `T_tag_ee`，
 输出目标末端 pose/action_data。
 """
 
@@ -43,7 +43,14 @@ from gsa_taskflow_executor.taskflow.models import (
 ACTION_QR_POSE = "qr_pose"
 DEFAULT_QR_POSE_LOCALIZE_TIMEOUT_SECONDS = 120.0
 INITIAL_PHOTO_SCAN_INDEX_NAME = "scan"
-ARM_JOINTS_BY_PART = {
+JOINTS_BY_BODY_PART = {
+    "waist": (
+        "idx01_body_joint1",
+        "idx02_body_joint2",
+        "idx03_body_joint3",
+        "idx04_body_joint4",
+        "idx05_body_joint5",
+    ),
     "left_arm": (
         "idx21_arm_l_joint1",
         "idx22_arm_l_joint2",
@@ -251,9 +258,10 @@ class QrPoseService:
                     "waypointDir": str(waypoint_dir),
                     "sourceIndexName": INITIAL_PHOTO_SCAN_INDEX_NAME,
                     "bodyPart": params.arm,
+                    "bodyParts": [params.arm, "waist"],
                 },
             ) from error
-        # 二维码定位节点内部会触发真实手臂运动；这里不绕过安全门，
+        # 二维码定位节点内部会触发真实手臂和腰部运动；这里不绕过安全门，
         # 统一复用 Taskflow ABS_JOINT 的 ENABLE/CONFIRM 双确认和恢复门。
         result = run_gdk_motion_plan_abs_joint(
             motion_params,
@@ -268,6 +276,7 @@ class QrPoseService:
             "jointsPath": str(joints_path),
             "sourceIndexName": INITIAL_PHOTO_SCAN_INDEX_NAME,
             "bodyPart": params.arm,
+            "bodyParts": [params.arm, "waist"],
         }
         if result.get("executed") is not True:
             message = str(result.get("error_msg") or "回初始拍照点位失败")
@@ -289,9 +298,16 @@ def build_initial_photo_return_motion_params(
 
     decoded = read_json_object(joints_path)
     command = read_recorded_command(decoded, INITIAL_PHOTO_SCAN_INDEX_NAME, str(joints_path))
-    action_data = read_arm_joint_positions_from_command(
+    arm_action_data = read_body_part_joint_positions_from_command(
         command,
         body_part=params.arm,
+        label=f"{joints_path}:{INITIAL_PHOTO_SCAN_INDEX_NAME}",
+    )
+    # 初始拍照点位的视角由手部相机和腰部姿态共同决定；只回手臂会导致
+    # SDK 拍到的二维码地图视角偏离点位录制阶段，影响 PnP 稳定性。
+    waist_action_data = read_body_part_joint_positions_from_command(
+        command,
+        body_part="waist",
         label=f"{joints_path}:{INITIAL_PHOTO_SCAN_INDEX_NAME}",
     )
     return (
@@ -300,7 +316,12 @@ def build_initial_photo_return_motion_params(
                 MotionPlanTarget(
                     body_part=params.arm,
                     control_type="ABS_JOINT",
-                    action_data=action_data,
+                    action_data=arm_action_data,
+                ),
+                MotionPlanTarget(
+                    body_part="waist",
+                    control_type="ABS_JOINT",
+                    action_data=waist_action_data,
                 ),
             ),
             speed=params.return_pose_speed,
@@ -324,7 +345,7 @@ def read_recorded_command(
     raise FileNotFoundError(f"{label} 未找到 index_name={index_name!r} 的关节记录")
 
 
-def read_arm_joint_positions_from_command(
+def read_body_part_joint_positions_from_command(
     command: Mapping[str, object],
     *,
     body_part: str,
@@ -342,9 +363,9 @@ def read_arm_joint_positions_from_command(
         joint_name: joint_positions[index]
         for index, joint_name in enumerate(joint_names)
     }
-    expected_joints = ARM_JOINTS_BY_PART.get(body_part)
+    expected_joints = JOINTS_BY_BODY_PART.get(body_part)
     if expected_joints is None:
-        raise ValueError(f"{label} 不支持的执行手臂: {body_part}")
+        raise ValueError(f"{label} 不支持的执行部位: {body_part}")
     missing = [joint_name for joint_name in expected_joints if joint_name not in position_by_name]
     if missing:
         raise ValueError(f"{label} 缺少 {body_part} 关节: {', '.join(missing)}")

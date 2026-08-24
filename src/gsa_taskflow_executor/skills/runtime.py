@@ -358,10 +358,11 @@ class ForceControlSkillGdk:
 
 
 class QrPoseSkillGdk:
-    """qr_pose_skill — 回初始拍照点位后定位，输出目标点 pose/action_data。
+    """qr_pose_skill — 手臂和腰部回初始拍照点位后定位，输出目标点 pose/action_data。
 
     该 skill 复用二维码建图/点位录制产物。默认先通过 ABS_JOINT 安全门
-    回到初始拍照点位，再做只读采样和 SDK 定位；目标点执行仍由下游节点决定。
+    回到初始拍照点位的手臂和腰部姿态，再做只读采样和 SDK 定位；
+    目标点执行仍由下游节点决定。
     """
 
     def __init__(self, service: QrPoseService | None = None) -> None:

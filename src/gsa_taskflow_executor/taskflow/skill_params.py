@@ -197,7 +197,7 @@ def parse_motion_plan_params(params: YamlMapping, path: str) -> MotionPlanParams
 def parse_qr_pose_params(params: YamlMapping, path: str) -> QrPoseParams:
     """解析二维码定位节点参数。
 
-    该 skill 会先按初始拍照点位回到采样姿态，再重新拍照定位二维码，
+    该 skill 会先按初始拍照点位回到手臂和腰部采样姿态，再重新拍照定位二维码，
     输出目标点 pose/action_data。回位动作仍复用 ABS_JOINT 安全门。
     """
 

@@ -101,7 +101,7 @@ class ForceControlParams:
 
 @dataclass(frozen=True)
 class QrPoseParams:
-    """qr_pose_skill 参数。默认先回初始拍照点位，再做二维码定位和目标位姿计算。"""
+    """qr_pose_skill 参数。默认先回初始拍照点位的手臂和腰部，再做定位计算。"""
 
     robot_serial: str
     project_name: str
