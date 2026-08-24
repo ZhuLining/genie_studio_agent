@@ -1,9 +1,9 @@
 """应用工作流二维码定位服务。
 
 二维码建图和点位录制产物都保存在 executor 所在 Ubuntu 主机。应用运行时
-`qr_pose_skill` 只做只读定位：重新拍照计算当前二维码/tag 在 base 下的位姿，
-再乘以点位录制阶段保存的 `T_tag_ee`，输出目标末端 pose/action_data。
-这里不调用任何运动控制，避免把“定位结果”误用成“自动执行运动”。
+`qr_pose_skill` 默认先把执行手臂回到初始拍照点位，再重新拍照计算当前
+二维码/tag 在 base 下的位姿，最后乘以点位录制阶段保存的 `T_tag_ee`，
+输出目标末端 pose/action_data。
 """
 
 from __future__ import annotations
@@ -12,9 +12,9 @@ import json
 import math
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
 from uuid import uuid4
 
+from gsa_taskflow_executor.gdk.motion_runtime import run_gdk_motion_plan_abs_joint
 from gsa_taskflow_executor.gdk.readonly import to_jsonable
 from gsa_taskflow_executor.gdk.session import GdkSessionManager
 from gsa_taskflow_executor.qr_mapping.point_recording_service import (
@@ -34,14 +34,52 @@ from gsa_taskflow_executor.qr_mapping.project_store import (
     read_json_object,
     validate_safe_segment,
 )
-from gsa_taskflow_executor.taskflow.models import QrPoseParams
+from gsa_taskflow_executor.taskflow.models import (
+    MotionPlanParams,
+    MotionPlanTarget,
+    QrPoseParams,
+)
 
 ACTION_QR_POSE = "qr_pose"
 DEFAULT_QR_POSE_LOCALIZE_TIMEOUT_SECONDS = 120.0
+INITIAL_PHOTO_SCAN_INDEX_NAME = "scan"
+ARM_JOINTS_BY_PART = {
+    "left_arm": (
+        "idx21_arm_l_joint1",
+        "idx22_arm_l_joint2",
+        "idx23_arm_l_joint3",
+        "idx24_arm_l_joint4",
+        "idx25_arm_l_joint5",
+        "idx26_arm_l_joint6",
+        "idx27_arm_l_joint7",
+    ),
+    "right_arm": (
+        "idx61_arm_r_joint1",
+        "idx62_arm_r_joint2",
+        "idx63_arm_r_joint3",
+        "idx64_arm_r_joint4",
+        "idx65_arm_r_joint5",
+        "idx66_arm_r_joint6",
+        "idx67_arm_r_joint7",
+    ),
+}
+
+
+class QrPoseInitialPhotoReturnError(RuntimeError):
+    """二维码定位前回初始拍照点位失败，保留 GDK 结果供状态上报排查。"""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        initial_photo_return: Mapping[str, object],
+    ) -> None:
+        super().__init__(message)
+        self.initial_photo_return = dict(initial_photo_return)
 
 
 class QrPoseService:
-    """封装二维码定位节点的远端资源读取、GDK 采样和 SDK 调用。"""
+    """封装二维码定位节点的远端资源读取、回位、GDK 采样和 SDK 调用。"""
 
     def __init__(
         self,
@@ -51,18 +89,21 @@ class QrPoseService:
         localize_sdk_path: str = "",
         localize_sdk_python: str = "python3",
         localize_timeout_seconds: float = DEFAULT_QR_POSE_LOCALIZE_TIMEOUT_SECONDS,
+        environ: Mapping[str, str] | None = None,
     ) -> None:
         self._project_store = project_store
         self._session_manager = session_manager
         self._localize_sdk_path = localize_sdk_path.strip()
         self._localize_sdk_python = localize_sdk_python.strip() or "python3"
         self._localize_timeout_seconds = localize_timeout_seconds
+        self._environ = environ
 
     def locate(self, params: QrPoseParams) -> dict[str, object]:
         """执行一次二维码定位，返回可写入 taskflow 变量空间的 outputs。"""
 
         runtime_root: Path | None = None
         snapshot: Mapping[str, object] | None = None
+        initial_photo_return: Mapping[str, object] | None = None
         try:
             paths = self._project_store.build_paths(
                 robot_serial=params.robot_serial,
@@ -83,6 +124,11 @@ class QrPoseService:
             if not tag_ee_by_target:
                 raise FileNotFoundError("初始拍照点位没有可用目标点位，请先保存目标点位")
 
+            initial_photo_return = self._return_to_initial_photo_pose(
+                waypoint_dir=waypoint_dir,
+                params=params,
+            )
+
             runtime_root = paths.project_root / ".runtime" / "qr_pose" / uuid4().hex
             runtime_root.mkdir(parents=True, exist_ok=True)
             snapshot = collect_point_recording_gdk_snapshot(
@@ -96,7 +142,10 @@ class QrPoseService:
             )
             if snapshot.get("available") is not True:
                 cleanup_temp_image(snapshot)
-                return dict(snapshot)
+                return {
+                    **dict(snapshot),
+                    "initialPhotoReturn": initial_photo_return,
+                }
 
             runtime_point_dir = materialize_qr_pose_scan_files(
                 runtime_root=runtime_root,
@@ -120,6 +169,7 @@ class QrPoseService:
             stats = read_json_object(stats_path)
             poses, action_data = build_target_outputs(current_base_tag, tag_ee_by_target)
             primary_target_name = next(iter(action_data))
+            abs_joints = snapshot.get("absJoints")
 
             return {
                 "available": True,
@@ -137,6 +187,7 @@ class QrPoseService:
                 "poses": poses,
                 "currentTagPose": matrix_to_pose(current_base_tag),
                 "quality": build_localize_quality(stats),
+                "initialPhotoReturn": initial_photo_return,
                 "sdk": sdk_result,
                 "stats": stats,
                 "artifactPaths": {
@@ -152,8 +203,8 @@ class QrPoseService:
                 },
                 "gdk": {
                     "absPose": snapshot.get("absPose"),
-                    "absJointsCount": len(snapshot.get("absJoints"))
-                    if isinstance(snapshot.get("absJoints"), Sequence)
+                    "absJointsCount": len(abs_joints)
+                    if isinstance(abs_joints, Sequence)
                     else 0,
                     "stationarity": snapshot.get("stationarity"),
                     "timestampNs": snapshot.get("timestampNs"),
@@ -164,7 +215,162 @@ class QrPoseService:
         except Exception as error:
             if snapshot is not None:
                 cleanup_temp_image(snapshot)
-            return qr_pose_error_payload(error, runtime_root=runtime_root)
+            return qr_pose_error_payload(
+                error,
+                runtime_root=runtime_root,
+                initial_photo_return=initial_photo_return,
+            )
+
+    def _return_to_initial_photo_pose(
+        self,
+        *,
+        waypoint_dir: Path,
+        params: QrPoseParams,
+    ) -> Mapping[str, object]:
+        if not params.return_to_initial_photo_pose:
+            return {
+                "enabled": False,
+                "executed": False,
+                "reason": "disabled_by_params",
+            }
+
+        try:
+            motion_params, joints_path = build_initial_photo_return_motion_params(
+                waypoint_dir=waypoint_dir,
+                params=params,
+            )
+        except Exception as error:
+            raise QrPoseInitialPhotoReturnError(
+                f"回初始拍照点位准备失败: {error}",
+                initial_photo_return={
+                    "enabled": True,
+                    "executed": False,
+                    "errorStage": "load_initial_photo_joints",
+                    "errorType": type(error).__name__,
+                    "errorMsg": str(error),
+                    "waypointDir": str(waypoint_dir),
+                    "sourceIndexName": INITIAL_PHOTO_SCAN_INDEX_NAME,
+                    "bodyPart": params.arm,
+                },
+            ) from error
+        # 二维码定位节点内部会触发真实手臂运动；这里不绕过安全门，
+        # 统一复用 Taskflow ABS_JOINT 的 ENABLE/CONFIRM 双确认和恢复门。
+        result = run_gdk_motion_plan_abs_joint(
+            motion_params,
+            environ=self._environ,
+            session_manager=self._session_manager,
+        )
+        json_result = to_jsonable(result)
+        result_payload = dict(json_result) if isinstance(json_result, Mapping) else {}
+        payload = {
+            **result_payload,
+            "enabled": True,
+            "jointsPath": str(joints_path),
+            "sourceIndexName": INITIAL_PHOTO_SCAN_INDEX_NAME,
+            "bodyPart": params.arm,
+        }
+        if result.get("executed") is not True:
+            message = str(result.get("error_msg") or "回初始拍照点位失败")
+            raise QrPoseInitialPhotoReturnError(
+                f"回初始拍照点位失败: {message}",
+                initial_photo_return=payload,
+            )
+        return payload
+
+
+def build_initial_photo_return_motion_params(
+    *,
+    waypoint_dir: Path,
+    params: QrPoseParams,
+) -> tuple[MotionPlanParams, Path]:
+    joints_path = waypoint_dir / "joints.json"
+    if not joints_path.exists():
+        raise FileNotFoundError(f"未找到初始拍照点位 joints.json: {joints_path}")
+
+    decoded = read_json_object(joints_path)
+    command = read_recorded_command(decoded, INITIAL_PHOTO_SCAN_INDEX_NAME, str(joints_path))
+    action_data = read_arm_joint_positions_from_command(
+        command,
+        body_part=params.arm,
+        label=f"{joints_path}:{INITIAL_PHOTO_SCAN_INDEX_NAME}",
+    )
+    return (
+        MotionPlanParams(
+            targets=(
+                MotionPlanTarget(
+                    body_part=params.arm,
+                    control_type="ABS_JOINT",
+                    action_data=action_data,
+                ),
+            ),
+            speed=params.return_pose_speed,
+            timeout=params.return_pose_timeout,
+        ),
+        joints_path,
+    )
+
+
+def read_recorded_command(
+    decoded: Mapping[str, object],
+    index_name: str,
+    label: str,
+) -> Mapping[str, object]:
+    raw_commands = decoded.get("recorded_commands")
+    if not isinstance(raw_commands, list):
+        raise ValueError(f"{label}.recorded_commands 必须是数组")
+    for item in raw_commands:
+        if isinstance(item, Mapping) and item.get("index_name") == index_name:
+            return item
+    raise FileNotFoundError(f"{label} 未找到 index_name={index_name!r} 的关节记录")
+
+
+def read_arm_joint_positions_from_command(
+    command: Mapping[str, object],
+    *,
+    body_part: str,
+    label: str,
+) -> list[float]:
+    joint_names = read_non_empty_string_list(command.get("joint_names"), f"{label}.joint_names")
+    joint_positions = read_number_list(
+        command.get("joint_positions"),
+        f"{label}.joint_positions",
+    )
+    if len(joint_names) != len(joint_positions):
+        raise ValueError(f"{label}.joint_names 与 joint_positions 长度不一致")
+
+    position_by_name = {
+        joint_name: joint_positions[index]
+        for index, joint_name in enumerate(joint_names)
+    }
+    expected_joints = ARM_JOINTS_BY_PART.get(body_part)
+    if expected_joints is None:
+        raise ValueError(f"{label} 不支持的执行手臂: {body_part}")
+    missing = [joint_name for joint_name in expected_joints if joint_name not in position_by_name]
+    if missing:
+        raise ValueError(f"{label} 缺少 {body_part} 关节: {', '.join(missing)}")
+    return [position_by_name[joint_name] for joint_name in expected_joints]
+
+
+def read_non_empty_string_list(value: object, label: str) -> list[str]:
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"{label} 必须是非空字符串数组")
+    result: list[str] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError(f"{label}[{index}] 必须是非空字符串")
+        result.append(item.strip())
+    return result
+
+
+def read_number_list(value: object, label: str) -> list[float]:
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"{label} 必须是非空数字数组")
+    result: list[float] = []
+    for index, item in enumerate(value):
+        if isinstance(item, bool) or not isinstance(item, int | float):
+            raise ValueError(f"{label}[{index}] 必须是数字")
+        result.append(float(item))
+    return result
 
 
 def materialize_qr_pose_scan_files(
@@ -312,8 +518,9 @@ def qr_pose_error_payload(
     error: Exception,
     *,
     runtime_root: Path | None,
+    initial_photo_return: Mapping[str, object] | None,
 ) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "available": False,
         "backend": "executor.qr_pose",
         "action": ACTION_QR_POSE,
@@ -322,3 +529,9 @@ def qr_pose_error_payload(
         "errorMsg": str(error),
         "runtimeRoot": str(runtime_root) if runtime_root is not None else None,
     }
+    if isinstance(error, QrPoseInitialPhotoReturnError):
+        payload["errorCode"] = "QR_POSE_INITIAL_RETURN_FAILED"
+        payload["initialPhotoReturn"] = error.initial_photo_return
+    elif initial_photo_return is not None:
+        payload["initialPhotoReturn"] = dict(initial_photo_return)
+    return payload

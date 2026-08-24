@@ -25,6 +25,7 @@ from gsa_taskflow_executor.taskflow.models import (
 )
 from gsa_taskflow_executor.taskflow.readers import (
     expect_mapping,
+    read_bool,
     read_int_in_range_with_default,
     read_non_negative_number,
     read_non_negative_number_with_default,
@@ -48,6 +49,9 @@ DEFAULT_END_EFFECTOR_TIMEOUT = 20.0
 DEFAULT_FORCE_CONTROL_TIMEOUT = 50.0
 DEFAULT_QR_POSE_TIMEOUT = 60.0
 DEFAULT_QR_POSE_MIN_MARKERS = 3
+DEFAULT_QR_POSE_RETURN_TO_INITIAL_PHOTO_POSE = True
+DEFAULT_QR_POSE_RETURN_POSE_SPEED = 0.03
+DEFAULT_QR_POSE_RETURN_POSE_TIMEOUT = 50.0
 MAX_QR_POSE_MIN_MARKERS = 32
 
 # 末端执行器默认值
@@ -193,8 +197,8 @@ def parse_motion_plan_params(params: YamlMapping, path: str) -> MotionPlanParams
 def parse_qr_pose_params(params: YamlMapping, path: str) -> QrPoseParams:
     """解析二维码定位节点参数。
 
-    该 skill 在应用运行时重新拍照定位二维码，输出目标点 pose/action_data。
-    它不调用运动控制；下游是否运动由 motion_plan_skill 单独负责。
+    该 skill 会先按初始拍照点位回到采样姿态，再重新拍照定位二维码，
+    输出目标点 pose/action_data。回位动作仍复用 ABS_JOINT 安全门。
     """
 
     arm = read_required_string(params, "arm", path)
@@ -227,6 +231,22 @@ def parse_qr_pose_params(params: YamlMapping, path: str) -> QrPoseParams:
         )
         if params.get("min_markers") is not None
         else DEFAULT_QR_POSE_MIN_MARKERS,
+        return_to_initial_photo_pose=read_bool(
+            params.get("return_to_initial_photo_pose"),
+            DEFAULT_QR_POSE_RETURN_TO_INITIAL_PHOTO_POSE,
+        ),
+        return_pose_speed=read_number_in_range_with_default(
+            params.get("return_pose_speed"),
+            f"{path}.return_pose_speed",
+            fallback=DEFAULT_QR_POSE_RETURN_POSE_SPEED,
+            minimum=MOTION_SPEED_MIN,
+            maximum=MOTION_SPEED_MAX,
+        ),
+        return_pose_timeout=read_positive_number_with_default(
+            params.get("return_pose_timeout"),
+            f"{path}.return_pose_timeout",
+            DEFAULT_QR_POSE_RETURN_POSE_TIMEOUT,
+        ),
     )
 
 

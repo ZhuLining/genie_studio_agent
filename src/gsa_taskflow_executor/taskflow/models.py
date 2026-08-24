@@ -101,7 +101,7 @@ class ForceControlParams:
 
 @dataclass(frozen=True)
 class QrPoseParams:
-    """qr_pose_skill 参数。只做二维码定位和目标位姿计算，不触发机器人运动。"""
+    """qr_pose_skill 参数。默认先回初始拍照点位，再做二维码定位和目标位姿计算。"""
 
     robot_serial: str
     project_name: str
@@ -111,6 +111,9 @@ class QrPoseParams:
     camera_id: str
     timeout: float
     min_markers: int
+    return_to_initial_photo_pose: bool
+    return_pose_speed: float
+    return_pose_timeout: float
 
 
 @dataclass(frozen=True)

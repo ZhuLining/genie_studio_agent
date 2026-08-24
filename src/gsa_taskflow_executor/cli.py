@@ -274,6 +274,7 @@ def main(argv: list[str] | None = None) -> int:
             localize_sdk_path=settings.qr_localize_sdk_path,
             localize_sdk_python=settings.qr_localize_sdk_python,
             localize_timeout_seconds=settings.qr_localize_timeout_seconds,
+            environ=runtime_env,
         )
         skill_runtime = SkillRuntime(
             registry=skill_registry,

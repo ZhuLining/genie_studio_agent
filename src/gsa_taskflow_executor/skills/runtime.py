@@ -8,7 +8,7 @@ SkillRuntime.run(node, context) 分发逻辑::
       ├─ script       → ScriptSkillGdk       → run_code_script()
       ├─ end_effector → EndEffectorSkillGdk  → run_gdk_end_effector_control()
       ├─ force_control→ ForceControlSkillGdk → 硬阻断
-      └─ qr_pose      → QrPoseSkillGdk       → 只读二维码定位
+      └─ qr_pose      → QrPoseSkillGdk       → 回初始拍照点位后二维码定位
 
 变量解析策略:
 - motion/end_effector: 整体 resolve params_template（$.variables.* → 实际值）
@@ -358,10 +358,10 @@ class ForceControlSkillGdk:
 
 
 class QrPoseSkillGdk:
-    """qr_pose_skill — 只读二维码定位，输出目标点 pose/action_data。
+    """qr_pose_skill — 回初始拍照点位后定位，输出目标点 pose/action_data。
 
-    该 skill 复用二维码建图/点位录制产物和 GDK 只读采样。它不调用任何
-    move_* 接口，后续是否运动由下游 motion_plan_skill 决定。
+    该 skill 复用二维码建图/点位录制产物。默认先通过 ABS_JOINT 安全门
+    回到初始拍照点位，再做只读采样和 SDK 定位；目标点执行仍由下游节点决定。
     """
 
     def __init__(self, service: QrPoseService | None = None) -> None:
@@ -541,6 +541,7 @@ def build_qr_pose_outputs(
         "action_data": deepcopy(result.get("action_data")),
         "current_tag_pose": deepcopy(result.get("currentTagPose")),
         "quality": deepcopy(result.get("quality")),
+        "initial_photo_return": deepcopy(result.get("initialPhotoReturn")),
         "artifact_paths": deepcopy(result.get("artifactPaths")),
         "resolved_params_template": deepcopy(dict(params_template)),
     }

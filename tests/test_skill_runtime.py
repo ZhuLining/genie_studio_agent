@@ -181,6 +181,7 @@ def test_qr_pose_skill_gdk_outputs_action_data() -> None:
                 "action_data": {"zhua1": [1, 2, 3, 0, 0, 0, 1]},
                 "currentTagPose": [0, 0, 0, 0, 0, 0, 1],
                 "quality": {"ok": True},
+                "initialPhotoReturn": {"executed": True},
                 "artifactPaths": {"projectRoot": "/home/u/gsa_data/G2A0004BC01053"},
             }
 
@@ -199,6 +200,7 @@ def test_qr_pose_skill_gdk_outputs_action_data() -> None:
     assert result.outputs["project_name"] == "test10"
     assert result.outputs["action_data"] == {"zhua1": [1, 2, 3, 0, 0, 0, 1]}
     assert result.outputs["pose"] == [1, 2, 3, 0, 0, 0, 1]
+    assert result.outputs["initial_photo_return"] == {"executed": True}
 
 
 def test_motion_plan_skill_gdk_adapter_calls_gdk_runtime(monkeypatch) -> None:

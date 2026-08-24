@@ -497,3 +497,6 @@ transitions:
     assert params.project_name == "test10"
     assert params.initial_photo_point_name == "paizhao001"
     assert params.camera_id == "hand_left_color"
+    assert params.return_to_initial_photo_pose is True
+    assert params.return_pose_speed == pytest.approx(0.03)
+    assert params.return_pose_timeout == pytest.approx(50)
