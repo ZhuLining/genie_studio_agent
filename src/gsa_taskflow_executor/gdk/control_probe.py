@@ -48,14 +48,16 @@ NUDGE_J7_DELTA_RAD = 0.005
 ABS_POSE_LIFE_TIME_SECONDS = 0.5
 ABS_POSE_CONTROL_METHOD = "end_effector_pose_control"
 ABS_POSE_NUDGE_DELTA_M = 0.001
-ABS_POSE_NUDGE_AXIS = "z"
 
 ACTION_HOLD_CURRENT = "hold_current"
 ACTION_NUDGE_LEFT_J7 = "nudge_left_j7_0p005"
 ACTION_NUDGE_RIGHT_J7 = "nudge_right_j7_0p005"
+ACTION_ABS_POSE_CONTROL_FRAME = "abs_pose_control_frame"
 ACTION_ABS_POSE_DRY_RUN = "abs_pose_dry_run"
 ACTION_ABS_POSE_HOLD_CURRENT_LEFT = "abs_pose_hold_current_left"
 ACTION_ABS_POSE_HOLD_CURRENT_RIGHT = "abs_pose_hold_current_right"
+ACTION_ABS_POSE_NUDGE_LEFT_X_0P001 = "abs_pose_nudge_left_x_0p001"
+ACTION_ABS_POSE_NUDGE_LEFT_Y_0P001 = "abs_pose_nudge_left_y_0p001"
 ACTION_ABS_POSE_NUDGE_LEFT_Z_0P001 = "abs_pose_nudge_left_z_0p001"
 ACTION_ABS_POSE_NUDGE_LEFT_Z_0P001_LIFE_1S = "abs_pose_nudge_left_z_0p001_life_1s"
 ACTION_ABS_POSE_NUDGE_LEFT_Z_0P001_LIFE_2S = "abs_pose_nudge_left_z_0p001_life_2s"
@@ -64,9 +66,12 @@ ACTION_CONFIRMATION_TOKENS = {
     ACTION_HOLD_CURRENT: "HOLD_CURRENT_DUAL_ARM",
     ACTION_NUDGE_LEFT_J7: "NUDGE_LEFT_J7_0P005",
     ACTION_NUDGE_RIGHT_J7: "NUDGE_RIGHT_J7_0P005",
+    ACTION_ABS_POSE_CONTROL_FRAME: "ABS_POSE_CONTROL_FRAME",
     ACTION_ABS_POSE_DRY_RUN: "ABS_POSE_DRY_RUN",
     ACTION_ABS_POSE_HOLD_CURRENT_LEFT: "ABS_POSE_HOLD_CURRENT_LEFT",
     ACTION_ABS_POSE_HOLD_CURRENT_RIGHT: "ABS_POSE_HOLD_CURRENT_RIGHT",
+    ACTION_ABS_POSE_NUDGE_LEFT_X_0P001: "ABS_POSE_NUDGE_LEFT_X_0P001",
+    ACTION_ABS_POSE_NUDGE_LEFT_Y_0P001: "ABS_POSE_NUDGE_LEFT_Y_0P001",
     ACTION_ABS_POSE_NUDGE_LEFT_Z_0P001: "ABS_POSE_NUDGE_LEFT_Z_0P001",
     ACTION_ABS_POSE_NUDGE_LEFT_Z_0P001_LIFE_1S: "ABS_POSE_NUDGE_LEFT_Z_0P001_LIFE_1S",
     ACTION_ABS_POSE_NUDGE_LEFT_Z_0P001_LIFE_2S: "ABS_POSE_NUDGE_LEFT_Z_0P001_LIFE_2S",
@@ -237,6 +242,13 @@ def execute_action(
             settle_seconds=settle_seconds,
         )
 
+    if action == ACTION_ABS_POSE_CONTROL_FRAME:
+        return execute_abs_pose_control_frame_probe(
+            action=action,
+            robot=robot,
+            origin=origin,
+        )
+
     if action == ACTION_ABS_POSE_DRY_RUN:
         return execute_abs_pose_dry_run(
             action=action,
@@ -267,11 +279,39 @@ def execute_action(
             settle_seconds=settle_seconds,
         )
 
+    if action == ACTION_ABS_POSE_NUDGE_LEFT_X_0P001:
+        return execute_abs_pose_nudge_and_return(
+            action=action,
+            arm="left_arm",
+            axis="x",
+            delta_m=ABS_POSE_NUDGE_DELTA_M,
+            life_time_seconds=ABS_POSE_LIFE_TIME_SECONDS,
+            agibot_gdk=agibot_gdk,
+            robot=robot,
+            origin=origin,
+            sleep=sleep,
+            settle_seconds=settle_seconds,
+        )
+
+    if action == ACTION_ABS_POSE_NUDGE_LEFT_Y_0P001:
+        return execute_abs_pose_nudge_and_return(
+            action=action,
+            arm="left_arm",
+            axis="y",
+            delta_m=ABS_POSE_NUDGE_DELTA_M,
+            life_time_seconds=ABS_POSE_LIFE_TIME_SECONDS,
+            agibot_gdk=agibot_gdk,
+            robot=robot,
+            origin=origin,
+            sleep=sleep,
+            settle_seconds=settle_seconds,
+        )
+
     if action == ACTION_ABS_POSE_NUDGE_LEFT_Z_0P001:
         return execute_abs_pose_nudge_and_return(
             action=action,
             arm="left_arm",
-            axis=ABS_POSE_NUDGE_AXIS,
+            axis="z",
             delta_m=ABS_POSE_NUDGE_DELTA_M,
             life_time_seconds=ABS_POSE_LIFE_TIME_SECONDS,
             agibot_gdk=agibot_gdk,
@@ -285,7 +325,7 @@ def execute_action(
         return execute_abs_pose_nudge_and_return(
             action=action,
             arm="left_arm",
-            axis=ABS_POSE_NUDGE_AXIS,
+            axis="z",
             delta_m=ABS_POSE_NUDGE_DELTA_M,
             life_time_seconds=1.0,
             agibot_gdk=agibot_gdk,
@@ -299,7 +339,7 @@ def execute_action(
         return execute_abs_pose_nudge_and_return(
             action=action,
             arm="left_arm",
-            axis=ABS_POSE_NUDGE_AXIS,
+            axis="z",
             delta_m=ABS_POSE_NUDGE_DELTA_M,
             life_time_seconds=2.0,
             agibot_gdk=agibot_gdk,
@@ -392,6 +432,56 @@ def execute_abs_pose_dry_run(
         "safety_note": (
             "只构造 EndEffectorPose，不调用位姿控制；正式运动前仍需单独执行 "
             "hold-current 探针并以后置 motion_status 为准。"
+        ),
+        "safety_gate": {
+            "enabled": True,
+            "confirmed": True,
+            "expected_confirmation": ACTION_CONFIRMATION_TOKENS[action],
+        },
+        "raw": {
+            "motion_status": to_jsonable(origin.motion_status),
+            "whole_body_status": to_jsonable(origin.whole_body_status),
+        },
+    }
+
+
+def execute_abs_pose_control_frame_probe(
+    *,
+    action: str,
+    robot: Any,
+    origin: JointSnapshot,
+) -> dict[str, object]:
+    get_control_frame = getattr(robot, "get_end_pose_control_frame", None)
+    frame_result: object | None = None
+    frame_error: dict[str, object] | None = None
+    if callable(get_control_frame):
+        try:
+            frame_result = get_control_frame()
+        except Exception as error:
+            frame_error = {
+                "error_type": type(error).__name__,
+                "error_msg": str(error),
+            }
+
+    # 只读确认当前末端位姿控制参考系；switch_end_pose_control_frame 是写接口，
+    # 不在探针里自动调用，避免改变后续 ABS_POSE 语义。
+    return {
+        "available": True,
+        "executed": False,
+        "probe_succeeded": frame_error is None,
+        "motion_attempted": False,
+        "backend": GDK_BACKEND,
+        "action": action,
+        "collected_at": utc_now_iso(),
+        "control_method": ABS_POSE_CONTROL_METHOD,
+        "control_frame_method": "get_end_pose_control_frame",
+        "control_frame_method_available": callable(get_control_frame),
+        "control_frame": to_jsonable(frame_result),
+        "control_frame_error": frame_error,
+        "switch_method_available": callable(getattr(robot, "switch_end_pose_control_frame", None)),
+        "frame_names": motion_frame_names(origin.motion_status),
+        "current_frame_poses": serializable_frame_poses(
+            extract_arm_frame_poses(origin.motion_status)
         ),
         "safety_gate": {
             "enabled": True,

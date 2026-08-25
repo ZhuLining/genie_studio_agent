@@ -5,8 +5,11 @@ from typing import Any
 import pytest
 
 from gsa_taskflow_executor.gdk.control_probe import (
+    ACTION_ABS_POSE_CONTROL_FRAME,
     ACTION_ABS_POSE_DRY_RUN,
     ACTION_ABS_POSE_HOLD_CURRENT_RIGHT,
+    ACTION_ABS_POSE_NUDGE_LEFT_X_0P001,
+    ACTION_ABS_POSE_NUDGE_LEFT_Y_0P001,
     ACTION_ABS_POSE_NUDGE_LEFT_Z_0P001,
     ACTION_ABS_POSE_NUDGE_LEFT_Z_0P001_LIFE_2S,
     ACTION_HOLD_CURRENT,
@@ -134,6 +137,12 @@ class FakeRobot:
         self.pose_control_calls.append(end_pose)
         return 0
 
+    def get_end_pose_control_frame(self) -> list[str]:
+        return ["base_link", "tool0"]
+
+    def switch_end_pose_control_frame(self) -> int:
+        raise AssertionError("control frame probe must not switch frame")
+
 
 class FakeAgibotGdk:
     robot = FakeRobot()
@@ -243,6 +252,30 @@ def test_gdk_control_probe_abs_pose_dry_run_builds_targets_without_motion() -> N
     assert dry_run_targets["right_arm"]["group"] == 8
 
 
+def test_gdk_control_probe_abs_pose_control_frame_is_read_only() -> None:
+    FakeAgibotGdk.reset()
+
+    result = run_gdk_control_probe(
+        ACTION_ABS_POSE_CONTROL_FRAME,
+        environ={
+            "ENABLE_GDK_CONTROL": "1",
+            "CONFIRM_GDK_CONTROL": "ABS_POSE_CONTROL_FRAME",
+        },
+        import_module=lambda _name: FakeAgibotGdk,
+        sleep=lambda _seconds: None,
+        settle_seconds=0,
+    )
+
+    assert result["executed"] is False
+    assert result["probe_succeeded"] is True
+    assert result["motion_attempted"] is False
+    assert result["control_frame_method_available"] is True
+    assert result["switch_method_available"] is True
+    assert result["control_frame"] == ["base_link", "tool0"]
+    assert FakeAgibotGdk.robot.move_calls == []
+    assert FakeAgibotGdk.robot.pose_control_calls == []
+
+
 def test_gdk_control_probe_abs_pose_hold_current_right_calls_pose_control() -> None:
     FakeAgibotGdk.reset()
 
@@ -301,6 +334,47 @@ def test_gdk_control_probe_abs_pose_nudge_left_z_returns_to_origin() -> None:
     mid = result["mid"]
     assert isinstance(mid, dict)
     assert mid["motion_status_ok"] is True
+
+
+def test_gdk_control_probe_abs_pose_nudge_left_x_and_y_return_to_origin() -> None:
+    FakeAgibotGdk.reset()
+
+    x_result = run_gdk_control_probe(
+        ACTION_ABS_POSE_NUDGE_LEFT_X_0P001,
+        environ={
+            "ENABLE_GDK_CONTROL": "1",
+            "CONFIRM_GDK_CONTROL": "ABS_POSE_NUDGE_LEFT_X_0P001",
+        },
+        import_module=lambda _name: FakeAgibotGdk,
+        sleep=lambda _seconds: None,
+        settle_seconds=0,
+    )
+
+    assert x_result["executed"] is True
+    assert x_result["probe_succeeded"] is True
+    assert x_result["nudge_axis"] == "x"
+    x_nudge_call, x_return_call = FakeAgibotGdk.robot.pose_control_calls
+    assert x_nudge_call.left_end_effector_pose.position.x == pytest.approx(0.101)
+    assert x_return_call.left_end_effector_pose.position.x == pytest.approx(0.1)
+
+    FakeAgibotGdk.reset()
+    y_result = run_gdk_control_probe(
+        ACTION_ABS_POSE_NUDGE_LEFT_Y_0P001,
+        environ={
+            "ENABLE_GDK_CONTROL": "1",
+            "CONFIRM_GDK_CONTROL": "ABS_POSE_NUDGE_LEFT_Y_0P001",
+        },
+        import_module=lambda _name: FakeAgibotGdk,
+        sleep=lambda _seconds: None,
+        settle_seconds=0,
+    )
+
+    assert y_result["executed"] is True
+    assert y_result["probe_succeeded"] is True
+    assert y_result["nudge_axis"] == "y"
+    y_nudge_call, y_return_call = FakeAgibotGdk.robot.pose_control_calls
+    assert y_nudge_call.left_end_effector_pose.position.y == pytest.approx(0.201)
+    assert y_return_call.left_end_effector_pose.position.y == pytest.approx(0.2)
 
 
 def test_gdk_control_probe_abs_pose_nudge_left_z_life_2s_uses_longer_lifetime() -> None:
