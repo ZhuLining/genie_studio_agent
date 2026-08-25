@@ -47,6 +47,8 @@ DEFAULT_VELOCITY = 0.02
 NUDGE_J7_DELTA_RAD = 0.005
 ABS_POSE_LIFE_TIME_SECONDS = 0.5
 ABS_POSE_CONTROL_METHOD = "end_effector_pose_control"
+ABS_POSE_NUDGE_DELTA_M = 0.001
+ABS_POSE_NUDGE_AXIS = "z"
 
 ACTION_HOLD_CURRENT = "hold_current"
 ACTION_NUDGE_LEFT_J7 = "nudge_left_j7_0p005"
@@ -54,6 +56,7 @@ ACTION_NUDGE_RIGHT_J7 = "nudge_right_j7_0p005"
 ACTION_ABS_POSE_DRY_RUN = "abs_pose_dry_run"
 ACTION_ABS_POSE_HOLD_CURRENT_LEFT = "abs_pose_hold_current_left"
 ACTION_ABS_POSE_HOLD_CURRENT_RIGHT = "abs_pose_hold_current_right"
+ACTION_ABS_POSE_NUDGE_LEFT_Z_0P001 = "abs_pose_nudge_left_z_0p001"
 
 ACTION_CONFIRMATION_TOKENS = {
     ACTION_HOLD_CURRENT: "HOLD_CURRENT_DUAL_ARM",
@@ -62,6 +65,7 @@ ACTION_CONFIRMATION_TOKENS = {
     ACTION_ABS_POSE_DRY_RUN: "ABS_POSE_DRY_RUN",
     ACTION_ABS_POSE_HOLD_CURRENT_LEFT: "ABS_POSE_HOLD_CURRENT_LEFT",
     ACTION_ABS_POSE_HOLD_CURRENT_RIGHT: "ABS_POSE_HOLD_CURRENT_RIGHT",
+    ACTION_ABS_POSE_NUDGE_LEFT_Z_0P001: "ABS_POSE_NUDGE_LEFT_Z_0P001",
 }
 
 ALLOWED_ACTIONS = tuple(ACTION_CONFIRMATION_TOKENS)
@@ -78,6 +82,30 @@ class JointSnapshot:
 class AbsPoseTarget:
     end_pose: object
     group_value: object
+
+
+@dataclass(frozen=True)
+class AbsPoseProbeState:
+    motion_status: object
+    whole_body_status: object
+    positions: list[float]
+    frame_poses: dict[str, dict[str, object]]
+    diffs: list[float]
+    motion_error_code: object
+    motion_error_msg: str
+    whole_body_error: str | None
+
+    @property
+    def motion_status_ok(self) -> bool:
+        return is_zero_error(self.motion_error_code)
+
+    @property
+    def whole_body_status_ok(self) -> bool:
+        return self.whole_body_error is None
+
+    @property
+    def ok(self) -> bool:
+        return self.motion_status_ok and self.whole_body_status_ok
 
 
 def run_gdk_control_probe(
@@ -228,6 +256,19 @@ def execute_action(
         return execute_abs_pose_hold_current(
             action=action,
             arm="right_arm",
+            agibot_gdk=agibot_gdk,
+            robot=robot,
+            origin=origin,
+            sleep=sleep,
+            settle_seconds=settle_seconds,
+        )
+
+    if action == ACTION_ABS_POSE_NUDGE_LEFT_Z_0P001:
+        return execute_abs_pose_nudge_and_return(
+            action=action,
+            arm="left_arm",
+            axis=ABS_POSE_NUDGE_AXIS,
+            delta_m=ABS_POSE_NUDGE_DELTA_M,
             agibot_gdk=agibot_gdk,
             robot=robot,
             origin=origin,
@@ -402,6 +443,116 @@ def execute_abs_pose_hold_current(
     }
 
 
+def execute_abs_pose_nudge_and_return(
+    *,
+    action: str,
+    arm: str,
+    axis: str,
+    delta_m: float,
+    agibot_gdk: Any,
+    robot: Any,
+    origin: JointSnapshot,
+    sleep: Callable[[float], None],
+    settle_seconds: float,
+) -> dict[str, object]:
+    frame_poses = extract_arm_frame_poses(origin.motion_status)
+    origin_target = build_abs_pose_target(
+        agibot_gdk=agibot_gdk,
+        frame_poses=frame_poses,
+        arm=arm,
+        life_time_seconds=ABS_POSE_LIFE_TIME_SECONDS,
+    )
+    nudge_target = build_abs_pose_target(
+        agibot_gdk=agibot_gdk,
+        frame_poses=frame_poses,
+        arm=arm,
+        life_time_seconds=ABS_POSE_LIFE_TIME_SECONDS,
+    )
+    offset_abs_pose_target(nudge_target, arm=arm, axis=axis, delta_m=delta_m)
+
+    control_method = getattr(robot, ABS_POSE_CONTROL_METHOD, None)
+    if not callable(control_method):
+        raise RuntimeError(f"robot.{ABS_POSE_CONTROL_METHOD} is unavailable")
+
+    # 小偏移探针是正式 ABS_POSE 前的最后一道真机门禁：先 1mm 单轴偏移，
+    # 中间状态正常才尝试回原，避免在控制器报错后继续叠加命令。
+    nudge_return = control_method(nudge_target.end_pose)
+    sleep(settle_seconds)
+    mid = capture_abs_pose_probe_state(robot, origin_positions=origin.positions)
+
+    return_attempted = mid.ok
+    return_return: object | None = None
+    after: AbsPoseProbeState | None = None
+    return_skipped_reason: str | None = None
+    if return_attempted:
+        return_return = control_method(origin_target.end_pose)
+        sleep(settle_seconds)
+        after = capture_abs_pose_probe_state(robot, origin_positions=origin.positions)
+    else:
+        return_skipped_reason = (
+            "nudge 后 motion/whole-body 状态异常，已跳过回原命令，需现场人工判断。"
+        )
+
+    frame_name = ARM_FRAME_NAMES[arm]
+    probe_succeeded = mid.ok and after is not None and after.ok
+    return {
+        "available": True,
+        "executed": True,
+        "probe_succeeded": probe_succeeded,
+        "motion_attempted": True,
+        "backend": GDK_BACKEND,
+        "action": action,
+        "collected_at": utc_now_iso(),
+        "control_method": ABS_POSE_CONTROL_METHOD,
+        "arm": arm,
+        "arm_frame_name": frame_name,
+        "end_effector_group": to_jsonable(nudge_target.group_value),
+        "life_time_seconds": ABS_POSE_LIFE_TIME_SECONDS,
+        "nudge_axis": axis,
+        "nudge_delta_m": delta_m,
+        "return_attempted": return_attempted,
+        "return_skipped_reason": return_skipped_reason,
+        "control_returns": {
+            "nudge": to_jsonable(nudge_return),
+            "return_to_origin": to_jsonable(return_return),
+        },
+        "origin_positions": origin.positions,
+        "current_frame_poses": serializable_frame_poses(frame_poses),
+        "target_frame_delta_m": {axis: delta_m},
+        "mid": abs_pose_state_payload(mid),
+        "mid_arm_frame_delta_m": frame_position_delta_m(
+            before=frame_poses,
+            after=mid.frame_poses,
+            frame_name=frame_name,
+        ),
+        "after": abs_pose_state_payload(after) if after is not None else None,
+        "after_arm_frame_delta_m": (
+            frame_position_delta_m(
+                before=frame_poses,
+                after=after.frame_poses,
+                frame_name=frame_name,
+            )
+            if after is not None
+            else None
+        ),
+        "safety_gate": {
+            "enabled": True,
+            "confirmed": True,
+            "expected_confirmation": ACTION_CONFIRMATION_TOKENS[action],
+        },
+        "raw": {
+            "motion_status_before": to_jsonable(origin.motion_status),
+            "whole_body_status_before": to_jsonable(origin.whole_body_status),
+            "motion_status_mid": to_jsonable(mid.motion_status),
+            "whole_body_status_mid": to_jsonable(mid.whole_body_status),
+            "motion_status_after": to_jsonable(after.motion_status) if after else None,
+            "whole_body_status_after": to_jsonable(after.whole_body_status)
+            if after
+            else None,
+        },
+    }
+
+
 def build_abs_pose_target_summary(
     *,
     agibot_gdk: Any,
@@ -457,6 +608,25 @@ def build_abs_pose_target(
     return AbsPoseTarget(end_pose=end_pose, group_value=group_value)
 
 
+def offset_abs_pose_target(
+    target: AbsPoseTarget,
+    *,
+    arm: str,
+    axis: str,
+    delta_m: float,
+) -> None:
+    if axis not in {"x", "y", "z"}:
+        raise ValueError(f"unsupported ABS_POSE nudge axis: {axis}")
+    pose_attr = (
+        "left_end_effector_pose"
+        if arm == "left_arm"
+        else "right_end_effector_pose"
+    )
+    pose = getattr(target.end_pose, pose_attr)
+    position = pose.position
+    setattr(position, axis, float(getattr(position, axis)) + float(delta_m))
+
+
 def get_abs_pose_group_value(agibot_gdk: Any, arm: str) -> object:
     if arm == "left_arm":
         name = "kLeftArm"
@@ -475,6 +645,74 @@ def get_abs_pose_group_value(agibot_gdk: Any, arm: str) -> object:
         if value is not None:
             return value
     raise RuntimeError(f"agibot_gdk.{name} is unavailable")
+
+
+def capture_abs_pose_probe_state(
+    robot: Any,
+    *,
+    origin_positions: Sequence[float],
+) -> AbsPoseProbeState:
+    motion_status = robot.get_motion_control_status()
+    whole_body_status = robot.get_whole_body_status()
+    positions = read_dual_arm_positions_without_status_validation(robot)
+    diffs = position_diffs(positions, origin_positions)
+    motion_error_code = getattr(motion_status, "error_code", 0)
+    motion_error_msg = str(getattr(motion_status, "error_msg", ""))
+    whole_body_error = validate_whole_body_status_error(whole_body_status)
+    return AbsPoseProbeState(
+        motion_status=motion_status,
+        whole_body_status=whole_body_status,
+        positions=positions,
+        frame_poses=extract_arm_frame_poses(motion_status),
+        diffs=diffs,
+        motion_error_code=motion_error_code,
+        motion_error_msg=motion_error_msg,
+        whole_body_error=whole_body_error,
+    )
+
+
+def abs_pose_state_payload(state: AbsPoseProbeState | None) -> dict[str, object] | None:
+    if state is None:
+        return None
+    return {
+        "positions": state.positions,
+        "diffs": state.diffs,
+        "max_abs_diff": max((abs(diff) for diff in state.diffs), default=0.0),
+        "motion_status_ok": state.motion_status_ok,
+        "motion_error_code": to_jsonable(state.motion_error_code),
+        "motion_error_msg": state.motion_error_msg,
+        "whole_body_status_ok": state.whole_body_status_ok,
+        "whole_body_status_error": state.whole_body_error,
+        "frame_poses": serializable_frame_poses(state.frame_poses),
+    }
+
+
+def frame_position_delta_m(
+    *,
+    before: Mapping[str, Mapping[str, object]],
+    after: Mapping[str, Mapping[str, object]],
+    frame_name: str,
+) -> dict[str, object] | None:
+    before_pose = before.get(frame_name)
+    after_pose = after.get(frame_name)
+    if before_pose is None or after_pose is None:
+        return None
+    before_position = before_pose.get("position")
+    after_position = after_pose.get("position")
+    if not isinstance(before_position, list) or not isinstance(after_position, list):
+        return None
+    if len(before_position) != 3 or len(after_position) != 3:
+        return None
+    delta = [
+        float(after_value) - float(before_value)
+        for before_value, after_value in zip(before_position, after_position, strict=True)
+    ]
+    return {
+        "x": delta[0],
+        "y": delta[1],
+        "z": delta[2],
+        "norm": sum(value * value for value in delta) ** 0.5,
+    }
 
 
 def copy_gdk_pose(agibot_gdk: Any, pose: Any) -> Any:
