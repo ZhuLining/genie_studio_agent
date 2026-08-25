@@ -8,6 +8,7 @@ from gsa_taskflow_executor.gdk.control_probe import (
     ACTION_ABS_POSE_DRY_RUN,
     ACTION_ABS_POSE_HOLD_CURRENT_RIGHT,
     ACTION_ABS_POSE_NUDGE_LEFT_Z_0P001,
+    ACTION_ABS_POSE_NUDGE_LEFT_Z_0P001_LIFE_2S,
     ACTION_HOLD_CURRENT,
     ACTION_NUDGE_LEFT_J7,
     ACTION_NUDGE_RIGHT_J7,
@@ -300,6 +301,28 @@ def test_gdk_control_probe_abs_pose_nudge_left_z_returns_to_origin() -> None:
     mid = result["mid"]
     assert isinstance(mid, dict)
     assert mid["motion_status_ok"] is True
+
+
+def test_gdk_control_probe_abs_pose_nudge_left_z_life_2s_uses_longer_lifetime() -> None:
+    FakeAgibotGdk.reset()
+
+    result = run_gdk_control_probe(
+        ACTION_ABS_POSE_NUDGE_LEFT_Z_0P001_LIFE_2S,
+        environ={
+            "ENABLE_GDK_CONTROL": "1",
+            "CONFIRM_GDK_CONTROL": "ABS_POSE_NUDGE_LEFT_Z_0P001_LIFE_2S",
+        },
+        import_module=lambda _name: FakeAgibotGdk,
+        sleep=lambda _seconds: None,
+        settle_seconds=0,
+    )
+
+    assert result["executed"] is True
+    assert result["probe_succeeded"] is True
+    assert result["life_time_seconds"] == pytest.approx(2.0)
+    assert len(FakeAgibotGdk.robot.pose_control_calls) == 2
+    assert FakeAgibotGdk.robot.pose_control_calls[0].life_time == pytest.approx(2.0)
+    assert FakeAgibotGdk.robot.pose_control_calls[1].life_time == pytest.approx(2.0)
 
 
 def test_gdk_control_probe_nudge_left_j7_returns_to_origin() -> None:

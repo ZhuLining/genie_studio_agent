@@ -57,6 +57,8 @@ ACTION_ABS_POSE_DRY_RUN = "abs_pose_dry_run"
 ACTION_ABS_POSE_HOLD_CURRENT_LEFT = "abs_pose_hold_current_left"
 ACTION_ABS_POSE_HOLD_CURRENT_RIGHT = "abs_pose_hold_current_right"
 ACTION_ABS_POSE_NUDGE_LEFT_Z_0P001 = "abs_pose_nudge_left_z_0p001"
+ACTION_ABS_POSE_NUDGE_LEFT_Z_0P001_LIFE_1S = "abs_pose_nudge_left_z_0p001_life_1s"
+ACTION_ABS_POSE_NUDGE_LEFT_Z_0P001_LIFE_2S = "abs_pose_nudge_left_z_0p001_life_2s"
 
 ACTION_CONFIRMATION_TOKENS = {
     ACTION_HOLD_CURRENT: "HOLD_CURRENT_DUAL_ARM",
@@ -66,6 +68,8 @@ ACTION_CONFIRMATION_TOKENS = {
     ACTION_ABS_POSE_HOLD_CURRENT_LEFT: "ABS_POSE_HOLD_CURRENT_LEFT",
     ACTION_ABS_POSE_HOLD_CURRENT_RIGHT: "ABS_POSE_HOLD_CURRENT_RIGHT",
     ACTION_ABS_POSE_NUDGE_LEFT_Z_0P001: "ABS_POSE_NUDGE_LEFT_Z_0P001",
+    ACTION_ABS_POSE_NUDGE_LEFT_Z_0P001_LIFE_1S: "ABS_POSE_NUDGE_LEFT_Z_0P001_LIFE_1S",
+    ACTION_ABS_POSE_NUDGE_LEFT_Z_0P001_LIFE_2S: "ABS_POSE_NUDGE_LEFT_Z_0P001_LIFE_2S",
 }
 
 ALLOWED_ACTIONS = tuple(ACTION_CONFIRMATION_TOKENS)
@@ -269,6 +273,35 @@ def execute_action(
             arm="left_arm",
             axis=ABS_POSE_NUDGE_AXIS,
             delta_m=ABS_POSE_NUDGE_DELTA_M,
+            life_time_seconds=ABS_POSE_LIFE_TIME_SECONDS,
+            agibot_gdk=agibot_gdk,
+            robot=robot,
+            origin=origin,
+            sleep=sleep,
+            settle_seconds=settle_seconds,
+        )
+
+    if action == ACTION_ABS_POSE_NUDGE_LEFT_Z_0P001_LIFE_1S:
+        return execute_abs_pose_nudge_and_return(
+            action=action,
+            arm="left_arm",
+            axis=ABS_POSE_NUDGE_AXIS,
+            delta_m=ABS_POSE_NUDGE_DELTA_M,
+            life_time_seconds=1.0,
+            agibot_gdk=agibot_gdk,
+            robot=robot,
+            origin=origin,
+            sleep=sleep,
+            settle_seconds=settle_seconds,
+        )
+
+    if action == ACTION_ABS_POSE_NUDGE_LEFT_Z_0P001_LIFE_2S:
+        return execute_abs_pose_nudge_and_return(
+            action=action,
+            arm="left_arm",
+            axis=ABS_POSE_NUDGE_AXIS,
+            delta_m=ABS_POSE_NUDGE_DELTA_M,
+            life_time_seconds=2.0,
             agibot_gdk=agibot_gdk,
             robot=robot,
             origin=origin,
@@ -449,6 +482,7 @@ def execute_abs_pose_nudge_and_return(
     arm: str,
     axis: str,
     delta_m: float,
+    life_time_seconds: float,
     agibot_gdk: Any,
     robot: Any,
     origin: JointSnapshot,
@@ -460,13 +494,13 @@ def execute_abs_pose_nudge_and_return(
         agibot_gdk=agibot_gdk,
         frame_poses=frame_poses,
         arm=arm,
-        life_time_seconds=ABS_POSE_LIFE_TIME_SECONDS,
+        life_time_seconds=life_time_seconds,
     )
     nudge_target = build_abs_pose_target(
         agibot_gdk=agibot_gdk,
         frame_poses=frame_poses,
         arm=arm,
-        life_time_seconds=ABS_POSE_LIFE_TIME_SECONDS,
+        life_time_seconds=life_time_seconds,
     )
     offset_abs_pose_target(nudge_target, arm=arm, axis=axis, delta_m=delta_m)
 
@@ -507,7 +541,7 @@ def execute_abs_pose_nudge_and_return(
         "arm": arm,
         "arm_frame_name": frame_name,
         "end_effector_group": to_jsonable(nudge_target.group_value),
-        "life_time_seconds": ABS_POSE_LIFE_TIME_SECONDS,
+        "life_time_seconds": life_time_seconds,
         "nudge_axis": axis,
         "nudge_delta_m": delta_m,
         "return_attempted": return_attempted,
