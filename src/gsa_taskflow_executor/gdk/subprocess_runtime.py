@@ -113,6 +113,7 @@ def run_motion_abs_joint_in_subprocess(
     *,
     action: str,
     safety_gate: Mapping[str, object],
+    abs_pose_limits: object | None = None,
 ) -> dict[str, object]:
     from gsa_taskflow_executor.gdk.worker_runtime import run_motion_abs_joint_in_worker
 
@@ -120,6 +121,7 @@ def run_motion_abs_joint_in_subprocess(
         motion_params,
         action=action,
         safety_gate=safety_gate,
+        abs_pose_limits=abs_pose_limits,
     )
 
 

@@ -11,6 +11,7 @@ import importlib
 import os
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
+from dataclasses import dataclass
 from math import acos, degrees, isfinite, sqrt
 from typing import Any
 
@@ -62,9 +63,15 @@ GDK_CONTROL_MODE_UNSUPPORTED = "GDK_CONTROL_MODE_UNSUPPORTED"
 UNSUPPORTED_CARTESIAN_IMPEDANCE_MODE = "CTRL_CARTESIAN_IMPEDANCE"
 UNSUPPORTED_CONTROL_MODE_MESSAGE = "当前为笛卡尔阻抗模式，请切换到关节位置/规划控制模式后重试"
 TASKFLOW_ABS_POSE_ALLOWED_BODY_PARTS = ("left_arm", "right_arm")
-TASKFLOW_ABS_POSE_MAX_TRANSLATION_M = 0.01
-TASKFLOW_ABS_POSE_MAX_ROTATION_DEG = 5.0
-TASKFLOW_ABS_POSE_LIFE_TIME_SECONDS = 0.5
+TASKFLOW_ABS_POSE_MAX_TRANSLATION_M = 0.30
+TASKFLOW_ABS_POSE_MAX_ROTATION_DEG = 90.0
+TASKFLOW_ABS_POSE_LIFE_TIME_SECONDS = 1.0
+TASKFLOW_ABS_POSE_MAX_TRANSLATION_ENV = "TASKFLOW_ABS_POSE_MAX_TRANSLATION_M"
+TASKFLOW_ABS_POSE_MAX_ROTATION_ENV = "TASKFLOW_ABS_POSE_MAX_ROTATION_DEG"
+TASKFLOW_ABS_POSE_LIFE_TIME_ENV = "TASKFLOW_ABS_POSE_LIFE_TIME_SECONDS"
+TASKFLOW_ABS_POSE_HARD_MAX_TRANSLATION_M = 0.50
+TASKFLOW_ABS_POSE_HARD_MAX_ROTATION_DEG = 180.0
+TASKFLOW_ABS_POSE_HARD_MAX_LIFE_TIME_SECONDS = 5.0
 WAIST_JOINTS = [
     "idx01_body_joint1",
     "idx02_body_joint2",
@@ -72,6 +79,26 @@ WAIST_JOINTS = [
     "idx04_body_joint4",
     "idx05_body_joint5",
 ]
+
+
+@dataclass(frozen=True)
+class AbsPoseSafetyLimits:
+    """ABS_POSE 运行期安全阈值。
+
+    默认值已按二维码定位闭环验收适当放开；现场仍可通过 executor 环境变量
+    显式收紧或放宽，但会受 hard max 约束，避免配置错误导致无边界运动。
+    """
+
+    max_translation_m: float = TASKFLOW_ABS_POSE_MAX_TRANSLATION_M
+    max_rotation_deg: float = TASKFLOW_ABS_POSE_MAX_ROTATION_DEG
+    life_time_seconds: float = TASKFLOW_ABS_POSE_LIFE_TIME_SECONDS
+
+    def to_payload(self) -> dict[str, float]:
+        return {
+            "max_translation_m": self.max_translation_m,
+            "max_rotation_deg": self.max_rotation_deg,
+            "life_time_seconds": self.life_time_seconds,
+        }
 
 
 class UnsupportedGdkControlModeError(RuntimeError):
@@ -115,6 +142,12 @@ def run_gdk_motion_plan_abs_joint(
     if validation_result is not None:
         return validation_result
 
+    action = motion_action(motion_params)
+    abs_pose_limits_result = build_abs_pose_limits_or_refusal(env, action)
+    if isinstance(abs_pose_limits_result, Mapping):
+        return dict(abs_pose_limits_result)
+    abs_pose_limits = abs_pose_limits_result
+
     # 恢复门：上次 timeout/cancel 后必须先采集位姿确认安全
     recovery_result = build_recovery_refused_result(env)
     if recovery_result is not None:
@@ -126,9 +159,8 @@ def run_gdk_motion_plan_abs_joint(
             motion_params,
             import_module=import_module,
             session_manager=session_manager,
+            abs_pose_limits=abs_pose_limits,
         )
-
-    action = motion_action(motion_params)
 
     # 父进程通过 GdkSessionManager 持锁，C 扩展调用在常驻 worker 子进程完成
     manager = session_manager or GdkSessionManager()
@@ -153,6 +185,7 @@ def run_gdk_motion_plan_abs_joint(
             motion_params,
             action=action,
             safety_gate=confirmed_taskflow_safety_gate(),
+            abs_pose_limits=abs_pose_limits,
         )
         maybe_mark_gdk_recovery_required(result, operation=action)
         result["gdk_parent_lock"] = {
@@ -167,6 +200,7 @@ def run_gdk_motion_plan_abs_joint_in_process(
     *,
     import_module: Callable[[str], Any] = importlib.import_module,
     session_manager: GdkSessionManager | None = None,
+    abs_pose_limits: AbsPoseSafetyLimits | None = None,
 ) -> dict[str, object]:
     """进程内执行 motion_plan（测试模式）。直接 import agibot_gdk 并调用。"""
     action = motion_action(motion_params)
@@ -206,6 +240,7 @@ def run_gdk_motion_plan_abs_joint_in_process(
                 robot,
                 motion_params,
                 agibot_gdk=lease.agibot_gdk,
+                abs_pose_limits=abs_pose_limits,
             )
         except UnsupportedGdkControlModeError as error:
             result = refused_control_mode_result(error)
@@ -246,6 +281,120 @@ def confirmed_taskflow_safety_gate() -> dict[str, object]:
     }
 
 
+def build_abs_pose_limits_or_refusal(
+    env: Mapping[str, str],
+    action: str,
+) -> AbsPoseSafetyLimits | dict[str, object] | None:
+    """读取 ABS_POSE 安全阈值；非 ABS_POSE 动作不受这些配置影响。"""
+    if action != ACTION_TASKFLOW_ABS_POSE:
+        return None
+    try:
+        return read_abs_pose_safety_limits(env)
+    except ValueError as error:
+        return refused_result(
+            stage="validate_abs_pose_limits",
+            message=str(error),
+            action=ACTION_TASKFLOW_ABS_POSE,
+        )
+
+
+def read_abs_pose_safety_limits(env: Mapping[str, str]) -> AbsPoseSafetyLimits:
+    """从环境变量读取 ABS_POSE 安全阈值。
+
+    放宽位移/旋转边界属于真机控制风险开关，必须有上限约束，避免配置 typo
+    导致末端大范围运动。
+    """
+
+    return AbsPoseSafetyLimits(
+        max_translation_m=read_float_env_with_bounds(
+            env,
+            TASKFLOW_ABS_POSE_MAX_TRANSLATION_ENV,
+            default=TASKFLOW_ABS_POSE_MAX_TRANSLATION_M,
+            hard_max=TASKFLOW_ABS_POSE_HARD_MAX_TRANSLATION_M,
+        ),
+        max_rotation_deg=read_float_env_with_bounds(
+            env,
+            TASKFLOW_ABS_POSE_MAX_ROTATION_ENV,
+            default=TASKFLOW_ABS_POSE_MAX_ROTATION_DEG,
+            hard_max=TASKFLOW_ABS_POSE_HARD_MAX_ROTATION_DEG,
+        ),
+        life_time_seconds=read_float_env_with_bounds(
+            env,
+            TASKFLOW_ABS_POSE_LIFE_TIME_ENV,
+            default=TASKFLOW_ABS_POSE_LIFE_TIME_SECONDS,
+            hard_max=TASKFLOW_ABS_POSE_HARD_MAX_LIFE_TIME_SECONDS,
+        ),
+    )
+
+
+def read_float_env_with_bounds(
+    env: Mapping[str, str],
+    name: str,
+    *,
+    default: float,
+    hard_max: float,
+) -> float:
+    raw_value = env.get(name)
+    if raw_value is None or raw_value.strip() == "":
+        return default
+    try:
+        value = float(raw_value)
+    except ValueError as error:
+        raise ValueError(f"{name} must be a finite positive number") from error
+    if not isfinite(value) or value <= 0:
+        raise ValueError(f"{name} must be a finite positive number")
+    if value > hard_max:
+        raise ValueError(f"{name} must be <= {hard_max}")
+    return value
+
+
+def normalize_abs_pose_limits(
+    limits: AbsPoseSafetyLimits | Mapping[str, object] | None,
+) -> AbsPoseSafetyLimits:
+    """worker payload 通过 dict 传递，执行前统一还原并再次校验。"""
+    if limits is None:
+        return AbsPoseSafetyLimits()
+    if isinstance(limits, AbsPoseSafetyLimits):
+        return limits
+    try:
+        normalized = AbsPoseSafetyLimits(
+            max_translation_m=float(
+                limits.get("max_translation_m", TASKFLOW_ABS_POSE_MAX_TRANSLATION_M)
+            ),
+            max_rotation_deg=float(
+                limits.get("max_rotation_deg", TASKFLOW_ABS_POSE_MAX_ROTATION_DEG)
+            ),
+            life_time_seconds=float(
+                limits.get("life_time_seconds", TASKFLOW_ABS_POSE_LIFE_TIME_SECONDS)
+            ),
+        )
+    except (TypeError, ValueError) as error:
+        raise RuntimeError("ABS_POSE safety limits payload is invalid") from error
+    validate_abs_pose_limits(normalized)
+    return normalized
+
+
+def validate_abs_pose_limits(limits: AbsPoseSafetyLimits) -> None:
+    if (
+        not isfinite(limits.max_translation_m)
+        or limits.max_translation_m <= 0
+        or limits.max_translation_m > TASKFLOW_ABS_POSE_HARD_MAX_TRANSLATION_M
+    ):
+        raise RuntimeError("ABS_POSE max_translation_m safety limit is invalid")
+    if (
+        not isfinite(limits.max_rotation_deg)
+        or limits.max_rotation_deg <= 0
+        or limits.max_rotation_deg > TASKFLOW_ABS_POSE_HARD_MAX_ROTATION_DEG
+    ):
+        raise RuntimeError("ABS_POSE max_rotation_deg safety limit is invalid")
+    if (
+        not isfinite(limits.life_time_seconds)
+        or limits.life_time_seconds <= 0
+        or limits.life_time_seconds > TASKFLOW_ABS_POSE_HARD_MAX_LIFE_TIME_SECONDS
+    ):
+        raise RuntimeError("ABS_POSE life_time_seconds safety limit is invalid")
+
+
 def motion_action(motion_params: MotionPlanParams) -> str:
     """根据首个 target 推断 worker/timeout payload action。"""
     control_type = motion_params.targets[0].control_type if motion_params.targets else "ABS_JOINT"
@@ -264,13 +413,19 @@ def execute_motion_plan_targets(
     motion_params: MotionPlanParams,
     *,
     agibot_gdk: Any | None = None,
+    abs_pose_limits: AbsPoseSafetyLimits | Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """按 control_type 分派运动运行时。"""
     control_type = motion_params.targets[0].control_type
     if control_type == "ABS_POSE":
         if agibot_gdk is None:
             raise RuntimeError("ABS_POSE requires initialized agibot_gdk module")
-        return execute_abs_pose_target(robot, motion_params, agibot_gdk=agibot_gdk)
+        return execute_abs_pose_target(
+            robot,
+            motion_params,
+            agibot_gdk=agibot_gdk,
+            abs_pose_limits=abs_pose_limits,
+        )
     return execute_abs_joint_targets(robot, motion_params, agibot_gdk=agibot_gdk)
 
 
@@ -357,6 +512,7 @@ def execute_abs_pose_target(
     motion_params: MotionPlanParams,
     *,
     agibot_gdk: Any,
+    abs_pose_limits: AbsPoseSafetyLimits | Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """执行首版 ABS_POSE。
 
@@ -365,6 +521,7 @@ def execute_abs_pose_target(
     """
     target = motion_params.targets[0]
     arm = target.body_part
+    limits = normalize_abs_pose_limits(abs_pose_limits)
     pose_values = read_abs_pose_action_data(target)
     origin = collect_dual_arm_snapshot(robot)
     ensure_supported_move_control_mode(origin.motion_status, agibot_gdk=agibot_gdk)
@@ -387,13 +544,14 @@ def execute_abs_pose_target(
         read_pose_orientation(current_pose, frame_name),
         target_pose_payload["orientation"],
     )
-    assert_abs_pose_delta_within_limits(translation_norm, rotation_deg)
+    assert_abs_pose_delta_within_limits(translation_norm, rotation_deg, limits=limits)
 
     end_pose = build_gdk_end_effector_pose(
         agibot_gdk=agibot_gdk,
         frame_poses=frame_poses,
         arm=arm,
         target_pose_payload=target_pose_payload,
+        life_time_seconds=limits.life_time_seconds,
     )
     control_method = getattr(robot, "end_effector_pose_control", None)
     if not callable(control_method):
@@ -416,7 +574,7 @@ def execute_abs_pose_target(
         "control_type": "ABS_POSE",
         "method": "end_effector_pose_control",
         "end_effector_group": to_jsonable(get_abs_pose_group_value(agibot_gdk, arm)),
-        "life_time_seconds": TASKFLOW_ABS_POSE_LIFE_TIME_SECONDS,
+        "life_time_seconds": limits.life_time_seconds,
         "requested_speed": motion_params.speed,
         "requested_speed_unit": "gdk_velocity",
         "speed_mapping_applied": False,
@@ -434,8 +592,8 @@ def execute_abs_pose_target(
             "norm": translation_norm,
         },
         "target_rotation_delta_deg": rotation_deg,
-        "max_translation_m": TASKFLOW_ABS_POSE_MAX_TRANSLATION_M,
-        "max_rotation_deg": TASKFLOW_ABS_POSE_MAX_ROTATION_DEG,
+        "max_translation_m": limits.max_translation_m,
+        "max_rotation_deg": limits.max_rotation_deg,
         "after_frame_poses": serializable_frame_poses(after_frame_poses),
         "after_arm_frame_delta_m": frame_position_delta_m(
             before=frame_poses,
@@ -806,6 +964,7 @@ def build_gdk_end_effector_pose(
     frame_poses: Mapping[str, Mapping[str, object]],
     arm: str,
     target_pose_payload: Mapping[str, Sequence[float]],
+    life_time_seconds: float,
 ) -> Any:
     end_pose_cls = getattr(agibot_gdk, "EndEffectorPose", None)
     pose_cls = getattr(agibot_gdk, "Pose", None)
@@ -825,7 +984,7 @@ def build_gdk_end_effector_pose(
 
     end_pose = end_pose_cls()
     end_pose.group = get_abs_pose_group_value(agibot_gdk, arm)
-    end_pose.life_time = TASKFLOW_ABS_POSE_LIFE_TIME_SECONDS
+    end_pose.life_time = life_time_seconds
     # GDK EndEffectorPose 同时携带左右臂 pose。只控制目标臂，另一侧保持当前
     # motion_status 里的末端 pose，避免未请求的手臂被意外带动。
     target_pose = build_gdk_pose(
@@ -944,16 +1103,18 @@ def quaternion_angle_deg(origin: Sequence[float], target: Sequence[float]) -> fl
 def assert_abs_pose_delta_within_limits(
     translation_norm: float,
     rotation_deg: float,
+    *,
+    limits: AbsPoseSafetyLimits,
 ) -> None:
-    if translation_norm > TASKFLOW_ABS_POSE_MAX_TRANSLATION_M:
+    if translation_norm > limits.max_translation_m:
         raise RuntimeError(
             "ABS_POSE translation delta "
-            f"{translation_norm:.6f}m exceeds {TASKFLOW_ABS_POSE_MAX_TRANSLATION_M:.6f}m"
+            f"{translation_norm:.6f}m exceeds {limits.max_translation_m:.6f}m"
         )
-    if rotation_deg > TASKFLOW_ABS_POSE_MAX_ROTATION_DEG:
+    if rotation_deg > limits.max_rotation_deg:
         raise RuntimeError(
             "ABS_POSE rotation delta "
-            f"{rotation_deg:.3f}deg exceeds {TASKFLOW_ABS_POSE_MAX_ROTATION_DEG:.3f}deg"
+            f"{rotation_deg:.3f}deg exceeds {limits.max_rotation_deg:.3f}deg"
         )
 
 

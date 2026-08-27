@@ -15,6 +15,7 @@ from gsa_taskflow_executor.gdk.motion_runtime import (
     ACTION_TASKFLOW_ABS_POSE,
     TASKFLOW_ABS_JOINT_CONFIRMATION,
     TASKFLOW_ABS_POSE_LIFE_TIME_SECONDS,
+    TASKFLOW_ABS_POSE_MAX_TRANSLATION_ENV,
     WAIST_JOINTS,
     run_gdk_motion_plan_abs_joint,
 )
@@ -646,7 +647,7 @@ def test_gdk_motion_runtime_refuses_abs_pose_large_delta_before_control_call() -
                 MotionPlanTarget(
                     body_part="left_arm",
                     control_type="ABS_POSE",
-                    action_data=[0.2, 0.2, 0.3, 0.0, 0.0, 0.0, 1.0],
+                    action_data=[0.45, 0.2, 0.3, 0.0, 0.0, 0.0, 1.0],
                 ),
             ),
             speed=0.05,
@@ -664,6 +665,36 @@ def test_gdk_motion_runtime_refuses_abs_pose_large_delta_before_control_call() -
     assert result["error_stage"] == "execute_motion_plan_targets"
     assert "ABS_POSE translation delta" in str(result["error_msg"])
     assert FakeAgibotGdk.robot.pose_control_calls == []
+
+
+def test_gdk_motion_runtime_allows_abs_pose_delta_with_explicit_limit() -> None:
+    FakeAgibotGdk.reset()
+    target_pose = [0.45, 0.2, 0.3, 0.0, 0.0, 0.0, 1.0]
+
+    result = run_gdk_motion_plan_abs_joint(
+        MotionPlanParams(
+            targets=(
+                MotionPlanTarget(
+                    body_part="left_arm",
+                    control_type="ABS_POSE",
+                    action_data=target_pose,
+                ),
+            ),
+            speed=0.05,
+            timeout=50.0,
+        ),
+        environ={
+            "ENABLE_GDK_CONTROL": "1",
+            "CONFIRM_GDK_CONTROL": TASKFLOW_ABS_JOINT_CONFIRMATION,
+            TASKFLOW_ABS_POSE_MAX_TRANSLATION_ENV: "0.40",
+        },
+        import_module=lambda _name: FakeAgibotGdk,
+    )
+
+    assert result["executed"] is True
+    assert result["max_translation_m"] == 0.4
+    assert result["target_translation_delta_m"]["norm"] == 0.35
+    assert FakeAgibotGdk.robot.pose_control_calls[0].left_end_effector_pose.position.x == 0.45
 
 
 def test_gdk_motion_runtime_reuses_process_session_across_multiple_calls() -> None:

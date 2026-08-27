@@ -596,6 +596,7 @@ def run_motion_abs_joint_in_worker(
     *,
     action: str,
     safety_gate: Mapping[str, object],
+    abs_pose_limits: object | None = None,
 ) -> dict[str, object]:
     """通过持久 worker 执行运动规划。
 
@@ -604,7 +605,10 @@ def run_motion_abs_joint_in_worker(
     """
     return get_default_gdk_worker_manager().run_command(
         kind="motion_abs_joint",
-        payload={"motion_params": motion_params},
+        payload={
+            "motion_params": motion_params,
+            "abs_pose_limits": abs_pose_limits,
+        },
         action=action,
         backend=GDK_BACKEND,
         timeout_seconds=read_timeout_seconds(motion_params),

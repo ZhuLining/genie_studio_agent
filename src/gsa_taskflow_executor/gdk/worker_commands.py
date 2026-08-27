@@ -168,6 +168,7 @@ def execute_motion_abs_joint_command(
                 robot,
                 motion_params,
                 agibot_gdk=agibot_gdk,
+                abs_pose_limits=payload.get("abs_pose_limits"),
             )
         except motion_runtime.UnsupportedGdkControlModeError as error:
             result = motion_runtime.refused_control_mode_result(error)
