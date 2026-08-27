@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from gsa_taskflow_executor.gdk.control_probe import (
+    ARM_FRAME_NAMES,
     CONTROL_GROUP_DUAL_ARM,
     CONTROL_GROUP_LEFT_ARM,
     CONTROL_GROUP_RIGHT_ARM,
@@ -11,7 +12,9 @@ from gsa_taskflow_executor.gdk.control_probe import (
     RIGHT_ARM_JOINTS,
 )
 from gsa_taskflow_executor.gdk.motion_runtime import (
+    ACTION_TASKFLOW_ABS_POSE,
     TASKFLOW_ABS_JOINT_CONFIRMATION,
+    TASKFLOW_ABS_POSE_LIFE_TIME_SECONDS,
     WAIST_JOINTS,
     run_gdk_motion_plan_abs_joint,
 )
@@ -29,20 +32,89 @@ class FakeMotionStatus:
         control_mode: object = 1,
         error_code: object = 0,
         error_msg: str = "",
+        frame_names: list[str] | None = None,
+        frame_poses: list[object] | None = None,
     ) -> None:
         self.mode = mode
         self.control_mode = control_mode
         self.error_code = error_code
         self.error_msg = error_msg
+        self.frame_names = list(frame_names or [])
+        self.frame_poses = list(frame_poses or [])
+
+
+class FakeVector3:
+    def __init__(self, x: float = 0.0, y: float = 0.0, z: float = 0.0) -> None:
+        self.x = x
+        self.y = y
+        self.z = z
+
+
+class FakeQuaternion:
+    def __init__(
+        self,
+        x: float = 0.0,
+        y: float = 0.0,
+        z: float = 0.0,
+        w: float = 1.0,
+    ) -> None:
+        self.x = x
+        self.y = y
+        self.z = z
+        self.w = w
+
+
+class FakePose:
+    def __init__(self) -> None:
+        self.position = FakeVector3()
+        self.orientation = FakeQuaternion()
+
+
+class FakeEndEffectorPose:
+    def __init__(self) -> None:
+        self.group: object | None = None
+        self.life_time = 0.0
+        self.left_end_effector_pose = FakePose()
+        self.right_end_effector_pose = FakePose()
+
+
+def make_pose(
+    x: float,
+    y: float,
+    z: float,
+    qx: float,
+    qy: float,
+    qz: float,
+    qw: float,
+) -> FakePose:
+    pose = FakePose()
+    pose.position = FakeVector3(x, y, z)
+    pose.orientation = FakeQuaternion(qx, qy, qz, qw)
+    return pose
+
+
+def clone_pose(pose: FakePose) -> FakePose:
+    return make_pose(
+        float(pose.position.x),
+        float(pose.position.y),
+        float(pose.position.z),
+        float(pose.orientation.x),
+        float(pose.orientation.y),
+        float(pose.orientation.z),
+        float(pose.orientation.w),
+    )
 
 
 class FakeRobot:
     def __init__(self) -> None:
         self.arm_positions = [index * 0.01 for index in range(len(DUAL_ARM_JOINTS))]
         self.waist_positions = [index * 0.001 for index in range(len(WAIST_JOINTS))]
+        self.left_pose = make_pose(0.1, 0.2, 0.3, 0.0, 0.0, 0.0, 1.0)
+        self.right_pose = make_pose(0.4, -0.2, 0.8, 0.1, 0.2, 0.3, 0.9)
         self.motion_status = FakeMotionStatus()
         self.arm_move_calls: list[tuple[list[float], list[float], int]] = []
         self.waist_move_calls: list[tuple[list[float], list[float]]] = []
+        self.pose_control_calls: list[FakeEndEffectorPose] = []
         self.move_call_order: list[str] = []
 
     def get_joint_states(self) -> dict[str, object]:
@@ -76,6 +148,11 @@ class FakeRobot:
         }
 
     def get_motion_control_status(self) -> FakeMotionStatus:
+        self.motion_status.frame_names = [
+            ARM_FRAME_NAMES["left_arm"],
+            ARM_FRAME_NAMES["right_arm"],
+        ]
+        self.motion_status.frame_poses = [self.left_pose, self.right_pose]
         return self.motion_status
 
     def get_whole_body_status(self) -> dict[str, object]:
@@ -126,11 +203,22 @@ class FakeRobot:
         self.waist_positions = list(positions)
         return 0
 
+    def end_effector_pose_control(self, end_pose: FakeEndEffectorPose) -> int:
+        self.move_call_order.append("pose")
+        self.pose_control_calls.append(end_pose)
+        self.left_pose = clone_pose(end_pose.left_end_effector_pose)
+        self.right_pose = clone_pose(end_pose.right_end_effector_pose)
+        return 0
+
 
 class FakeAgibotGdk:
     robot = FakeRobot()
     init_called = 0
     release_called = 0
+    kLeftArm = 4
+    kRightArm = 8
+    Pose = FakePose
+    EndEffectorPose = FakeEndEffectorPose
 
     class GDKRes:
         kSuccess = 0
@@ -423,6 +511,159 @@ def test_gdk_motion_runtime_executes_dual_arm_abs_joint_with_dual_group() -> Non
     assert groups[0]["positions_len"] == len(DUAL_ARM_JOINTS)
     assert groups[0]["velocities_len"] == len(DUAL_ARM_JOINTS)
     assert groups[0]["target_positions"] == expected_target
+
+
+def test_gdk_motion_runtime_executes_left_arm_abs_pose() -> None:
+    FakeAgibotGdk.reset()
+    target_pose = [0.101, 0.202, 0.303, 0.0, 0.0, 0.0, 1.0]
+
+    result = run_gdk_motion_plan_abs_joint(
+        MotionPlanParams(
+            targets=(
+                MotionPlanTarget(
+                    body_part="left_arm",
+                    control_type="ABS_POSE",
+                    action_data=target_pose,
+                ),
+            ),
+            speed=0.05,
+            timeout=50.0,
+        ),
+        environ={
+            "ENABLE_GDK_CONTROL": "1",
+            "CONFIRM_GDK_CONTROL": TASKFLOW_ABS_JOINT_CONFIRMATION,
+        },
+        import_module=lambda _name: FakeAgibotGdk,
+    )
+
+    assert result["executed"] is True
+    assert result["action"] == ACTION_TASKFLOW_ABS_POSE
+    assert result["method"] == "end_effector_pose_control"
+    assert result["arm_frame_name"] == ARM_FRAME_NAMES["left_arm"]
+    assert result["end_effector_group"] == FakeAgibotGdk.kLeftArm
+    assert result["life_time_seconds"] == TASKFLOW_ABS_POSE_LIFE_TIME_SECONDS
+    assert result["target_pose"] == {
+        "position": target_pose[:3],
+        "orientation": target_pose[3:],
+    }
+    assert FakeAgibotGdk.robot.move_call_order == ["pose"]
+    assert len(FakeAgibotGdk.robot.pose_control_calls) == 1
+    call = FakeAgibotGdk.robot.pose_control_calls[0]
+    assert call.group == FakeAgibotGdk.kLeftArm
+    assert call.left_end_effector_pose.position.x == target_pose[0]
+    assert call.left_end_effector_pose.position.y == target_pose[1]
+    assert call.left_end_effector_pose.position.z == target_pose[2]
+    assert call.right_end_effector_pose.position.x == 0.4
+    assert result["gdk_session"]["purpose"] == ACTION_TASKFLOW_ABS_POSE
+
+
+def test_gdk_motion_runtime_executes_right_arm_abs_pose() -> None:
+    FakeAgibotGdk.reset()
+    target_pose = [
+        0.401,
+        -0.199,
+        0.801,
+        0.10259783520851541,
+        0.20519567041703082,
+        0.3077935056255462,
+        0.9233805168766387,
+    ]
+
+    result = run_gdk_motion_plan_abs_joint(
+        MotionPlanParams(
+            targets=(
+                MotionPlanTarget(
+                    body_part="right_arm",
+                    control_type="ABS_POSE",
+                    action_data=target_pose,
+                ),
+            ),
+            speed=0.05,
+            timeout=50.0,
+        ),
+        environ={
+            "ENABLE_GDK_CONTROL": "1",
+            "CONFIRM_GDK_CONTROL": TASKFLOW_ABS_JOINT_CONFIRMATION,
+        },
+        import_module=lambda _name: FakeAgibotGdk,
+    )
+
+    assert result["executed"] is True
+    assert result["action"] == ACTION_TASKFLOW_ABS_POSE
+    assert result["body_part"] == "right_arm"
+    assert result["arm_frame_name"] == ARM_FRAME_NAMES["right_arm"]
+    assert result["end_effector_group"] == FakeAgibotGdk.kRightArm
+    assert result["target_pose"] == {
+        "position": target_pose[:3],
+        "orientation": target_pose[3:],
+    }
+    assert FakeAgibotGdk.robot.move_call_order == ["pose"]
+    assert len(FakeAgibotGdk.robot.pose_control_calls) == 1
+    call = FakeAgibotGdk.robot.pose_control_calls[0]
+    assert call.group == FakeAgibotGdk.kRightArm
+    assert call.right_end_effector_pose.position.x == target_pose[0]
+    assert call.right_end_effector_pose.position.y == target_pose[1]
+    assert call.right_end_effector_pose.position.z == target_pose[2]
+    assert call.left_end_effector_pose.position.x == 0.1
+    assert result["gdk_session"]["purpose"] == ACTION_TASKFLOW_ABS_POSE
+
+
+def test_gdk_motion_runtime_refuses_waist_abs_pose_before_import() -> None:
+    def forbidden_import(_name: str) -> Any:
+        raise AssertionError("GDK must not be imported for unsupported ABS_POSE target")
+
+    result = run_gdk_motion_plan_abs_joint(
+        MotionPlanParams(
+            targets=(
+                MotionPlanTarget(
+                    body_part="waist",
+                    control_type="ABS_POSE",
+                    action_data=[0.1, 0.2, 0.3, 0.0, 0.0, 0.0, 1.0],
+                ),
+            ),
+            speed=0.05,
+            timeout=50.0,
+        ),
+        environ={
+            "ENABLE_GDK_CONTROL": "1",
+            "CONFIRM_GDK_CONTROL": TASKFLOW_ABS_JOINT_CONFIRMATION,
+        },
+        import_module=forbidden_import,
+    )
+
+    assert result["executed"] is False
+    assert result["action"] == ACTION_TASKFLOW_ABS_POSE
+    assert result["error_stage"] == "validate_params"
+    assert "only supports one of" in str(result["error_msg"])
+
+
+def test_gdk_motion_runtime_refuses_abs_pose_large_delta_before_control_call() -> None:
+    FakeAgibotGdk.reset()
+
+    result = run_gdk_motion_plan_abs_joint(
+        MotionPlanParams(
+            targets=(
+                MotionPlanTarget(
+                    body_part="left_arm",
+                    control_type="ABS_POSE",
+                    action_data=[0.2, 0.2, 0.3, 0.0, 0.0, 0.0, 1.0],
+                ),
+            ),
+            speed=0.05,
+            timeout=50.0,
+        ),
+        environ={
+            "ENABLE_GDK_CONTROL": "1",
+            "CONFIRM_GDK_CONTROL": TASKFLOW_ABS_JOINT_CONFIRMATION,
+        },
+        import_module=lambda _name: FakeAgibotGdk,
+    )
+
+    assert result["executed"] is False
+    assert result["action"] == ACTION_TASKFLOW_ABS_POSE
+    assert result["error_stage"] == "execute_motion_plan_targets"
+    assert "ABS_POSE translation delta" in str(result["error_msg"])
+    assert FakeAgibotGdk.robot.pose_control_calls == []
 
 
 def test_gdk_motion_runtime_reuses_process_session_across_multiple_calls() -> None:

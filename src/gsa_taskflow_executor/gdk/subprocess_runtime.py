@@ -111,12 +111,14 @@ def run_gdk_subprocess(
 def run_motion_abs_joint_in_subprocess(
     motion_params: object,
     *,
+    action: str,
     safety_gate: Mapping[str, object],
 ) -> dict[str, object]:
     from gsa_taskflow_executor.gdk.worker_runtime import run_motion_abs_joint_in_worker
 
     return run_motion_abs_joint_in_worker(
         motion_params,
+        action=action,
         safety_gate=safety_gate,
     )
 
@@ -161,6 +163,7 @@ def motion_abs_joint_child(result_queue: Any, motion_params: object) -> None:
     gdk_initialized = False
     init_result: dict[str, object] = {"called": False, "success": True, "return": None}
     result: dict[str, object]
+    action = motion_runtime.motion_action(cast(MotionPlanParams, motion_params))
     try:
         agibot_gdk = importlib.import_module(GDK_MODULE_NAME)
         init_result = initialize_gdk(agibot_gdk)
@@ -174,7 +177,7 @@ def motion_abs_joint_child(result_queue: Any, motion_params: object) -> None:
             gdk_initialized = bool(init_result.get("called"))
             robot = agibot_gdk.Robot()
             try:
-                result = motion_runtime.execute_abs_joint_targets(
+                result = motion_runtime.execute_motion_plan_targets(
                     robot,
                     cast(MotionPlanParams, motion_params),
                     agibot_gdk=agibot_gdk,
@@ -182,16 +185,24 @@ def motion_abs_joint_child(result_queue: Any, motion_params: object) -> None:
             except motion_runtime.UnsupportedGdkControlModeError as error:
                 result = motion_runtime.refused_control_mode_result(error)
             except Exception as error:
-                result = motion_runtime.unavailable_result("execute_abs_joint_targets", error)
+                result = motion_runtime.unavailable_result(
+                    "execute_motion_plan_targets",
+                    error,
+                    action=action,
+                )
     except Exception as error:
-        result = motion_runtime.unavailable_result("import_or_initialize_gdk", error)
+        result = motion_runtime.unavailable_result(
+            "import_or_initialize_gdk",
+            error,
+            action=action,
+        )
     finally:
         result.setdefault("gdk_init", init_result)
         if agibot_gdk is not None and gdk_initialized:
             result["gdk_release"] = release_gdk(agibot_gdk)
         result.setdefault("gdk_release", {"called": False, "success": True, "return": None})
         result["gdk_session"] = build_child_session_payload(
-            purpose="taskflow_abs_joint",
+            purpose=str(result.get("action") or "taskflow_abs_joint"),
             init_result=init_result,
         )
         result_queue.put(result)

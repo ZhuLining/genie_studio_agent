@@ -146,31 +146,41 @@ def execute_motion_abs_joint_command(
     payload: Mapping[str, object],
     state: WorkerGdkState,
 ) -> dict[str, object]:
-    """执行 ABS_JOINT 运动命令：初始化 GDK → 创建 Robot → 调用 motion_runtime。"""
+    """执行运动规划命令：初始化 GDK → 创建 Robot → 调用 motion_runtime。
+
+    command kind 为历史兼容名；这里允许 motion_runtime 根据 control_type 分派
+    ABS_JOINT/ABS_POSE。真机控制边界仍由父进程安全门和 worker timeout 兜住。
+    """
 
     from gsa_taskflow_executor.gdk import motion_runtime
     from gsa_taskflow_executor.taskflow.models import MotionPlanParams
 
-    init_error = ensure_gdk_ready_for_motion(state)
+    motion_params = cast(MotionPlanParams, payload["motion_params"])
+    action = motion_runtime.motion_action(motion_params)
+    init_error = ensure_gdk_ready_for_motion(state, action=action)
     if init_error is not None:
         result = init_error
     else:
         try:
             agibot_gdk = state.require_agibot_gdk()
             robot = agibot_gdk.Robot()
-            result = motion_runtime.execute_abs_joint_targets(
+            result = motion_runtime.execute_motion_plan_targets(
                 robot,
-                cast(MotionPlanParams, payload["motion_params"]),
+                motion_params,
                 agibot_gdk=agibot_gdk,
             )
         except motion_runtime.UnsupportedGdkControlModeError as error:
             result = motion_runtime.refused_control_mode_result(error)
         except Exception as error:
-            result = motion_runtime.unavailable_result("execute_abs_joint_targets", error)
+            result = motion_runtime.unavailable_result(
+                "execute_motion_plan_targets",
+                error,
+                action=action,
+            )
 
     attach_worker_gdk_payload(
         result,
-        purpose="taskflow_abs_joint",
+        purpose=str(result.get("action") or action),
         init_result=state.init_result,
     )
     return result
@@ -366,7 +376,11 @@ def execute_shutdown_command(state: WorkerGdkState) -> dict[str, object]:
     }
 
 
-def ensure_gdk_ready_for_motion(state: WorkerGdkState) -> dict[str, object] | None:
+def ensure_gdk_ready_for_motion(
+    state: WorkerGdkState,
+    *,
+    action: str,
+) -> dict[str, object] | None:
     """确保 GDK 就绪，失败返回 motion_runtime 格式的错误结果。"""
 
     from gsa_taskflow_executor.gdk import motion_runtime
@@ -378,11 +392,13 @@ def ensure_gdk_ready_for_motion(state: WorkerGdkState) -> dict[str, object] | No
         return motion_runtime.refused_result(
             stage="gdk_init",
             message="agibot_gdk.gdk_init() did not return success",
+            action=action,
             extra={"gdk_init": state.init_result},
         )
     return motion_runtime.unavailable_result(
         "import_or_initialize_gdk",
         cast(Exception, init_error["error"]),
+        action=action,
     )
 
 

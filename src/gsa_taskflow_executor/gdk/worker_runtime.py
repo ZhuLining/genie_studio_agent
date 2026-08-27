@@ -10,6 +10,7 @@
     run_command() ──command_queue──▶   gdk_worker_main()
                                       │
                                       ├─ motion_abs_joint → Robot.move_arm_joint()
+                                      │                    / end_effector_pose_control()
                                       ├─ end_effector    → Robot.move_ee_pos()
                                       ├─ code_script     → run_script_safely()
                                       └─ shutdown        → release_gdk()
@@ -593,13 +594,18 @@ class GdkWorkerProcessManager:
 def run_motion_abs_joint_in_worker(
     motion_params: object,
     *,
+    action: str,
     safety_gate: Mapping[str, object],
 ) -> dict[str, object]:
-    """通过持久 worker 执行 ABS_JOINT 运动。"""
+    """通过持久 worker 执行运动规划。
+
+    kind 沿用 motion_abs_joint 以兼容父进程队列协议；实际 action 会区分
+    taskflow_abs_joint / taskflow_abs_pose，便于 timeout/recovery 日志排查。
+    """
     return get_default_gdk_worker_manager().run_command(
         kind="motion_abs_joint",
         payload={"motion_params": motion_params},
-        action="taskflow_abs_joint",
+        action=action,
         backend=GDK_BACKEND,
         timeout_seconds=read_timeout_seconds(motion_params),
         safety_gate=safety_gate,

@@ -1,8 +1,8 @@
-"""GDK ABS_JOINT 运动规划运行时。
+"""GDK motion_plan 运动规划运行时。
 
-通过 agibot_gdk.Robot 执行已验证的关节位置运动。v1 只支持 ABS_JOINT，
-拒绝笛卡尔阻抗模式。安全门（ENABLE_GDK_CONTROL + CONFIRM_GDK_CONTROL）和
-恢复门（timeout/cancel 后的 recovery 检查）是硬前置条件。
+通过 agibot_gdk.Robot 执行已验证的关节位置和小范围末端位姿运动。
+安全门（ENABLE_GDK_CONTROL + CONFIRM_GDK_CONTROL）和恢复门
+（timeout/cancel 后的 recovery 检查）是硬前置条件。
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ import importlib
 import os
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
-from math import isfinite
+from math import acos, degrees, isfinite, sqrt
 from typing import Any
 
 from gsa_taskflow_executor.taskflow.models import (
@@ -24,6 +24,7 @@ from gsa_taskflow_executor.taskflow.skill_params import (
 )
 
 from .control_probe import (
+    ARM_FRAME_NAMES,
     CONTROL_GROUP_DUAL_ARM,
     CONTROL_GROUP_LEFT_ARM,
     CONTROL_GROUP_RIGHT_ARM,
@@ -34,9 +35,12 @@ from .control_probe import (
     assert_joint_within_limit,
     assert_positions_within_limits,
     collect_dual_arm_snapshot,
+    extract_arm_frame_poses,
+    frame_position_delta_m,
     is_zero_error,
     position_diffs,
     read_joint_position,
+    serializable_frame_poses,
     utc_now_iso,
     validate_motion_status,
     validate_whole_body_status,
@@ -52,10 +56,15 @@ from .session import (
 from .subprocess_runtime import GDK_PARENT_LOCK_POLICY, run_motion_abs_joint_in_subprocess
 
 ACTION_TASKFLOW_ABS_JOINT = "taskflow_abs_joint"
+ACTION_TASKFLOW_ABS_POSE = "taskflow_abs_pose"
 TASKFLOW_ABS_JOINT_CONFIRMATION = "TASKFLOW_ABS_JOINT"  # 安全门确认令牌
 GDK_CONTROL_MODE_UNSUPPORTED = "GDK_CONTROL_MODE_UNSUPPORTED"
 UNSUPPORTED_CARTESIAN_IMPEDANCE_MODE = "CTRL_CARTESIAN_IMPEDANCE"
 UNSUPPORTED_CONTROL_MODE_MESSAGE = "当前为笛卡尔阻抗模式，请切换到关节位置/规划控制模式后重试"
+TASKFLOW_ABS_POSE_ALLOWED_BODY_PARTS = ("left_arm", "right_arm")
+TASKFLOW_ABS_POSE_MAX_TRANSLATION_M = 0.01
+TASKFLOW_ABS_POSE_MAX_ROTATION_DEG = 5.0
+TASKFLOW_ABS_POSE_LIFE_TIME_SECONDS = 0.5
 WAIST_JOINTS = [
     "idx01_body_joint1",
     "idx02_body_joint2",
@@ -86,9 +95,9 @@ def run_gdk_motion_plan_abs_joint(
     import_module: Callable[[str], Any] = importlib.import_module,
     session_manager: GdkSessionManager | None = None,
 ) -> dict[str, object]:
-    """执行 ABS_JOINT 运动规划（对外入口）。
+    """执行 motion_plan 运动规划（对外入口）。
 
-    前置检查: 安全门 → 速度校验 → 关节目标校验 → 恢复门。
+    前置检查: 安全门 → 速度校验 → target 校验 → 恢复门。
     生产环境通过持久 worker 子进程执行；测试环境在进程内执行。
     """
     env = environ if environ is not None else os.environ
@@ -102,7 +111,7 @@ def run_gdk_motion_plan_abs_joint(
     if velocity_validation_result is not None:
         return velocity_validation_result
 
-    validation_result = validate_abs_joint_targets(motion_params.targets)
+    validation_result = validate_motion_plan_targets(motion_params.targets)
     if validation_result is not None:
         return validation_result
 
@@ -119,29 +128,33 @@ def run_gdk_motion_plan_abs_joint(
             session_manager=session_manager,
         )
 
+    action = motion_action(motion_params)
+
     # 父进程通过 GdkSessionManager 持锁，C 扩展调用在常驻 worker 子进程完成
     manager = session_manager or GdkSessionManager()
     try:
         lease = manager.acquire(
             blocking=True,
             initialize=False,
-            purpose=ACTION_TASKFLOW_ABS_JOINT,
+            purpose=action,
         )
     except Exception as error:
-        return unavailable_result("gdk_session_acquire", error)
+        return unavailable_result("gdk_session_acquire", error, action=action)
 
     if lease is None:
         return refused_result(
             stage="gdk_session_busy",
             message="GDK session is busy",
+            action=action,
         )
 
     with lease:
         result = run_motion_abs_joint_in_subprocess(
             motion_params,
+            action=action,
             safety_gate=confirmed_taskflow_safety_gate(),
         )
-        maybe_mark_gdk_recovery_required(result, operation=ACTION_TASKFLOW_ABS_JOINT)
+        maybe_mark_gdk_recovery_required(result, operation=action)
         result["gdk_parent_lock"] = {
             **lease.to_payload(),
             "policy": GDK_PARENT_LOCK_POLICY,
@@ -155,29 +168,32 @@ def run_gdk_motion_plan_abs_joint_in_process(
     import_module: Callable[[str], Any] = importlib.import_module,
     session_manager: GdkSessionManager | None = None,
 ) -> dict[str, object]:
-    """进程内执行 ABS_JOINT（测试模式）。直接 import agibot_gdk 并调用。"""
+    """进程内执行 motion_plan（测试模式）。直接 import agibot_gdk 并调用。"""
+    action = motion_action(motion_params)
     manager = session_manager or GdkSessionManager(import_module=import_module)
     try:
         lease = manager.acquire(
             blocking=True,
             initialize=True,
-            purpose=ACTION_TASKFLOW_ABS_JOINT,
+            purpose=action,
         )
     except GdkSessionImportError as error:
-        return unavailable_result("import_agibot_gdk", error.error)
+        return unavailable_result("import_agibot_gdk", error.error, action=action)
     except GdkSessionInitError as error:
         return refused_result(
             stage="gdk_init",
             message="agibot_gdk.gdk_init() did not return success",
+            action=action,
             extra={"gdk_init": error.init_result},
         )
     except Exception as error:
-        return unavailable_result("gdk_session_acquire", error)
+        return unavailable_result("gdk_session_acquire", error, action=action)
 
     if lease is None:
         return refused_result(
             stage="gdk_session_busy",
             message="GDK session is busy",
+            action=action,
         )
 
     with lease:
@@ -186,7 +202,7 @@ def run_gdk_motion_plan_abs_joint_in_process(
             if lease.agibot_gdk is None:
                 raise RuntimeError("GDK session lease missing initialized module")
             robot = lease.agibot_gdk.Robot()
-            result = execute_abs_joint_targets(
+            result = execute_motion_plan_targets(
                 robot,
                 motion_params,
                 agibot_gdk=lease.agibot_gdk,
@@ -194,12 +210,16 @@ def run_gdk_motion_plan_abs_joint_in_process(
         except UnsupportedGdkControlModeError as error:
             result = refused_control_mode_result(error)
         except Exception as error:
-            result = unavailable_result("execute_abs_joint_targets", error)
+            result = unavailable_result(
+                "execute_motion_plan_targets",
+                error,
+                action=action,
+            )
 
         result["gdk_init"] = lease.init_result
         result["gdk_release"] = dict(PROCESS_MANAGED_RELEASE_RESULT)
         result["gdk_session"] = lease.to_payload()
-        maybe_mark_gdk_recovery_required(result, operation=ACTION_TASKFLOW_ABS_JOINT)
+        maybe_mark_gdk_recovery_required(result, operation=action)
 
     return result
 
@@ -224,6 +244,34 @@ def confirmed_taskflow_safety_gate() -> dict[str, object]:
         "confirmed": True,
         "expected_confirmation": TASKFLOW_ABS_JOINT_CONFIRMATION,
     }
+
+
+def motion_action(motion_params: MotionPlanParams) -> str:
+    """根据首个 target 推断 worker/timeout payload action。"""
+    control_type = motion_params.targets[0].control_type if motion_params.targets else "ABS_JOINT"
+    return motion_action_for_control_type(control_type)
+
+
+def motion_action_for_control_type(control_type: str) -> str:
+    """根据 control_type 推断结果 payload action。"""
+    if control_type == "ABS_POSE":
+        return ACTION_TASKFLOW_ABS_POSE
+    return ACTION_TASKFLOW_ABS_JOINT
+
+
+def execute_motion_plan_targets(
+    robot: Any,
+    motion_params: MotionPlanParams,
+    *,
+    agibot_gdk: Any | None = None,
+) -> dict[str, object]:
+    """按 control_type 分派运动运行时。"""
+    control_type = motion_params.targets[0].control_type
+    if control_type == "ABS_POSE":
+        if agibot_gdk is None:
+            raise RuntimeError("ABS_POSE requires initialized agibot_gdk module")
+        return execute_abs_pose_target(robot, motion_params, agibot_gdk=agibot_gdk)
+    return execute_abs_joint_targets(robot, motion_params, agibot_gdk=agibot_gdk)
 
 
 def execute_abs_joint_targets(
@@ -302,6 +350,106 @@ def ordered_abs_joint_groups(targets: Sequence[MotionPlanTarget]) -> list[str]:
         if group in {"arms", "waist"} and group not in ordered:
             ordered.append(group)
     return ordered
+
+
+def execute_abs_pose_target(
+    robot: Any,
+    motion_params: MotionPlanParams,
+    *,
+    agibot_gdk: Any,
+) -> dict[str, object]:
+    """执行首版 ABS_POSE。
+
+    当前只开放单臂单 target。真机验证表明 end_effector_pose_control 小位移可用，
+    但不是高精度笛卡尔伺服，因此这里强制目标相对当前末端 pose 只允许小范围变化。
+    """
+    target = motion_params.targets[0]
+    arm = target.body_part
+    pose_values = read_abs_pose_action_data(target)
+    origin = collect_dual_arm_snapshot(robot)
+    ensure_supported_move_control_mode(origin.motion_status, agibot_gdk=agibot_gdk)
+    frame_poses = extract_arm_frame_poses(origin.motion_status)
+    frame_name = ARM_FRAME_NAMES[arm]
+    current_pose = frame_poses.get(frame_name)
+    if current_pose is None:
+        raise RuntimeError(f"No {frame_name} pose in motion_control_status")
+
+    target_pose_payload = {
+        "position": pose_values[:3],
+        "orientation": normalize_quaternion(pose_values[3:]),
+    }
+    translation_delta = position_delta(
+        read_pose_position(current_pose, frame_name),
+        target_pose_payload["position"],
+    )
+    translation_norm = vector_norm(translation_delta)
+    rotation_deg = quaternion_angle_deg(
+        read_pose_orientation(current_pose, frame_name),
+        target_pose_payload["orientation"],
+    )
+    assert_abs_pose_delta_within_limits(translation_norm, rotation_deg)
+
+    end_pose = build_gdk_end_effector_pose(
+        agibot_gdk=agibot_gdk,
+        frame_poses=frame_poses,
+        arm=arm,
+        target_pose_payload=target_pose_payload,
+    )
+    control_method = getattr(robot, "end_effector_pose_control", None)
+    if not callable(control_method):
+        raise RuntimeError("robot.end_effector_pose_control is unavailable")
+
+    move_return = control_method(end_pose)
+    if not is_zero_error(move_return):
+        raise RuntimeError(f"end_effector_pose_control returned {move_return!r}")
+
+    after = collect_dual_arm_snapshot(robot)
+    after_frame_poses = extract_arm_frame_poses(after.motion_status)
+    return {
+        "available": True,
+        "executed": True,
+        "backend": GDK_BACKEND,
+        "action": ACTION_TASKFLOW_ABS_POSE,
+        "collected_at": utc_now_iso(),
+        "body_part": arm,
+        "requested_body_parts": [arm],
+        "control_type": "ABS_POSE",
+        "method": "end_effector_pose_control",
+        "end_effector_group": to_jsonable(get_abs_pose_group_value(agibot_gdk, arm)),
+        "life_time_seconds": TASKFLOW_ABS_POSE_LIFE_TIME_SECONDS,
+        "requested_speed": motion_params.speed,
+        "requested_speed_unit": "gdk_velocity",
+        "speed_mapping_applied": False,
+        "timeout": motion_params.timeout,
+        "arm_frame_name": frame_name,
+        "origin_positions": origin.positions,
+        "after_positions": after.positions,
+        "diffs": position_diffs(after.positions, origin.positions),
+        "current_frame_poses": serializable_frame_poses(frame_poses),
+        "target_pose": target_pose_payload,
+        "target_translation_delta_m": {
+            "x": translation_delta[0],
+            "y": translation_delta[1],
+            "z": translation_delta[2],
+            "norm": translation_norm,
+        },
+        "target_rotation_delta_deg": rotation_deg,
+        "max_translation_m": TASKFLOW_ABS_POSE_MAX_TRANSLATION_M,
+        "max_rotation_deg": TASKFLOW_ABS_POSE_MAX_ROTATION_DEG,
+        "after_frame_poses": serializable_frame_poses(after_frame_poses),
+        "after_arm_frame_delta_m": frame_position_delta_m(
+            before=frame_poses,
+            after=after_frame_poses,
+            frame_name=frame_name,
+        ),
+        "move_return": to_jsonable(move_return),
+        "safety_gate": {
+            "enabled": True,
+            "confirmed": True,
+            "expected_confirmation": TASKFLOW_ABS_JOINT_CONFIRMATION,
+        },
+        "raw": snapshot_raw(origin),
+    }
 
 
 def execute_arm_abs_joint_targets(
@@ -637,10 +785,210 @@ def read_abs_joint_action_data(target: MotionPlanTarget) -> list[float]:
     return [float(value) for value in target.action_data]
 
 
+def read_abs_pose_action_data(target: MotionPlanTarget) -> list[float]:
+    """从 MotionPlanTarget 提取绝对末端 pose: [x, y, z, qx, qy, qz, qw]。"""
+    if target.control_type != "ABS_POSE":
+        raise RuntimeError(f"{target.body_part} 只支持 ABS_POSE，当前为 {target.control_type}")
+    if isinstance(target.action_data, str):
+        raise RuntimeError(f"{target.body_part}.action_data 变量引用未解析为 pose 数组")
+    values = [float(value) for value in target.action_data]
+    if len(values) != 7:
+        raise RuntimeError(f"{target.body_part}.action_data ABS_POSE 长度必须是 7")
+    if not all(isfinite(value) for value in values):
+        raise RuntimeError(f"{target.body_part}.action_data ABS_POSE 必须全部是有限数字")
+    normalize_quaternion(values[3:])
+    return values
+
+
+def build_gdk_end_effector_pose(
+    *,
+    agibot_gdk: Any,
+    frame_poses: Mapping[str, Mapping[str, object]],
+    arm: str,
+    target_pose_payload: Mapping[str, Sequence[float]],
+) -> Any:
+    end_pose_cls = getattr(agibot_gdk, "EndEffectorPose", None)
+    pose_cls = getattr(agibot_gdk, "Pose", None)
+    if not callable(end_pose_cls):
+        raise RuntimeError("agibot_gdk.EndEffectorPose is unavailable")
+    if not callable(pose_cls):
+        raise RuntimeError("agibot_gdk.Pose is unavailable")
+
+    left_frame = ARM_FRAME_NAMES["left_arm"]
+    right_frame = ARM_FRAME_NAMES["right_arm"]
+    left_raw_pose = frame_poses.get(left_frame, {}).get("raw_pose")
+    right_raw_pose = frame_poses.get(right_frame, {}).get("raw_pose")
+    if left_raw_pose is None:
+        raise RuntimeError(f"No {left_frame} pose in motion_control_status")
+    if right_raw_pose is None:
+        raise RuntimeError(f"No {right_frame} pose in motion_control_status")
+
+    end_pose = end_pose_cls()
+    end_pose.group = get_abs_pose_group_value(agibot_gdk, arm)
+    end_pose.life_time = TASKFLOW_ABS_POSE_LIFE_TIME_SECONDS
+    # GDK EndEffectorPose 同时携带左右臂 pose。只控制目标臂，另一侧保持当前
+    # motion_status 里的末端 pose，避免未请求的手臂被意外带动。
+    target_pose = build_gdk_pose(
+        pose_cls=pose_cls,
+        position=target_pose_payload["position"],
+        orientation=target_pose_payload["orientation"],
+    )
+    end_pose.left_end_effector_pose = (
+        target_pose
+        if arm == "left_arm"
+        else copy_gdk_pose(pose_cls=pose_cls, pose=left_raw_pose)
+    )
+    end_pose.right_end_effector_pose = (
+        target_pose
+        if arm == "right_arm"
+        else copy_gdk_pose(pose_cls=pose_cls, pose=right_raw_pose)
+    )
+    return end_pose
+
+
+def get_abs_pose_group_value(agibot_gdk: Any, arm: str) -> object:
+    if arm == "left_arm":
+        name = "kLeftArm"
+    elif arm == "right_arm":
+        name = "kRightArm"
+    else:
+        raise RuntimeError(f"unsupported ABS_POSE arm: {arm}")
+
+    value = getattr(agibot_gdk, name, None)
+    if value is not None:
+        return value
+    enum_cls = getattr(agibot_gdk, "EndEffectorControlGroup", None)
+    if enum_cls is not None:
+        value = getattr(enum_cls, name, None)
+        if value is not None:
+            return value
+    raise RuntimeError(f"agibot_gdk.{name} is unavailable")
+
+
+def build_gdk_pose(
+    *,
+    pose_cls: Any,
+    position: Sequence[float],
+    orientation: Sequence[float],
+) -> Any:
+    pose = pose_cls()
+    pose.position.x = float(position[0])
+    pose.position.y = float(position[1])
+    pose.position.z = float(position[2])
+    pose.orientation.x = float(orientation[0])
+    pose.orientation.y = float(orientation[1])
+    pose.orientation.z = float(orientation[2])
+    pose.orientation.w = float(orientation[3])
+    return pose
+
+
+def copy_gdk_pose(*, pose_cls: Any, pose: Any) -> Any:
+    return build_gdk_pose(
+        pose_cls=pose_cls,
+        position=[
+            float(pose.position.x),
+            float(pose.position.y),
+            float(pose.position.z),
+        ],
+        orientation=[
+            float(pose.orientation.x),
+            float(pose.orientation.y),
+            float(pose.orientation.z),
+            float(pose.orientation.w),
+        ],
+    )
+
+
+def read_pose_position(pose_payload: Mapping[str, object], frame_name: str) -> list[float]:
+    position = pose_payload.get("position")
+    if not isinstance(position, list) or len(position) != 3:
+        raise RuntimeError(f"{frame_name}.position invalid")
+    return [float(value) for value in position]
+
+
+def read_pose_orientation(pose_payload: Mapping[str, object], frame_name: str) -> list[float]:
+    orientation = pose_payload.get("orientation")
+    if not isinstance(orientation, list) or len(orientation) != 4:
+        raise RuntimeError(f"{frame_name}.orientation invalid")
+    return normalize_quaternion([float(value) for value in orientation])
+
+
+def position_delta(origin: Sequence[float], target: Sequence[float]) -> list[float]:
+    return [
+        float(target_value) - float(origin_value)
+        for origin_value, target_value in zip(origin, target, strict=True)
+    ]
+
+
+def vector_norm(values: Sequence[float]) -> float:
+    return sqrt(sum(float(value) * float(value) for value in values))
+
+
+def normalize_quaternion(values: Sequence[float]) -> list[float]:
+    if len(values) != 4:
+        raise RuntimeError("quaternion length must be 4")
+    norm = vector_norm(values)
+    if norm <= 1e-12:
+        raise RuntimeError("quaternion norm must be positive")
+    return [float(value) / norm for value in values]
+
+
+def quaternion_angle_deg(origin: Sequence[float], target: Sequence[float]) -> float:
+    left = normalize_quaternion(origin)
+    right = normalize_quaternion(target)
+    dot = abs(sum(a * b for a, b in zip(left, right, strict=True)))
+    clamped = min(1.0, max(-1.0, dot))
+    return degrees(2.0 * acos(clamped))
+
+
+def assert_abs_pose_delta_within_limits(
+    translation_norm: float,
+    rotation_deg: float,
+) -> None:
+    if translation_norm > TASKFLOW_ABS_POSE_MAX_TRANSLATION_M:
+        raise RuntimeError(
+            "ABS_POSE translation delta "
+            f"{translation_norm:.6f}m exceeds {TASKFLOW_ABS_POSE_MAX_TRANSLATION_M:.6f}m"
+        )
+    if rotation_deg > TASKFLOW_ABS_POSE_MAX_ROTATION_DEG:
+        raise RuntimeError(
+            "ABS_POSE rotation delta "
+            f"{rotation_deg:.3f}deg exceeds {TASKFLOW_ABS_POSE_MAX_ROTATION_DEG:.3f}deg"
+        )
+
+
+def validate_motion_plan_targets(
+    targets: Sequence[MotionPlanTarget],
+) -> dict[str, object] | None:
+    """校验 motion_plan targets。失败返回 refused_result，且尽量在 import GDK 前完成。"""
+    if not targets:
+        return refused_result(
+            stage="validate_params",
+            message="motion_plan targets must not be empty",
+        )
+
+    control_types = {target.control_type for target in targets}
+    if len(control_types) != 1:
+        return refused_result(
+            stage="validate_params",
+            message=f"motion_plan targets control_type must be uniform: {sorted(control_types)}",
+        )
+    control_type = targets[0].control_type
+    if control_type == "ABS_JOINT":
+        return validate_abs_joint_targets(targets)
+    if control_type == "ABS_POSE":
+        return validate_abs_pose_targets(targets)
+    return refused_result(
+        stage="validate_params",
+        message=f"motion_plan control_type 不支持执行: {control_type}",
+        action=motion_action_for_control_type(control_type),
+    )
+
+
 def validate_abs_joint_targets(
     targets: Sequence[MotionPlanTarget],
 ) -> dict[str, object] | None:
-    """校验所有 target 的 action_data 为有效关节数组。失败返回 refused_result。"""
+    """校验所有 ABS_JOINT target 的 action_data 为有效关节数组。"""
     for target in targets:
         try:
             read_abs_joint_action_data(target)
@@ -650,6 +998,39 @@ def validate_abs_joint_targets(
                 message=str(error),
                 extra={"target": deepcopy(target.__dict__)},
             )
+    return None
+
+
+def validate_abs_pose_targets(
+    targets: Sequence[MotionPlanTarget],
+) -> dict[str, object] | None:
+    """ABS_POSE 只允许左右臂单 target，禁止腰部/双臂和变量未解析。"""
+    if len(targets) != 1:
+        return refused_result(
+            stage="validate_params",
+            message="ABS_POSE first version supports exactly one target",
+            action=ACTION_TASKFLOW_ABS_POSE,
+        )
+    target = targets[0]
+    if target.body_part not in TASKFLOW_ABS_POSE_ALLOWED_BODY_PARTS:
+        return refused_result(
+            stage="validate_params",
+            message=(
+                "ABS_POSE first version only supports one of "
+                f"{list(TASKFLOW_ABS_POSE_ALLOWED_BODY_PARTS)}, got {target.body_part}"
+            ),
+            action=ACTION_TASKFLOW_ABS_POSE,
+            extra={"target": deepcopy(target.__dict__)},
+        )
+    try:
+        read_abs_pose_action_data(target)
+    except Exception as error:
+        return refused_result(
+            stage="validate_params",
+            message=str(error),
+            action=ACTION_TASKFLOW_ABS_POSE,
+            extra={"target": deepcopy(target.__dict__)},
+        )
     return None
 
 
@@ -730,6 +1111,7 @@ def refused_result(
     *,
     stage: str,
     message: str,
+    action: str = ACTION_TASKFLOW_ABS_JOINT,
     extra: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """构建 refused 结果（安全门/校验/恢复门拒绝）。executed=False, available=False。"""
@@ -737,7 +1119,7 @@ def refused_result(
         "available": False,
         "executed": False,
         "backend": GDK_BACKEND,
-        "action": ACTION_TASKFLOW_ABS_JOINT,
+        "action": action,
         "collected_at": utc_now_iso(),
         "error_stage": stage,
         "error_type": "GdkMotionRuntimeRefused",
@@ -754,13 +1136,18 @@ def refused_result(
     return payload
 
 
-def unavailable_result(stage: str, error: Exception) -> dict[str, object]:
+def unavailable_result(
+    stage: str,
+    error: Exception,
+    *,
+    action: str = ACTION_TASKFLOW_ABS_JOINT,
+) -> dict[str, object]:
     """构建 unavailable 结果（GDK 异常）。executed=False, available=False。"""
     return {
         "available": False,
         "executed": False,
         "backend": GDK_BACKEND,
-        "action": ACTION_TASKFLOW_ABS_JOINT,
+        "action": action,
         "collected_at": utc_now_iso(),
         "error_stage": stage,
         "error_type": type(error).__name__,

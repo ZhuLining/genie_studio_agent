@@ -61,6 +61,11 @@ ACTION_ABS_POSE_NUDGE_LEFT_Y_0P001 = "abs_pose_nudge_left_y_0p001"
 ACTION_ABS_POSE_NUDGE_LEFT_Z_0P001 = "abs_pose_nudge_left_z_0p001"
 ACTION_ABS_POSE_NUDGE_LEFT_Z_0P001_LIFE_1S = "abs_pose_nudge_left_z_0p001_life_1s"
 ACTION_ABS_POSE_NUDGE_LEFT_Z_0P001_LIFE_2S = "abs_pose_nudge_left_z_0p001_life_2s"
+ACTION_ABS_POSE_NUDGE_RIGHT_X_0P001 = "abs_pose_nudge_right_x_0p001"
+ACTION_ABS_POSE_NUDGE_RIGHT_Y_0P001 = "abs_pose_nudge_right_y_0p001"
+ACTION_ABS_POSE_NUDGE_RIGHT_Z_0P001 = "abs_pose_nudge_right_z_0p001"
+ACTION_ABS_POSE_NUDGE_RIGHT_Z_0P001_LIFE_1S = "abs_pose_nudge_right_z_0p001_life_1s"
+ACTION_ABS_POSE_NUDGE_RIGHT_Z_0P001_LIFE_2S = "abs_pose_nudge_right_z_0p001_life_2s"
 
 ACTION_CONFIRMATION_TOKENS = {
     ACTION_HOLD_CURRENT: "HOLD_CURRENT_DUAL_ARM",
@@ -75,6 +80,24 @@ ACTION_CONFIRMATION_TOKENS = {
     ACTION_ABS_POSE_NUDGE_LEFT_Z_0P001: "ABS_POSE_NUDGE_LEFT_Z_0P001",
     ACTION_ABS_POSE_NUDGE_LEFT_Z_0P001_LIFE_1S: "ABS_POSE_NUDGE_LEFT_Z_0P001_LIFE_1S",
     ACTION_ABS_POSE_NUDGE_LEFT_Z_0P001_LIFE_2S: "ABS_POSE_NUDGE_LEFT_Z_0P001_LIFE_2S",
+    ACTION_ABS_POSE_NUDGE_RIGHT_X_0P001: "ABS_POSE_NUDGE_RIGHT_X_0P001",
+    ACTION_ABS_POSE_NUDGE_RIGHT_Y_0P001: "ABS_POSE_NUDGE_RIGHT_Y_0P001",
+    ACTION_ABS_POSE_NUDGE_RIGHT_Z_0P001: "ABS_POSE_NUDGE_RIGHT_Z_0P001",
+    ACTION_ABS_POSE_NUDGE_RIGHT_Z_0P001_LIFE_1S: "ABS_POSE_NUDGE_RIGHT_Z_0P001_LIFE_1S",
+    ACTION_ABS_POSE_NUDGE_RIGHT_Z_0P001_LIFE_2S: "ABS_POSE_NUDGE_RIGHT_Z_0P001_LIFE_2S",
+}
+
+ABS_POSE_NUDGE_ACTIONS = {
+    ACTION_ABS_POSE_NUDGE_LEFT_X_0P001: ("left_arm", "x", ABS_POSE_LIFE_TIME_SECONDS),
+    ACTION_ABS_POSE_NUDGE_LEFT_Y_0P001: ("left_arm", "y", ABS_POSE_LIFE_TIME_SECONDS),
+    ACTION_ABS_POSE_NUDGE_LEFT_Z_0P001: ("left_arm", "z", ABS_POSE_LIFE_TIME_SECONDS),
+    ACTION_ABS_POSE_NUDGE_LEFT_Z_0P001_LIFE_1S: ("left_arm", "z", 1.0),
+    ACTION_ABS_POSE_NUDGE_LEFT_Z_0P001_LIFE_2S: ("left_arm", "z", 2.0),
+    ACTION_ABS_POSE_NUDGE_RIGHT_X_0P001: ("right_arm", "x", ABS_POSE_LIFE_TIME_SECONDS),
+    ACTION_ABS_POSE_NUDGE_RIGHT_Y_0P001: ("right_arm", "y", ABS_POSE_LIFE_TIME_SECONDS),
+    ACTION_ABS_POSE_NUDGE_RIGHT_Z_0P001: ("right_arm", "z", ABS_POSE_LIFE_TIME_SECONDS),
+    ACTION_ABS_POSE_NUDGE_RIGHT_Z_0P001_LIFE_1S: ("right_arm", "z", 1.0),
+    ACTION_ABS_POSE_NUDGE_RIGHT_Z_0P001_LIFE_2S: ("right_arm", "z", 2.0),
 }
 
 ALLOWED_ACTIONS = tuple(ACTION_CONFIRMATION_TOKENS)
@@ -279,69 +302,15 @@ def execute_action(
             settle_seconds=settle_seconds,
         )
 
-    if action == ACTION_ABS_POSE_NUDGE_LEFT_X_0P001:
+    nudge_spec = ABS_POSE_NUDGE_ACTIONS.get(action)
+    if nudge_spec is not None:
+        arm, axis, life_time_seconds = nudge_spec
         return execute_abs_pose_nudge_and_return(
             action=action,
-            arm="left_arm",
-            axis="x",
+            arm=arm,
+            axis=axis,
             delta_m=ABS_POSE_NUDGE_DELTA_M,
-            life_time_seconds=ABS_POSE_LIFE_TIME_SECONDS,
-            agibot_gdk=agibot_gdk,
-            robot=robot,
-            origin=origin,
-            sleep=sleep,
-            settle_seconds=settle_seconds,
-        )
-
-    if action == ACTION_ABS_POSE_NUDGE_LEFT_Y_0P001:
-        return execute_abs_pose_nudge_and_return(
-            action=action,
-            arm="left_arm",
-            axis="y",
-            delta_m=ABS_POSE_NUDGE_DELTA_M,
-            life_time_seconds=ABS_POSE_LIFE_TIME_SECONDS,
-            agibot_gdk=agibot_gdk,
-            robot=robot,
-            origin=origin,
-            sleep=sleep,
-            settle_seconds=settle_seconds,
-        )
-
-    if action == ACTION_ABS_POSE_NUDGE_LEFT_Z_0P001:
-        return execute_abs_pose_nudge_and_return(
-            action=action,
-            arm="left_arm",
-            axis="z",
-            delta_m=ABS_POSE_NUDGE_DELTA_M,
-            life_time_seconds=ABS_POSE_LIFE_TIME_SECONDS,
-            agibot_gdk=agibot_gdk,
-            robot=robot,
-            origin=origin,
-            sleep=sleep,
-            settle_seconds=settle_seconds,
-        )
-
-    if action == ACTION_ABS_POSE_NUDGE_LEFT_Z_0P001_LIFE_1S:
-        return execute_abs_pose_nudge_and_return(
-            action=action,
-            arm="left_arm",
-            axis="z",
-            delta_m=ABS_POSE_NUDGE_DELTA_M,
-            life_time_seconds=1.0,
-            agibot_gdk=agibot_gdk,
-            robot=robot,
-            origin=origin,
-            sleep=sleep,
-            settle_seconds=settle_seconds,
-        )
-
-    if action == ACTION_ABS_POSE_NUDGE_LEFT_Z_0P001_LIFE_2S:
-        return execute_abs_pose_nudge_and_return(
-            action=action,
-            arm="left_arm",
-            axis="z",
-            delta_m=ABS_POSE_NUDGE_DELTA_M,
-            life_time_seconds=2.0,
+            life_time_seconds=life_time_seconds,
             agibot_gdk=agibot_gdk,
             robot=robot,
             origin=origin,

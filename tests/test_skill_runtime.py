@@ -14,7 +14,10 @@ from gsa_taskflow_executor.skills.runtime import (
     SkillRuntime,
     SkillRuntimeError,
 )
-from gsa_taskflow_executor.taskflow.parser import TaskflowNode, parse_taskflow_yaml
+from gsa_taskflow_executor.taskflow.parser import (
+    TaskflowNode,
+    parse_taskflow_yaml,
+)
 from gsa_taskflow_executor.taskflow.variables import VariableStore
 
 
@@ -147,6 +150,61 @@ def test_motion_plan_skill_gdk_resolves_variable_reference(monkeypatch) -> None:
         -0.169,
         1.122,
     ]
+
+
+def test_motion_plan_skill_gdk_outputs_final_pose_for_abs_pose(monkeypatch) -> None:
+    node = TaskflowNode(
+        node_id="位姿调整",
+        node_type="worker",
+        assignments={},
+        skill_name="motion_plan_skill",
+        params_template={
+            "left_arm": {
+                "control_type": "ABS_POSE",
+                "action_data": "$.variables.二维码定位.detail.outputs.action_data.grasp_1",
+            },
+            "speed": 0.05,
+            "timeout": 50.0,
+        },
+        capture_state_detail=True,
+        output_var="位姿调整",
+        output_contract={},
+    )
+    pose = [0.1, 0.2, 0.3, 0.0, 0.0, 0.0, 1.0]
+    store = VariableStore(
+        variables={
+            "二维码定位": {
+                "detail": {
+                    "outputs": {
+                        "action_data": {
+                            "grasp_1": pose,
+                        }
+                    }
+                }
+            }
+        }
+    )
+    runtime = SkillRuntime()
+    monkeypatch.setattr(
+        skill_runtime,
+        "run_gdk_motion_plan_abs_joint",
+        lambda _motion_params, **_kwargs: {"available": True, "executed": True},
+    )
+
+    result = runtime.run(
+        node,
+        SkillExecutionContext(
+            app_execution_id="abs-pose-run",
+            variable_store=store,
+            mode="gdk",
+        ),
+    )
+
+    assert result.outputs is not None
+    assert result.outputs["primary_body_part"] == "left_arm"
+    assert result.outputs["primary_control_type"] == "ABS_POSE"
+    assert result.outputs["final_pose"] == pose
+    assert result.outputs["final_joint"] == pose
 
 
 def test_qr_pose_skill_gdk_outputs_action_data() -> None:

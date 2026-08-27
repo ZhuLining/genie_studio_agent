@@ -123,7 +123,7 @@ class AssignSkill:
 
 
 class MotionPlanSkillGdk:
-    """motion_plan_skill — ABS_JOINT 运动规划。
+    """motion_plan_skill — ABS_JOINT/ABS_POSE 运动规划。
 
     需要 environ（安全门 ENV）和 gdk_session_manager（GDK 生命周期）。
     """
@@ -154,7 +154,7 @@ class MotionPlanSkillGdk:
         )
         if gdk_result.get("executed") is not True:
             error_msg = gdk_result.get("error_msg")
-            message = str(error_msg or "GDK ABS_JOINT 执行失败")
+            message = str(error_msg or "GDK motion_plan 执行失败")
             raise SkillRuntimeError(
                 message,
                 detail=build_gdk_error_detail(message, gdk_result),
@@ -501,7 +501,7 @@ def build_motion_plan_outputs(
     ]
     primary_target = motion_params.targets[0]
 
-    return {
+    outputs: dict[str, object] = {
         "app_execution_id": app_execution_id,
         "skill_name": skill_name,
         "mode": mode,
@@ -515,6 +515,9 @@ def build_motion_plan_outputs(
         "timeout": motion_params.timeout,
         "resolved_params_template": deepcopy(dict(params_template)),
     }
+    if primary_target.control_type == "ABS_POSE":
+        outputs["final_pose"] = deepcopy(primary_target.action_data)
+    return outputs
 
 
 def build_qr_pose_outputs(
