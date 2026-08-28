@@ -14,7 +14,9 @@ ExecStart=/opt/gsa_taskflow_executor/.venv/bin/gsa-taskflow-executor --listen
 Restart=on-failure
 RestartSec=3
 LogsDirectory=gsa-taskflow-executor
-ReadWritePaths=/var/log/gsa-taskflow-executor
+# GSA_DATA_ROOT 默认使用 /data/gsa；二维码建图、点位录制和二维码定位
+# 必须共享同一份 Ubuntu 侧产物目录，避免客户端本机路径进入正式链路。
+ReadWritePaths=/var/log/gsa-taskflow-executor /data/gsa
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true

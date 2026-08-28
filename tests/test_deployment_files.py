@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
 from pathlib import Path
 
 from gsa_taskflow_executor.taskflow.parser import parse_taskflow_yaml
@@ -18,6 +21,7 @@ def test_systemd_service_uses_gdk_executor_entrypoint() -> None:
     )
     assert "EnvironmentFile=/etc/gsa-taskflow-executor/gsa-taskflow-executor.env" in service
     assert "ReadWritePaths=/var/log/gsa-taskflow-executor" in service
+    assert "/data/gsa" in service
 
 
 def test_runtime_dependencies_do_not_include_unused_pydantic_stack() -> None:
@@ -85,6 +89,93 @@ def test_deploy_env_template_uses_gdk_mode() -> None:
     assert "# ENABLE_GDK_CONTROL=1" in env_file
     assert "# CONFIRM_GDK_CONTROL=TASKFLOW_ABS_JOINT" in env_file
     assert "SKILL_REGISTRY_FILE=/etc/gsa-taskflow-executor/skills.yaml" in env_file
+
+
+def test_qr_pose_delivery_smoke_script_accepts_valid_baseline(tmp_path: Path) -> None:
+    data_root = tmp_path / "gsa_data"
+    mapping_sdk = tmp_path / "sdk" / "qr_mapping_sdk"
+    localize_sdk = tmp_path / "sdk" / "qr_localize_sdk"
+    robot_serial = "G2A0004BC01053"
+    project_name = "test10"
+    sensor_root = data_root / robot_serial / "sensor"
+    project_root = data_root / robot_serial / "qr_pose_skill_conf" / project_name
+    images_dir = project_root / "images"
+    maps_dir = project_root / "maps"
+    point_dir = project_root / "point"
+    waypoints_dir = project_root / "waypoints"
+    for directory in (
+        mapping_sdk,
+        localize_sdk,
+        sensor_root,
+        images_dir,
+        maps_dir,
+        point_dir,
+        waypoints_dir,
+    ):
+        directory.mkdir(parents=True)
+
+    (sensor_root / "intrinsic_hand_right_rgb.json").write_text("{}", encoding="utf-8")
+    (sensor_root / "extrinsic_end_T_hand_right_rgbd.json").write_text("{}", encoding="utf-8")
+    (images_dir / "1785315256907.jpg").write_bytes(b"jpeg")
+    (maps_dir / "test10.pcd").write_text("VERSION .7\n", encoding="utf-8")
+    (maps_dir / "test10.yml").write_text("map: test10\n", encoding="utf-8")
+    (maps_dir / "test10-cam.yml").write_text("cam: test10\n", encoding="utf-8")
+    (point_dir / "grasp_1.json").write_text("{}", encoding="utf-8")
+    (waypoints_dir / "paizhao001.json").write_text("{}", encoding="utf-8")
+    env_file = tmp_path / ".env.local"
+    env_file.write_text(
+        "\n".join(
+            [
+                "MQTT_BROKER_URL=mqtt://127.0.0.1:1883",
+                "EXECUTOR_AID=gsa-dev",
+                "EXECUTOR_MODE=gdk",
+                f"GSA_DATA_ROOT={data_root}",
+                f"QR_MAPPING_SDK_PATH={mapping_sdk}",
+                f"QR_MAPPING_SDK_PYTHON={sys.executable}",
+                f"QR_LOCALIZE_SDK_PATH={localize_sdk}",
+                f"QR_LOCALIZE_SDK_PYTHON={sys.executable}",
+                "ENABLE_GDK_CONTROL=1",
+                "CONFIRM_GDK_CONTROL=TASKFLOW_ABS_JOINT",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    script = PROJECT_ROOT / "scripts" / "qr_pose_delivery_smoke.py"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--env-file",
+            str(env_file),
+            "--robot-serial",
+            robot_serial,
+            "--project-name",
+            project_name,
+            "--strict-safety-gate",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    payload = json.loads(completed.stdout)
+    assert payload["ok"] is True
+    assert payload["errorCount"] == 0
+
+
+def test_deploy_docs_reference_qr_pose_delivery_baseline() -> None:
+    deploy_readme = (PROJECT_ROOT / "deploy" / "README.md").read_text(encoding="utf-8")
+    baseline = (
+        PROJECT_ROOT.parent / "docs" / "qr_pose_delivery_baseline.md"
+    ).read_text(encoding="utf-8")
+
+    assert "qr_pose_delivery_smoke.py" in deploy_readme
+    assert "docs/qr_pose_delivery_baseline.md" in deploy_readme
+    assert "二维码建图工具" in baseline
+    assert "点位录制" in baseline
+    assert "开始 -> 二维码定位 -> 位姿调整-位控 -> 结束" in baseline
 
 
 def test_example_taskflow_keeps_abs_joint_gdk_yaml() -> None:
