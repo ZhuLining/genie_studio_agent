@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import importlib
 import os
+import time
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
-from math import acos, degrees, isfinite, sqrt
+from math import acos, ceil, cos, degrees, isfinite, sin, sqrt
 from typing import Any
 
 from gsa_taskflow_executor.taskflow.models import (
@@ -65,13 +66,16 @@ UNSUPPORTED_CONTROL_MODE_MESSAGE = "当前为笛卡尔阻抗模式，请切换�
 TASKFLOW_ABS_POSE_ALLOWED_BODY_PARTS = ("left_arm", "right_arm")
 TASKFLOW_ABS_POSE_MAX_TRANSLATION_M = 0.30
 TASKFLOW_ABS_POSE_MAX_ROTATION_DEG = 90.0
-TASKFLOW_ABS_POSE_LIFE_TIME_SECONDS = 1.0
+TASKFLOW_ABS_POSE_LIFE_TIME_SECONDS = 0.02
 TASKFLOW_ABS_POSE_MAX_TRANSLATION_ENV = "TASKFLOW_ABS_POSE_MAX_TRANSLATION_M"
 TASKFLOW_ABS_POSE_MAX_ROTATION_ENV = "TASKFLOW_ABS_POSE_MAX_ROTATION_DEG"
 TASKFLOW_ABS_POSE_LIFE_TIME_ENV = "TASKFLOW_ABS_POSE_LIFE_TIME_SECONDS"
 TASKFLOW_ABS_POSE_HARD_MAX_TRANSLATION_M = 0.50
 TASKFLOW_ABS_POSE_HARD_MAX_ROTATION_DEG = 180.0
-TASKFLOW_ABS_POSE_HARD_MAX_LIFE_TIME_SECONDS = 5.0
+TASKFLOW_ABS_POSE_HARD_MAX_LIFE_TIME_SECONDS = 0.20
+TASKFLOW_ABS_POSE_RATE_HZ = 50.0
+TASKFLOW_ABS_POSE_MAX_ROTATION_STEP_DEG = 1.0
+TASKFLOW_ABS_POSE_FINAL_HOLD_SECONDS = 0.2
 WAIST_JOINTS = [
     "idx01_body_joint1",
     "idx02_body_joint2",
@@ -99,6 +103,36 @@ class AbsPoseSafetyLimits:
             "max_rotation_deg": self.max_rotation_deg,
             "life_time_seconds": self.life_time_seconds,
         }
+
+
+@dataclass(frozen=True)
+class AbsPoseTrajectoryPlan:
+    """ABS_POSE 插补轨迹。
+
+    end_effector_pose_control 是连续控制接口，GDK 文档要求 50Hz 发布且禁止阶跃信号。
+    因此 executor 在 worker 内部生成小步长轨迹，而不是把最终目标 pose 一次性丢给 GDK。
+    """
+
+    poses: tuple[dict[str, list[float]], ...]
+    translation_segments: int
+    rotation_segments: int
+    rate_hz: float
+    dt_seconds: float
+    max_step_m: float
+    max_rotation_step_deg: float
+    final_hold_steps: int
+
+    @property
+    def trajectory_step_count(self) -> int:
+        return len(self.poses)
+
+    @property
+    def control_call_count(self) -> int:
+        return self.trajectory_step_count + self.final_hold_steps
+
+    @property
+    def estimated_duration_seconds(self) -> float:
+        return self.control_call_count * self.dt_seconds
 
 
 class UnsupportedGdkControlModeError(RuntimeError):
@@ -535,31 +569,41 @@ def execute_abs_pose_target(
         "position": pose_values[:3],
         "orientation": normalize_quaternion(pose_values[3:]),
     }
+    current_pose_payload = {
+        "position": read_pose_position(current_pose, frame_name),
+        "orientation": read_pose_orientation(current_pose, frame_name),
+    }
     translation_delta = position_delta(
-        read_pose_position(current_pose, frame_name),
+        current_pose_payload["position"],
         target_pose_payload["position"],
     )
     translation_norm = vector_norm(translation_delta)
     rotation_deg = quaternion_angle_deg(
-        read_pose_orientation(current_pose, frame_name),
+        current_pose_payload["orientation"],
         target_pose_payload["orientation"],
     )
     assert_abs_pose_delta_within_limits(translation_norm, rotation_deg, limits=limits)
 
-    end_pose = build_gdk_end_effector_pose(
-        agibot_gdk=agibot_gdk,
-        frame_poses=frame_poses,
-        arm=arm,
-        target_pose_payload=target_pose_payload,
-        life_time_seconds=limits.life_time_seconds,
+    trajectory_plan = build_abs_pose_trajectory_plan(
+        current_pose=current_pose_payload,
+        target_pose=target_pose_payload,
+        translation_norm=translation_norm,
+        rotation_deg=rotation_deg,
+        speed_mps=motion_params.speed,
     )
+    ensure_abs_pose_timeout_budget(trajectory_plan, motion_params.timeout)
     control_method = getattr(robot, "end_effector_pose_control", None)
     if not callable(control_method):
         raise RuntimeError("robot.end_effector_pose_control is unavailable")
 
-    move_return = control_method(end_pose)
-    if not is_zero_error(move_return):
-        raise RuntimeError(f"end_effector_pose_control returned {move_return!r}")
+    move_return = execute_abs_pose_trajectory(
+        agibot_gdk=agibot_gdk,
+        frame_poses=frame_poses,
+        arm=arm,
+        trajectory_plan=trajectory_plan,
+        life_time_seconds=limits.life_time_seconds,
+        control_method=control_method,
+    )
 
     after = collect_dual_arm_snapshot(robot)
     after_frame_poses = extract_arm_frame_poses(after.motion_status)
@@ -576,8 +620,9 @@ def execute_abs_pose_target(
         "end_effector_group": to_jsonable(get_abs_pose_group_value(agibot_gdk, arm)),
         "life_time_seconds": limits.life_time_seconds,
         "requested_speed": motion_params.speed,
-        "requested_speed_unit": "gdk_velocity",
-        "speed_mapping_applied": False,
+        "requested_speed_unit": "m/s",
+        "effective_linear_speed_mps": motion_params.speed,
+        "speed_mapping_applied": True,
         "timeout": motion_params.timeout,
         "arm_frame_name": frame_name,
         "origin_positions": origin.positions,
@@ -594,6 +639,18 @@ def execute_abs_pose_target(
         "target_rotation_delta_deg": rotation_deg,
         "max_translation_m": limits.max_translation_m,
         "max_rotation_deg": limits.max_rotation_deg,
+        "trajectory_policy": "linear_position_slerp_orientation_50hz",
+        "trajectory_step_count": trajectory_plan.trajectory_step_count,
+        "trajectory_translation_segments": trajectory_plan.translation_segments,
+        "trajectory_rotation_segments": trajectory_plan.rotation_segments,
+        "trajectory_rate_hz": trajectory_plan.rate_hz,
+        "trajectory_dt_seconds": trajectory_plan.dt_seconds,
+        "trajectory_max_step_m": trajectory_plan.max_step_m,
+        "trajectory_max_rotation_step_deg": trajectory_plan.max_rotation_step_deg,
+        "trajectory_estimated_duration_seconds": trajectory_plan.estimated_duration_seconds,
+        "final_hold_seconds": TASKFLOW_ABS_POSE_FINAL_HOLD_SECONDS,
+        "final_hold_steps": trajectory_plan.final_hold_steps,
+        "control_call_count": trajectory_plan.control_call_count,
         "after_frame_poses": serializable_frame_poses(after_frame_poses),
         "after_arm_frame_delta_m": frame_position_delta_m(
             before=frame_poses,
@@ -956,6 +1013,201 @@ def read_abs_pose_action_data(target: MotionPlanTarget) -> list[float]:
         raise RuntimeError(f"{target.body_part}.action_data ABS_POSE 必须全部是有限数字")
     normalize_quaternion(values[3:])
     return values
+
+
+def build_abs_pose_trajectory_plan(
+    *,
+    current_pose: Mapping[str, Sequence[float]],
+    target_pose: Mapping[str, Sequence[float]],
+    translation_norm: float,
+    rotation_deg: float,
+    speed_mps: float,
+) -> AbsPoseTrajectoryPlan:
+    """为 end_effector_pose_control 生成连续小步长轨迹。
+
+    GDK 文档明确要求调用方 50Hz 发布且禁止阶跃信号。这里把 taskflow 的 speed
+    解释为末端线速度（m/s），再按 50Hz 转成每个控制周期的最大平移步长。
+    """
+
+    rate_hz = TASKFLOW_ABS_POSE_RATE_HZ
+    dt_seconds = 1.0 / rate_hz
+    max_step_m = max(float(speed_mps) / rate_hz, 1e-6)
+    translation_segments = (
+        int(ceil(translation_norm / max_step_m)) if translation_norm > 0 else 0
+    )
+    rotation_segments = (
+        int(ceil(rotation_deg / TASKFLOW_ABS_POSE_MAX_ROTATION_STEP_DEG))
+        if rotation_deg > 0
+        else 0
+    )
+    segments = max(translation_segments, rotation_segments)
+    poses = tuple(
+        interpolate_abs_pose(
+            current_pose=current_pose,
+            target_pose=target_pose,
+            ratio=(index / segments) if segments > 0 else 1.0,
+        )
+        for index in range(1, segments + 1)
+    )
+    if not poses:
+        poses = (
+            {
+                "position": [float(value) for value in target_pose["position"]],
+                "orientation": normalize_quaternion(target_pose["orientation"]),
+            },
+        )
+
+    final_hold_steps = int(ceil(TASKFLOW_ABS_POSE_FINAL_HOLD_SECONDS * rate_hz))
+    return AbsPoseTrajectoryPlan(
+        poses=poses,
+        translation_segments=translation_segments,
+        rotation_segments=rotation_segments,
+        rate_hz=rate_hz,
+        dt_seconds=dt_seconds,
+        max_step_m=max_step_m,
+        max_rotation_step_deg=TASKFLOW_ABS_POSE_MAX_ROTATION_STEP_DEG,
+        final_hold_steps=final_hold_steps,
+    )
+
+
+def ensure_abs_pose_timeout_budget(
+    trajectory_plan: AbsPoseTrajectoryPlan,
+    timeout_seconds: float,
+) -> None:
+    """在开始运动前检查插补耗时，避免走到半路才被 worker timeout 杀掉。"""
+
+    if trajectory_plan.estimated_duration_seconds > timeout_seconds:
+        raise RuntimeError(
+            "ABS_POSE interpolated trajectory duration "
+            f"{trajectory_plan.estimated_duration_seconds:.3f}s exceeds timeout "
+            f"{timeout_seconds:.3f}s"
+        )
+
+
+def interpolate_abs_pose(
+    *,
+    current_pose: Mapping[str, Sequence[float]],
+    target_pose: Mapping[str, Sequence[float]],
+    ratio: float,
+) -> dict[str, list[float]]:
+    t = min(1.0, max(0.0, float(ratio)))
+    current_position = current_pose["position"]
+    target_position = target_pose["position"]
+    return {
+        "position": [
+            float(start) + t * (float(end) - float(start))
+            for start, end in zip(current_position, target_position, strict=True)
+        ],
+        "orientation": slerp_quaternion(
+            current_pose["orientation"],
+            target_pose["orientation"],
+            t,
+        ),
+    }
+
+
+def slerp_quaternion(
+    origin: Sequence[float],
+    target: Sequence[float],
+    ratio: float,
+) -> list[float]:
+    """四元数球面线性插值，保证姿态走最短路径。"""
+
+    left = normalize_quaternion(origin)
+    right = normalize_quaternion(target)
+    dot = sum(a * b for a, b in zip(left, right, strict=True))
+    if dot < 0.0:
+        right = [-value for value in right]
+        dot = -dot
+
+    dot = min(1.0, max(-1.0, dot))
+    t = min(1.0, max(0.0, float(ratio)))
+    if dot > 0.9995:
+        return normalize_quaternion(
+            [start + t * (end - start) for start, end in zip(left, right, strict=True)]
+        )
+
+    theta_0 = acos(dot)
+    sin_theta_0 = sin(theta_0)
+    if abs(sin_theta_0) <= 1e-12:
+        return left
+
+    theta = theta_0 * t
+    s0 = cos(theta) - dot * sin(theta) / sin_theta_0
+    s1 = sin(theta) / sin_theta_0
+    return normalize_quaternion(
+        [s0 * start + s1 * end for start, end in zip(left, right, strict=True)]
+    )
+
+
+def execute_abs_pose_trajectory(
+    *,
+    agibot_gdk: Any,
+    frame_poses: Mapping[str, Mapping[str, object]],
+    arm: str,
+    trajectory_plan: AbsPoseTrajectoryPlan,
+    life_time_seconds: float,
+    control_method: Callable[[Any], object],
+) -> object:
+    """按 50Hz 发送插补后的末端 pose。
+
+    每个周期重新构造 EndEffectorPose，目标臂走插补点，非目标臂保持运动前
+    motion_status 中的末端位姿，避免未请求手臂被隐式带动。
+    """
+
+    last_return: object = None
+    for index, pose_payload in enumerate(trajectory_plan.poses, start=1):
+        last_return = send_abs_pose_control_step(
+            agibot_gdk=agibot_gdk,
+            frame_poses=frame_poses,
+            arm=arm,
+            pose_payload=pose_payload,
+            life_time_seconds=life_time_seconds,
+            control_method=control_method,
+            step_index=index,
+        )
+        time.sleep(trajectory_plan.dt_seconds)
+
+    final_pose = trajectory_plan.poses[-1]
+    for hold_index in range(trajectory_plan.final_hold_steps):
+        last_return = send_abs_pose_control_step(
+            agibot_gdk=agibot_gdk,
+            frame_poses=frame_poses,
+            arm=arm,
+            pose_payload=final_pose,
+            life_time_seconds=life_time_seconds,
+            control_method=control_method,
+            step_index=trajectory_plan.trajectory_step_count + hold_index + 1,
+        )
+        time.sleep(trajectory_plan.dt_seconds)
+
+    return last_return
+
+
+def send_abs_pose_control_step(
+    *,
+    agibot_gdk: Any,
+    frame_poses: Mapping[str, Mapping[str, object]],
+    arm: str,
+    pose_payload: Mapping[str, Sequence[float]],
+    life_time_seconds: float,
+    control_method: Callable[[Any], object],
+    step_index: int,
+) -> object:
+    end_pose = build_gdk_end_effector_pose(
+        agibot_gdk=agibot_gdk,
+        frame_poses=frame_poses,
+        arm=arm,
+        target_pose_payload=pose_payload,
+        life_time_seconds=life_time_seconds,
+    )
+    move_return = control_method(end_pose)
+    if not is_zero_error(move_return):
+        raise RuntimeError(
+            "end_effector_pose_control returned "
+            f"{move_return!r} at interpolated step {step_index}"
+        )
+    return move_return
 
 
 def build_gdk_end_effector_pose(

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from gsa_taskflow_executor.gdk.control_probe import (
     ARM_FRAME_NAMES,
     CONTROL_GROUP_DUAL_ARM,
@@ -23,6 +25,13 @@ from gsa_taskflow_executor.gdk.recovery import current_gdk_recovery_requirement
 from gsa_taskflow_executor.gdk.session import GdkSessionManager
 from gsa_taskflow_executor.gdk.subprocess_runtime import GDK_OPERATION_TIMEOUT_CODE
 from gsa_taskflow_executor.taskflow.parser import MotionPlanParams, MotionPlanTarget
+
+
+def disable_abs_pose_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "gsa_taskflow_executor.gdk.motion_runtime.time.sleep",
+        lambda _seconds: None,
+    )
 
 
 class FakeMotionStatus:
@@ -514,7 +523,10 @@ def test_gdk_motion_runtime_executes_dual_arm_abs_joint_with_dual_group() -> Non
     assert groups[0]["target_positions"] == expected_target
 
 
-def test_gdk_motion_runtime_executes_left_arm_abs_pose() -> None:
+def test_gdk_motion_runtime_executes_left_arm_abs_pose(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    disable_abs_pose_sleep(monkeypatch)
     FakeAgibotGdk.reset()
     target_pose = [0.101, 0.202, 0.303, 0.0, 0.0, 0.0, 1.0]
 
@@ -547,9 +559,19 @@ def test_gdk_motion_runtime_executes_left_arm_abs_pose() -> None:
         "position": target_pose[:3],
         "orientation": target_pose[3:],
     }
-    assert FakeAgibotGdk.robot.move_call_order == ["pose"]
-    assert len(FakeAgibotGdk.robot.pose_control_calls) == 1
-    call = FakeAgibotGdk.robot.pose_control_calls[0]
+    assert result["requested_speed_unit"] == "m/s"
+    assert result["effective_linear_speed_mps"] == 0.05
+    assert result["speed_mapping_applied"] is True
+    assert result["trajectory_policy"] == "linear_position_slerp_orientation_50hz"
+    assert result["trajectory_step_count"] == 4
+    assert result["final_hold_steps"] == 10
+    assert result["control_call_count"] == 14
+    assert result["trajectory_max_step_m"] == pytest.approx(0.001)
+    assert FakeAgibotGdk.robot.move_call_order == ["pose"] * 14
+    assert len(FakeAgibotGdk.robot.pose_control_calls) == 14
+    first_call = FakeAgibotGdk.robot.pose_control_calls[0]
+    assert first_call.left_end_effector_pose.position.x == pytest.approx(0.10025)
+    call = FakeAgibotGdk.robot.pose_control_calls[-1]
     assert call.group == FakeAgibotGdk.kLeftArm
     assert call.left_end_effector_pose.position.x == target_pose[0]
     assert call.left_end_effector_pose.position.y == target_pose[1]
@@ -558,7 +580,10 @@ def test_gdk_motion_runtime_executes_left_arm_abs_pose() -> None:
     assert result["gdk_session"]["purpose"] == ACTION_TASKFLOW_ABS_POSE
 
 
-def test_gdk_motion_runtime_executes_right_arm_abs_pose() -> None:
+def test_gdk_motion_runtime_executes_right_arm_abs_pose(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    disable_abs_pose_sleep(monkeypatch)
     FakeAgibotGdk.reset()
     target_pose = [
         0.401,
@@ -598,9 +623,11 @@ def test_gdk_motion_runtime_executes_right_arm_abs_pose() -> None:
         "position": target_pose[:3],
         "orientation": target_pose[3:],
     }
-    assert FakeAgibotGdk.robot.move_call_order == ["pose"]
-    assert len(FakeAgibotGdk.robot.pose_control_calls) == 1
-    call = FakeAgibotGdk.robot.pose_control_calls[0]
+    assert result["trajectory_step_count"] == 2
+    assert result["control_call_count"] == 12
+    assert FakeAgibotGdk.robot.move_call_order == ["pose"] * 12
+    assert len(FakeAgibotGdk.robot.pose_control_calls) == 12
+    call = FakeAgibotGdk.robot.pose_control_calls[-1]
     assert call.group == FakeAgibotGdk.kRightArm
     assert call.right_end_effector_pose.position.x == target_pose[0]
     assert call.right_end_effector_pose.position.y == target_pose[1]
@@ -667,7 +694,10 @@ def test_gdk_motion_runtime_refuses_abs_pose_large_delta_before_control_call() -
     assert FakeAgibotGdk.robot.pose_control_calls == []
 
 
-def test_gdk_motion_runtime_allows_abs_pose_delta_with_explicit_limit() -> None:
+def test_gdk_motion_runtime_allows_abs_pose_delta_with_explicit_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    disable_abs_pose_sleep(monkeypatch)
     FakeAgibotGdk.reset()
     target_pose = [0.45, 0.2, 0.3, 0.0, 0.0, 0.0, 1.0]
 
@@ -693,8 +723,40 @@ def test_gdk_motion_runtime_allows_abs_pose_delta_with_explicit_limit() -> None:
 
     assert result["executed"] is True
     assert result["max_translation_m"] == 0.4
-    assert result["target_translation_delta_m"]["norm"] == 0.35
-    assert FakeAgibotGdk.robot.pose_control_calls[0].left_end_effector_pose.position.x == 0.45
+    assert result["target_translation_delta_m"]["norm"] == pytest.approx(0.35)
+    assert result["trajectory_step_count"] == 350
+    assert result["control_call_count"] == 360
+    last_call = FakeAgibotGdk.robot.pose_control_calls[-1]
+    assert last_call.left_end_effector_pose.position.x == pytest.approx(0.45)
+
+
+def test_gdk_motion_runtime_refuses_abs_pose_when_interpolation_exceeds_timeout() -> None:
+    FakeAgibotGdk.reset()
+
+    result = run_gdk_motion_plan_abs_joint(
+        MotionPlanParams(
+            targets=(
+                MotionPlanTarget(
+                    body_part="left_arm",
+                    control_type="ABS_POSE",
+                    action_data=[0.2, 0.2, 0.3, 0.0, 0.0, 0.0, 1.0],
+                ),
+            ),
+            speed=0.001,
+            timeout=1.0,
+        ),
+        environ={
+            "ENABLE_GDK_CONTROL": "1",
+            "CONFIRM_GDK_CONTROL": TASKFLOW_ABS_JOINT_CONFIRMATION,
+        },
+        import_module=lambda _name: FakeAgibotGdk,
+    )
+
+    assert result["executed"] is False
+    assert result["action"] == ACTION_TASKFLOW_ABS_POSE
+    assert result["error_stage"] == "execute_motion_plan_targets"
+    assert "interpolated trajectory duration" in str(result["error_msg"])
+    assert FakeAgibotGdk.robot.pose_control_calls == []
 
 
 def test_gdk_motion_runtime_reuses_process_session_across_multiple_calls() -> None:
