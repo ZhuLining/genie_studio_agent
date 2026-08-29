@@ -251,6 +251,7 @@ class PointRecordingService:
             validate_arm_camera(params.arm, params.camera_id)
             validate_timeout_ms(params.timeout_ms)
             min_markers = normalize_min_markers(params.min_markers)
+            target_points = require_target_points_before_initial_photo(paths)
             waypoint_dir = paths.waypoints_dir / point_name
             if waypoint_dir.exists() and any(waypoint_dir.iterdir()):
                 raise ValueError("同名初始拍照点位已存在，请更换点位名称")
@@ -299,6 +300,7 @@ class PointRecordingService:
                 waypoint_dir=waypoint_dir,
                 stats_path=stats_path,
                 sdk_result=sdk_result,
+                target_points=target_points,
             )
             update_manifest_after_initial(paths, record)
             return {
@@ -1134,6 +1136,17 @@ def read_grasp_points(paths: QrProjectPaths) -> list[dict[str, object]]:
     return [dict(item) for item in decoded if isinstance(item, Mapping)] if isinstance(decoded, list) else []
 
 
+def require_target_points_before_initial_photo(
+    paths: QrProjectPaths,
+) -> list[dict[str, object]]:
+    # 初始拍照点位会一次性生成该拍照位姿下所有目标点位的 waypoint。
+    # 若先保存初始拍照点位，再补目标点位，旧 waypoint 不会自动重算，应用运行时会找不到 action_data。
+    target_points = read_grasp_points(paths)
+    if not target_points:
+        raise FileNotFoundError("保存初始拍照点位前，请先保存至少一个目标点位")
+    return target_points
+
+
 def list_target_point_records(paths: QrProjectPaths) -> list[dict[str, object]]:
     records = []
     file_path = paths.point_dir / "grasp_points.json"
@@ -1167,8 +1180,10 @@ def build_initial_photo_record(
     waypoint_dir: Path,
     stats_path: Path,
     sdk_result: Mapping[str, object],
+    target_points: Sequence[Mapping[str, object]],
 ) -> dict[str, object]:
     stats = read_json_object(stats_path)
+    target_point_names = read_target_point_names(target_points)
     return {
         "pointKind": "initial_photo",
         "pointName": point_name,
@@ -1182,6 +1197,8 @@ def build_initial_photo_record(
         "jointsPath": str(waypoint_dir / "joints.json") if (waypoint_dir / "joints.json").exists() else None,
         "statsPath": str(stats_path) if stats_path.exists() else None,
         "quality": build_localize_quality(stats),
+        "targetPointCount": len(target_point_names),
+        "targetPointNames": target_point_names,
         "scan": dict(scan_files),
         "sdk": dict(sdk_result),
     }
@@ -1227,6 +1244,8 @@ def list_initial_photo_records(paths: QrProjectPaths) -> list[dict[str, object]]
                 else None,
                 "statsPath": str(stats_path) if stats_path.exists() else None,
                 "quality": build_localize_quality(stats),
+                "targetPointCount": metadata.get("targetPointCount"),
+                "targetPointNames": metadata.get("targetPointNames"),
             }
         )
     records.sort(key=lambda item: str(item.get("savedAt") or ""), reverse=True)
@@ -1290,7 +1309,18 @@ def build_manifest_point_record(record: Mapping[str, object], *, kind: str) -> d
         "waypointDir": record.get("waypointDir"),
         "statsPath": record.get("statsPath"),
         "pointFilePath": record.get("pointFilePath"),
+        "targetPointCount": record.get("targetPointCount"),
+        "targetPointNames": record.get("targetPointNames"),
     }
+
+
+def read_target_point_names(target_points: Sequence[Mapping[str, object]]) -> list[str]:
+    names: list[str] = []
+    for point in target_points:
+        name = point.get("grasp_name") or point.get("pointName")
+        if isinstance(name, str) and name.strip() and name.strip() not in names:
+            names.append(name.strip())
+    return names
 
 
 def missing_submit_resources(
