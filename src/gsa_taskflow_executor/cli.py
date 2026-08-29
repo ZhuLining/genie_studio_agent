@@ -27,6 +27,7 @@ from .gdk.control_probe import ALLOWED_ACTIONS, run_gdk_control_probe
 from .gdk.current_pose import run_gdk_current_pose_snapshot
 from .gdk.motion_runtime import TASKFLOW_ABS_JOINT_CONFIRMATION
 from .gdk.readonly import run_gdk_readonly_probe
+from .gdk.recovery import current_gdk_recovery_requirement
 from .gdk.session import GdkSessionManager
 from .gdk.worker_runtime import (
     cancel_default_gdk_worker_command,
@@ -393,6 +394,50 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 )
                 reporter.publish_execution_started(taskflow)
+
+                # 自动恢复门清除：新 taskflow 开始前，尝试只读位姿快照确认机器人安全。
+                # 上次 cancel/timeout 会设置进程级恢复门（_RECOVERY_REQUIREMENT），
+                # 如果不清除，后续所有 GDK 控制命令都会被拒绝。
+                # 只读快照成功（机器人 available、无 error joints）→ 自动清除恢复门；
+                # 快照失败 → 保留恢复门，后续控制命令仍会被拒绝（安全保守）。
+                recovery_req = current_gdk_recovery_requirement()
+                if recovery_req is not None:
+                    logger.info(
+                        "GDK recovery gate is set (reason=%s, operation=%s); "
+                        "attempting read-only pose snapshot to auto-clear",
+                        recovery_req.reason,
+                        recovery_req.operation,
+                    )
+                    recovery_snapshot = run_gdk_current_pose_snapshot(
+                        session_manager=gdk_session,
+                    )
+                    recovery_info = recovery_snapshot.get("gdk_recovery")
+                    if isinstance(recovery_info, Mapping) and recovery_info.get("confirmed"):
+                        logger.info("GDK recovery gate auto-cleared by pre-execution pose snapshot")
+                    else:
+                        logger.warning(
+                            "GDK recovery gate still active after pose snapshot; "
+                            "control commands will be refused until manual recovery"
+                        )
+                    writer.write(
+                        RuntimeEvent(
+                            event_type="gdk_recovery_auto_attempt",
+                            message="pre-execution recovery gate auto-clear attempt",
+                            app_execution_id=taskflow.app_execution_id,
+                            topic=message.topic,
+                            payload={
+                                "had_recovery_gate": True,
+                                "recovery_reason": recovery_req.reason,
+                                "recovery_operation": recovery_req.operation,
+                                "snapshot_available": recovery_snapshot.get("available"),
+                                "recovery_confirmed": (
+                                    isinstance(recovery_info, Mapping)
+                                    and recovery_info.get("confirmed") is True
+                                ),
+                            },
+                        )
+                    )
+
                 schedule = TaskflowScheduler(
                     taskflow,
                     node_runner=SkillRuntimeNodeRunner(
