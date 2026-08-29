@@ -48,6 +48,9 @@ class ExecutorSettings:
     # 机器人位姿
     robot_current_pose_request_topic: str = "gsa/self/robot/state/get_current_pose/request"
     robot_current_pose_response_topic: str = "gsa/self/robot/state/get_current_pose/response"
+    # 机器人身份。用于客户端自动填充二维码建图/点位录制的机器人 SN。
+    robot_identity_request_topic: str = "gsa/self/robot/state/get_robot_identity/request"
+    robot_identity_response_topic: str = "gsa/self/robot/state/get_robot_identity/response"
     # 相机单帧
     robot_camera_frame_request_topic: str = "gsa/self/robot/state/get_camera_frame/request"
     robot_camera_frame_response_topic: str = "gsa/self/robot/state/get_camera_frame/response"
@@ -248,6 +251,14 @@ class ExecutorSettings:
                 "ROBOT_CURRENT_POSE_RESPONSE_TOPIC",
                 cls.robot_current_pose_response_topic,
             ).strip(),
+            robot_identity_request_topic=source.get(
+                "ROBOT_IDENTITY_REQUEST_TOPIC",
+                cls.robot_identity_request_topic,
+            ).strip(),
+            robot_identity_response_topic=source.get(
+                "ROBOT_IDENTITY_RESPONSE_TOPIC",
+                cls.robot_identity_response_topic,
+            ).strip(),
             robot_camera_frame_request_topic=source.get(
                 "ROBOT_CAMERA_FRAME_REQUEST_TOPIC",
                 cls.robot_camera_frame_request_topic,
@@ -429,6 +440,7 @@ class ExecutorSettings:
         """所有 robot_state 订阅 topic。"""
         return (
             self.robot_current_pose_request_topic,
+            self.robot_identity_request_topic,
             self.robot_camera_frame_request_topic,
             self.robot_camera_calibration_request_topic,
             self.robot_camera_capture_start_request_topic,
@@ -469,6 +481,14 @@ class ExecutorSettings:
         require_non_empty(
             "ROBOT_CURRENT_POSE_RESPONSE_TOPIC",
             self.robot_current_pose_response_topic,
+        )
+        require_non_empty(
+            "ROBOT_IDENTITY_REQUEST_TOPIC",
+            self.robot_identity_request_topic,
+        )
+        require_non_empty(
+            "ROBOT_IDENTITY_RESPONSE_TOPIC",
+            self.robot_identity_response_topic,
         )
         require_non_empty(
             "ROBOT_CAMERA_FRAME_REQUEST_TOPIC",

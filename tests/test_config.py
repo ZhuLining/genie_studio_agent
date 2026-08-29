@@ -21,6 +21,14 @@ def test_default_status_topic() -> None:
         == "gsa/self/robot/state/get_current_pose/response"
     )
     assert (
+        settings.robot_identity_request_topic
+        == "gsa/self/robot/state/get_robot_identity/request"
+    )
+    assert (
+        settings.robot_identity_response_topic
+        == "gsa/self/robot/state/get_robot_identity/response"
+    )
+    assert (
         settings.robot_camera_frame_request_topic
         == "gsa/self/robot/state/get_camera_frame/request"
     )
@@ -116,6 +124,8 @@ def test_env_overrides(monkeypatch) -> None:
     monkeypatch.setenv("EXECUTOR_AID", "robot-aid")
     monkeypatch.setenv("ROBOT_CURRENT_POSE_REQUEST_TOPIC", "robot/custom/request")
     monkeypatch.setenv("ROBOT_CURRENT_POSE_RESPONSE_TOPIC", "robot/custom/response")
+    monkeypatch.setenv("ROBOT_IDENTITY_REQUEST_TOPIC", "robot/identity/request")
+    monkeypatch.setenv("ROBOT_IDENTITY_RESPONSE_TOPIC", "robot/identity/response")
     monkeypatch.setenv("ROBOT_CAMERA_FRAME_REQUEST_TOPIC", "robot/camera/request")
     monkeypatch.setenv("ROBOT_CAMERA_FRAME_RESPONSE_TOPIC", "robot/camera/response")
     monkeypatch.setenv("ROBOT_CAMERA_CALIBRATION_REQUEST_TOPIC", "robot/calibration/request")
@@ -183,6 +193,8 @@ def test_env_overrides(monkeypatch) -> None:
     assert settings.status_topic == "gsa/self/robot-aid/status"
     assert settings.robot_current_pose_request_topic == "robot/custom/request"
     assert settings.robot_current_pose_response_topic == "robot/custom/response"
+    assert settings.robot_identity_request_topic == "robot/identity/request"
+    assert settings.robot_identity_response_topic == "robot/identity/response"
     assert settings.robot_camera_frame_request_topic == "robot/camera/request"
     assert settings.robot_camera_frame_response_topic == "robot/camera/response"
     assert settings.robot_camera_calibration_request_topic == "robot/calibration/request"

@@ -58,6 +58,14 @@ def test_deploy_env_template_uses_gdk_mode() -> None:
         in env_file
     )
     assert (
+        "ROBOT_IDENTITY_REQUEST_TOPIC=gsa/self/robot/state/get_robot_identity/request"
+        in env_file
+    )
+    assert (
+        "ROBOT_IDENTITY_RESPONSE_TOPIC=gsa/self/robot/state/get_robot_identity/response"
+        in env_file
+    )
+    assert (
         "ROBOT_CAMERA_FRAME_REQUEST_TOPIC=gsa/self/robot/state/get_camera_frame/request"
         in env_file
     )

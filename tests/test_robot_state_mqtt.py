@@ -7,24 +7,27 @@ from gsa_taskflow_executor.mqtt.robot_state import (
     build_camera_capture_stop_response,
     build_camera_frame_response,
     build_current_pose_response,
+    build_robot_identity_response,
     handle_camera_calibration_request,
     handle_camera_capture_start_request,
     handle_camera_capture_stop_request,
     handle_camera_frame_request,
     handle_current_pose_request,
+    handle_robot_identity_request,
     handle_robot_state_request,
     parse_camera_calibration_request,
     parse_camera_capture_start_request,
     parse_camera_capture_stop_request,
     parse_camera_frame_request,
     parse_current_pose_request,
+    parse_point_recording_save_initial_photo_request,
+    parse_point_recording_save_target_request,
     parse_qr_build_map_request,
     parse_qr_capture_start_request,
     parse_qr_capture_stop_request,
     parse_qr_pcd_preview_request,
-    parse_point_recording_save_initial_photo_request,
-    parse_point_recording_save_target_request,
     parse_qr_project_snapshot_request,
+    parse_robot_identity_request,
 )
 from gsa_taskflow_executor.runtime.config import ExecutorSettings
 
@@ -51,6 +54,23 @@ def test_parse_current_pose_request_accepts_camel_case_and_reply_topic() -> None
 
     assert request.request_id == "req-1"
     assert request.reply_topic == "robot/custom/response"
+
+
+def test_parse_robot_identity_request_defaults_timeout() -> None:
+    request = parse_robot_identity_request(
+        json.dumps(
+            {
+                "type": "get_robot_identity",
+                "requestId": "req-identity",
+                "replyTopic": "robot/identity/response",
+            }
+        ),
+        default_reply_topic="gsa/self/robot/state/get_robot_identity/response",
+    )
+
+    assert request.request_id == "req-identity"
+    assert request.reply_topic == "robot/identity/response"
+    assert request.timeout_ms == 3000
 
 
 def test_handle_current_pose_request_publishes_success_response() -> None:
@@ -94,6 +114,37 @@ def test_handle_current_pose_request_publishes_invalid_request_error() -> None:
     assert payload["error"]["code"] == "INVALID_REQUEST"
 
 
+def test_handle_robot_identity_request_publishes_success_response() -> None:
+    published: list[tuple[str, dict[str, object]]] = []
+
+    handle_robot_identity_request(
+        TaskflowMessage(
+            topic="gsa/self/robot/state/get_robot_identity/request",
+            payload=json.dumps({"requestId": "req-identity", "timeoutMs": 1500}),
+            received_at="2026-07-27T00:00:00+00:00",
+        ),
+        settings=ExecutorSettings(executor_aid="aid-1"),
+        publish_response=lambda topic, payload: published.append((topic, dict(payload))),
+        collect_snapshot=lambda timeout_ms: {
+            "available": True,
+            "backend": "agibot_gdk",
+            "action": "get_robot_identity",
+            "robotAid": "G2A0004BC01053",
+            "robotSerial": "G2A0004BC01053",
+            "suggestedRobotSerial": "G2A0004BC01053",
+            "timeoutMs": timeout_ms,
+        },
+    )
+
+    [(topic, payload)] = published
+    assert topic == "gsa/self/robot/state/get_robot_identity/response"
+    assert payload["type"] == "get_robot_identity"
+    assert payload["requestId"] == "req-identity"
+    assert payload["ok"] is True
+    assert payload["data"]["robotSerial"] == "G2A0004BC01053"
+    assert payload["data"]["timeoutMs"] == 1500
+
+
 def test_build_current_pose_response_maps_unavailable_snapshot_to_error() -> None:
     response = build_current_pose_response(
         request_id="req-2",
@@ -127,6 +178,23 @@ def test_build_current_pose_response_maps_busy_snapshot_to_robot_busy() -> None:
     assert response["requestId"] == "req-3"
     assert response["error"]["code"] == "ROBOT_BUSY"
     assert response["error"]["message"] == "GDK 正在执行控制动作，当前位姿读取已拒绝"
+
+
+def test_build_robot_identity_response_maps_busy_snapshot_to_robot_busy() -> None:
+    response = build_robot_identity_response(
+        request_id="req-identity",
+        executor_aid="aid-1",
+        snapshot={
+            "available": False,
+            "busy": True,
+            "errorStage": "gdk_session_busy",
+        },
+    )
+
+    assert response["ok"] is False
+    assert response["type"] == "get_robot_identity"
+    assert response["error"]["code"] == "ROBOT_BUSY"
+    assert response["error"]["message"] == "GDK 正在执行控制动作，机器人身份读取已拒绝"
 
 
 def test_parse_camera_frame_request_defaults_camera_and_timeout() -> None:
@@ -612,7 +680,12 @@ def test_handle_robot_state_request_dispatches_qr_build_map_by_topic() -> None:
         ),
         settings=ExecutorSettings(executor_aid="aid-1"),
         publish_response=lambda topic, payload: published.append((topic, dict(payload))),
-        build_qr_map=lambda robot_serial, project_name, map_name, camera_id, marker_type, marker_size: {
+        build_qr_map=lambda robot_serial,
+        project_name,
+        map_name,
+        camera_id,
+        marker_type,
+        marker_size: {
             "available": True,
             "backend": "executor.qr_mapping_sdk",
             "action": "build_qr_map",
@@ -701,6 +774,34 @@ def test_handle_robot_state_request_dispatches_camera_calibration_by_topic() -> 
     assert topic == "gsa/self/robot/state/get_camera_calibration/response"
     assert payload["type"] == "get_camera_calibration"
     assert payload["data"]["cameraIds"] == ["head_color"]
+
+
+def test_handle_robot_state_request_dispatches_robot_identity_by_topic() -> None:
+    published: list[tuple[str, dict[str, object]]] = []
+
+    handle_robot_state_request(
+        TaskflowMessage(
+            topic="gsa/self/robot/state/get_robot_identity/request",
+            payload=json.dumps({"requestId": "req-identity"}),
+            received_at="2026-07-27T00:00:00+00:00",
+        ),
+        settings=ExecutorSettings(executor_aid="aid-1"),
+        publish_response=lambda topic, payload: published.append((topic, dict(payload))),
+        collect_robot_identity=lambda timeout_ms: {
+            "available": True,
+            "backend": "agibot_gdk",
+            "action": "get_robot_identity",
+            "robotAid": "G2A0004BC01053",
+            "robotSerial": "G2A0004BC01053",
+            "suggestedRobotSerial": "G2A0004BC01053",
+            "timeoutMs": timeout_ms,
+        },
+    )
+
+    [(topic, payload)] = published
+    assert topic == "gsa/self/robot/state/get_robot_identity/response"
+    assert payload["type"] == "get_robot_identity"
+    assert payload["data"]["robotSerial"] == "G2A0004BC01053"
 
 
 def test_handle_camera_capture_start_request_publishes_success_response() -> None:

@@ -22,6 +22,10 @@ from gsa_taskflow_executor.gdk.camera_capture import (
     CameraCaptureStartParams,
 )
 from gsa_taskflow_executor.gdk.camera_frame import DEFAULT_CAMERA_TIMEOUT_MS
+from gsa_taskflow_executor.gdk.robot_identity import (
+    ACTION_GET_ROBOT_IDENTITY,
+    DEFAULT_ROBOT_IDENTITY_TIMEOUT_MS,
+)
 from gsa_taskflow_executor.qr_mapping.build_service import (
     ACTION_BUILD_QR_MAP,
     ACTION_DELETE_QR_MAP,
@@ -36,13 +40,6 @@ from gsa_taskflow_executor.qr_mapping.capture_service import (
     DEFAULT_QR_CAPTURE_RATE_FPS,
     QrCaptureStartParams,
 )
-from gsa_taskflow_executor.qr_mapping.project_store import (
-    ACTION_GET_QR_PROJECT_PATH,
-    ACTION_GET_QR_PROJECT_SNAPSHOT,
-    ACTION_LIST_QR_PROJECTS,
-    DEFAULT_IMAGE_LIMIT,
-    MAX_IMAGE_LIMIT,
-)
 from gsa_taskflow_executor.qr_mapping.point_recording_service import (
     ACTION_SAVE_QR_INITIAL_PHOTO_POINT,
     ACTION_SAVE_QR_TARGET_POINT,
@@ -53,9 +50,17 @@ from gsa_taskflow_executor.qr_mapping.point_recording_service import (
     PointRecordingSaveTargetParams,
     PointRecordingSubmitParams,
 )
+from gsa_taskflow_executor.qr_mapping.project_store import (
+    ACTION_GET_QR_PROJECT_PATH,
+    ACTION_GET_QR_PROJECT_SNAPSHOT,
+    ACTION_LIST_QR_PROJECTS,
+    DEFAULT_IMAGE_LIMIT,
+    MAX_IMAGE_LIMIT,
+)
 
 # 请求类型常量
 CURRENT_POSE_REQUEST_TYPE = "get_current_pose"
+ROBOT_IDENTITY_REQUEST_TYPE = ACTION_GET_ROBOT_IDENTITY
 CAMERA_FRAME_REQUEST_TYPE = "get_camera_frame"
 CAMERA_CALIBRATION_REQUEST_TYPE = ACTION_GET_CAMERA_CALIBRATION
 CAMERA_CAPTURE_START_REQUEST_TYPE = ACTION_START_CAMERA_CAPTURE
@@ -79,6 +84,15 @@ class CurrentPoseRequest:
 
     request_id: str
     reply_topic: str
+
+
+@dataclass(frozen=True)
+class RobotIdentityRequest:
+    """机器人身份查询请求。"""
+
+    request_id: str
+    reply_topic: str
+    timeout_ms: int
 
 
 @dataclass(frozen=True)
@@ -263,6 +277,33 @@ def parse_current_pose_request(payload: str, *, default_reply_topic: str) -> Cur
         raise ValueError("当前位姿请求缺少 replyTopic")
 
     return CurrentPoseRequest(request_id=request_id, reply_topic=reply_topic)
+
+
+def parse_robot_identity_request(
+    payload: str,
+    *,
+    default_reply_topic: str,
+) -> RobotIdentityRequest:
+    """解析机器人身份查询请求 JSON。"""
+
+    decoded = parse_json_object(payload, "机器人身份请求")
+    request_type = read_optional_string(decoded, "type")
+    if request_type is not None and request_type != ROBOT_IDENTITY_REQUEST_TYPE:
+        raise ValueError(f"不支持的机器人状态请求类型: {request_type}")
+
+    request_id = read_request_id_from_object(decoded)
+    if not request_id:
+        raise ValueError("机器人身份请求缺少 requestId")
+
+    timeout_ms = read_positive_int(
+        decoded.get("timeoutMs"),
+        DEFAULT_ROBOT_IDENTITY_TIMEOUT_MS,
+    )
+    return RobotIdentityRequest(
+        request_id=request_id,
+        reply_topic=read_reply_topic(decoded, default_reply_topic),
+        timeout_ms=timeout_ms,
+    )
 
 
 def parse_camera_frame_request(payload: str, *, default_reply_topic: str) -> CameraFrameRequest:

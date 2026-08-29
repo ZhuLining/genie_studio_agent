@@ -32,6 +32,7 @@ from gsa_taskflow_executor.runtime.payload_sanitizer import (
 TaskflowMessageHandler = Callable[["TaskflowMessage"], None]
 RobotStateMessageHandler = Callable[["TaskflowMessage"], None]
 TaskflowCancelMessageHandler = Callable[["TaskflowMessage"], None]
+MQTT_LOOP_WATCHDOG_INTERVAL_SECONDS = 5.0
 
 
 class MqttGatewayError(RuntimeError):
@@ -114,7 +115,11 @@ class MqttGateway:
         client.disconnect()
         self.logger.info("MQTT gateway disconnected")
 
-    def run_forever(self) -> None:
+    def run_forever(
+        self,
+        *,
+        watchdog_interval_seconds: float = MQTT_LOOP_WATCHDOG_INTERVAL_SECONDS,
+    ) -> None:
         self.connect()
         self.logger.info(
             "listening taskflow YAML on %s, cancel topic %s, status topic %s, "
@@ -126,11 +131,34 @@ class MqttGateway:
         )
         try:
             while True:
-                time.sleep(3600)
+                time.sleep(watchdog_interval_seconds)
+                self.ensure_network_loop_alive()
         except KeyboardInterrupt:
             self.logger.info("received interrupt, stopping MQTT gateway")
         finally:
             self.disconnect()
+
+    def ensure_network_loop_alive(self) -> None:
+        if self._client is None:
+            raise MqttGatewayError("MQTT client missing while gateway is running")
+
+        thread = getattr(self._client, "_thread", None)
+        is_alive = getattr(thread, "is_alive", None)
+        if thread is None or not callable(is_alive):
+            return
+        if is_alive():
+            return
+
+        message = "MQTT network loop thread stopped unexpectedly"
+        self.logger.error(message)
+        self.record_event(
+            RuntimeEvent(
+                event_type="mqtt_loop_thread_dead",
+                level="error",
+                message=message,
+            )
+        )
+        raise MqttGatewayError(message)
 
     def publish_status(
         self,
@@ -203,9 +231,16 @@ class MqttGateway:
         )
 
     def handle_message(self, topic: str, payload: bytes) -> None:
+        decoded_payload = self.decode_utf8_payload(
+            topic,
+            payload,
+            route="taskflow_yaml",
+        )
+        if decoded_payload is None:
+            return
         received = TaskflowMessage(
             topic=topic,
-            payload=payload.decode("utf-8"),
+            payload=decoded_payload,
             received_at=datetime.now(timezone.utc).isoformat(),
         )
         self.logger.info(
@@ -240,12 +275,18 @@ class MqttGateway:
                     topic=received.topic,
                 )
             )
-            raise
 
     def handle_taskflow_cancel_message(self, topic: str, payload: bytes) -> None:
+        decoded_payload = self.decode_utf8_payload(
+            topic,
+            payload,
+            route="taskflow_cancel",
+        )
+        if decoded_payload is None:
+            return
         received = TaskflowMessage(
             topic=topic,
-            payload=payload.decode("utf-8"),
+            payload=decoded_payload,
             received_at=datetime.now(timezone.utc).isoformat(),
         )
         self.logger.info(
@@ -284,12 +325,18 @@ class MqttGateway:
                     topic=received.topic,
                 )
             )
-            raise
 
     def handle_robot_state_message(self, topic: str, payload: bytes) -> None:
+        decoded_payload = self.decode_utf8_payload(
+            topic,
+            payload,
+            route="robot_state",
+        )
+        if decoded_payload is None:
+            return
         received = TaskflowMessage(
             topic=topic,
-            payload=payload.decode("utf-8"),
+            payload=decoded_payload,
             received_at=datetime.now(timezone.utc).isoformat(),
         )
         self.logger.info(
@@ -328,11 +375,45 @@ class MqttGateway:
                     topic=received.topic,
                 )
             )
-            raise
+
+    def decode_utf8_payload(
+        self,
+        topic: str,
+        payload: bytes,
+        *,
+        route: str,
+    ) -> str | None:
+        try:
+            return payload.decode("utf-8")
+        except UnicodeDecodeError as error:
+            # MQTT 回调运行在 paho 网络线程，坏编码只能记录并丢弃，不能把异常抛回网络循环。
+            preview = payload.decode("utf-8", errors="replace")
+            self.logger.warning("invalid UTF-8 MQTT payload topic=%s: %s", topic, error)
+            self.record_event(
+                RuntimeEvent(
+                    event_type="mqtt_invalid_payload_encoding",
+                    level="warning",
+                    message=str(error),
+                    topic=topic,
+                    payload={
+                        "route": route,
+                        "payload_bytes": len(payload),
+                        "payload_preview": payload_preview(
+                            preview,
+                            config=self._payload_sanitizer_config,
+                        ),
+                    },
+                )
+            )
+            return None
 
     def record_event(self, event: RuntimeEvent) -> None:
-        if self.event_writer is not None:
+        if self.event_writer is None:
+            return
+        try:
             self.event_writer.write(event)
+        except Exception:
+            self.logger.exception("failed to write runtime event")
 
     def _on_connect(
         self,
@@ -410,22 +491,40 @@ class MqttGateway:
         )
 
     def _on_message(self, _client: Any, _userdata: Any, message: Any) -> None:
-        if (
-            self.on_robot_state_message is not None
-            and message.topic in self.settings.robot_state_request_topics
-        ):
-            self.handle_robot_state_message(message.topic, message.payload)
-            return
-        if (
-            self.on_taskflow_cancel_message is not None
-            and mqtt_topic_matches_filter(
-                self.settings.taskflow_cancel_topic_filter,
-                message.topic,
+        try:
+            topic = normalize_mqtt_topic(getattr(message, "topic", ""))
+            payload = normalize_mqtt_payload(getattr(message, "payload", b""))
+            if (
+                self.on_robot_state_message is not None
+                and topic in self.settings.robot_state_request_topics
+            ):
+                self.handle_robot_state_message(topic, payload)
+                return
+            if (
+                self.on_taskflow_cancel_message is not None
+                and mqtt_topic_matches_filter(
+                    self.settings.taskflow_cancel_topic_filter,
+                    topic,
+                )
+            ):
+                self.handle_taskflow_cancel_message(topic, payload)
+                return
+            self.handle_message(topic, payload)
+        except Exception as error:
+            # paho 的 on_message 在网络线程执行，异常不能上抛，否则进程可能活着但永久失聪。
+            topic = normalize_mqtt_topic(getattr(message, "topic", ""))
+            raw_payload = getattr(message, "payload", b"")
+            payload_bytes = len(raw_payload) if isinstance(raw_payload, bytes) else None
+            self.logger.exception("MQTT message callback failed")
+            self.record_event(
+                RuntimeEvent(
+                    event_type="mqtt_message_route_error",
+                    level="error",
+                    message=str(error),
+                    topic=topic,
+                    payload={"payload_bytes": payload_bytes},
+                )
             )
-        ):
-            self.handle_taskflow_cancel_message(message.topic, message.payload)
-            return
-        self.handle_message(message.topic, message.payload)
 
 
 def import_paho_mqtt() -> Any:
@@ -466,6 +565,24 @@ def is_success_reason_code(reason_code: Any) -> bool:
         return int(reason_code) == 0
     except (TypeError, ValueError):
         return str(reason_code).lower() in {"0", "success"}
+
+
+def normalize_mqtt_topic(topic: Any) -> str:
+    if isinstance(topic, str):
+        return topic
+    if isinstance(topic, bytes):
+        return topic.decode("utf-8", errors="replace")
+    return str(topic)
+
+
+def normalize_mqtt_payload(payload: Any) -> bytes:
+    if isinstance(payload, bytes):
+        return payload
+    if isinstance(payload, bytearray):
+        return bytes(payload)
+    if isinstance(payload, str):
+        return payload.encode("utf-8")
+    raise TypeError(f"MQTT payload must be bytes or str, got {type(payload).__name__}")
 
 
 def mqtt_topic_matches_filter(topic_filter: str, topic: str) -> bool:

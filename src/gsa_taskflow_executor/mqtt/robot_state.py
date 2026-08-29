@@ -13,24 +13,8 @@ from gsa_taskflow_executor.gdk.camera_calibration import run_gdk_camera_calibrat
 from gsa_taskflow_executor.gdk.camera_capture import CameraCaptureStartParams
 from gsa_taskflow_executor.gdk.camera_frame import run_gdk_camera_frame_snapshot
 from gsa_taskflow_executor.gdk.current_pose import run_gdk_current_pose_snapshot
+from gsa_taskflow_executor.gdk.robot_identity import run_gdk_robot_identity_snapshot
 from gsa_taskflow_executor.gdk.session import GdkSessionManager
-from gsa_taskflow_executor.qr_mapping.build_service import (
-    ACTION_BUILD_QR_MAP,
-    ACTION_DELETE_QR_MAP,
-    ACTION_READ_QR_PCD_PREVIEW,
-    QrBuildService,
-)
-from gsa_taskflow_executor.qr_mapping.capture_service import (
-    ACTION_START_QR_CAPTURE,
-    ACTION_STOP_QR_CAPTURE,
-    QrCaptureStartParams,
-)
-from gsa_taskflow_executor.qr_mapping.point_recording_service import (
-    PointRecordingSaveInitialPhotoParams,
-    PointRecordingSaveTargetParams,
-    PointRecordingService,
-    PointRecordingSubmitParams,
-)
 from gsa_taskflow_executor.mqtt.gateway import TaskflowMessage
 from gsa_taskflow_executor.mqtt.robot_state_models import (
     CAMERA_CALIBRATION_REQUEST_TYPE,
@@ -38,50 +22,53 @@ from gsa_taskflow_executor.mqtt.robot_state_models import (
     CAMERA_CAPTURE_STOP_REQUEST_TYPE,
     CAMERA_FRAME_REQUEST_TYPE,
     CURRENT_POSE_REQUEST_TYPE,
+    POINT_RECORDING_SAVE_INITIAL_PHOTO_REQUEST_TYPE,
+    POINT_RECORDING_SAVE_TARGET_REQUEST_TYPE,
+    POINT_RECORDING_SUBMIT_REQUEST_TYPE,
     QR_BUILD_MAP_REQUEST_TYPE,
     QR_CAPTURE_START_REQUEST_TYPE,
     QR_CAPTURE_STOP_REQUEST_TYPE,
     QR_DELETE_MAP_REQUEST_TYPE,
     QR_PCD_PREVIEW_REQUEST_TYPE,
-    POINT_RECORDING_SAVE_INITIAL_PHOTO_REQUEST_TYPE,
-    POINT_RECORDING_SAVE_TARGET_REQUEST_TYPE,
-    POINT_RECORDING_SUBMIT_REQUEST_TYPE,
     QR_PROJECT_LIST_REQUEST_TYPE,
     QR_PROJECT_PATH_REQUEST_TYPE,
     QR_PROJECT_SNAPSHOT_REQUEST_TYPE,
+    ROBOT_IDENTITY_REQUEST_TYPE,
     CameraCalibrationRequest,
     CameraCaptureStartRequest,
     CameraCaptureStopRequest,
     CameraFrameRequest,
     CurrentPoseRequest,
+    PointRecordingSaveInitialPhotoRequest,
+    PointRecordingSaveTargetRequest,
+    PointRecordingSubmitRequest,
     QrBuildMapRequest,
     QrCaptureStartRequest,
     QrCaptureStopRequest,
     QrDeleteMapRequest,
     QrPcdPreviewRequest,
-    PointRecordingSaveInitialPhotoRequest,
-    PointRecordingSaveTargetRequest,
-    PointRecordingSubmitRequest,
     QrProjectListRequest,
     QrProjectPathRequest,
     QrProjectSnapshotRequest,
+    RobotIdentityRequest,
     parse_camera_calibration_request,
     parse_camera_capture_start_request,
     parse_camera_capture_stop_request,
     parse_camera_frame_request,
     parse_current_pose_request,
     parse_json_object,
+    parse_point_recording_save_initial_photo_request,
+    parse_point_recording_save_target_request,
+    parse_point_recording_submit_request,
     parse_qr_build_map_request,
     parse_qr_capture_start_request,
     parse_qr_capture_stop_request,
     parse_qr_delete_map_request,
     parse_qr_pcd_preview_request,
-    parse_point_recording_save_initial_photo_request,
-    parse_point_recording_save_target_request,
-    parse_point_recording_submit_request,
     parse_qr_project_list_request,
     parse_qr_project_path_request,
     parse_qr_project_snapshot_request,
+    parse_robot_identity_request,
     read_bool,
     read_camera_ids,
     read_optional_string,
@@ -95,34 +82,48 @@ from gsa_taskflow_executor.mqtt.robot_state_responses import (
     CAMERA_CALIBRATION_BUSY_ERROR_MESSAGE,
     ROBOT_BUSY_ERROR_CODE,
     ROBOT_BUSY_ERROR_MESSAGE,
+    ROBOT_IDENTITY_BUSY_ERROR_MESSAGE,
     build_camera_calibration_response,
     build_camera_capture_start_response,
     build_camera_capture_stop_response,
     build_camera_frame_response,
     build_current_pose_response,
+    build_point_recording_save_initial_photo_response,
+    build_point_recording_save_target_response,
+    build_point_recording_submit_response,
     build_qr_build_map_response,
     build_qr_capture_start_response,
     build_qr_capture_stop_response,
     build_qr_delete_map_response,
     build_qr_pcd_preview_response,
-    build_point_recording_save_initial_photo_response,
-    build_point_recording_save_target_response,
-    build_point_recording_submit_response,
     build_qr_project_list_response,
     build_qr_project_path_response,
     build_qr_project_snapshot_response,
+    build_robot_identity_response,
     error_response,
     read_error_code,
     read_error_message,
 )
-from gsa_taskflow_executor.runtime.config import ExecutorSettings
-from gsa_taskflow_executor.runtime.event_log import JsonlEventWriter, RuntimeEvent
+from gsa_taskflow_executor.qr_mapping.build_service import (
+    QrBuildService,
+)
+from gsa_taskflow_executor.qr_mapping.capture_service import (
+    QrCaptureStartParams,
+)
+from gsa_taskflow_executor.qr_mapping.point_recording_service import (
+    PointRecordingSaveInitialPhotoParams,
+    PointRecordingSaveTargetParams,
+    PointRecordingService,
+    PointRecordingSubmitParams,
+)
 from gsa_taskflow_executor.qr_mapping.project_store import (
     ACTION_GET_QR_PROJECT_PATH,
     ACTION_GET_QR_PROJECT_SNAPSHOT,
     ACTION_LIST_QR_PROJECTS,
     QrProjectStore,
 )
+from gsa_taskflow_executor.runtime.config import ExecutorSettings
+from gsa_taskflow_executor.runtime.event_log import JsonlEventWriter, RuntimeEvent
 
 __all__ = [
     "CAMERA_BUSY_ERROR_MESSAGE",
@@ -132,6 +133,7 @@ __all__ = [
     "CAMERA_CAPTURE_STOP_REQUEST_TYPE",
     "CAMERA_FRAME_REQUEST_TYPE",
     "CURRENT_POSE_REQUEST_TYPE",
+    "ROBOT_IDENTITY_REQUEST_TYPE",
     "QR_BUILD_MAP_REQUEST_TYPE",
     "QR_CAPTURE_START_REQUEST_TYPE",
     "QR_CAPTURE_STOP_REQUEST_TYPE",
@@ -145,11 +147,13 @@ __all__ = [
     "QR_PROJECT_SNAPSHOT_REQUEST_TYPE",
     "ROBOT_BUSY_ERROR_CODE",
     "ROBOT_BUSY_ERROR_MESSAGE",
+    "ROBOT_IDENTITY_BUSY_ERROR_MESSAGE",
     "CameraCalibrationRequest",
     "CameraCaptureStartRequest",
     "CameraCaptureStopRequest",
     "CameraFrameRequest",
     "CurrentPoseRequest",
+    "RobotIdentityRequest",
     "QrBuildMapRequest",
     "QrCaptureStartRequest",
     "QrCaptureStopRequest",
@@ -177,6 +181,7 @@ __all__ = [
     "build_qr_project_list_response",
     "build_qr_project_path_response",
     "build_qr_project_snapshot_response",
+    "build_robot_identity_response",
     "error_response",
     "handle_camera_calibration_request",
     "handle_camera_capture_start_request",
@@ -192,6 +197,7 @@ __all__ = [
     "handle_point_recording_save_target_request",
     "handle_point_recording_submit_request",
     "handle_robot_state_request",
+    "handle_robot_identity_request",
     "parse_camera_calibration_request",
     "parse_camera_capture_start_request",
     "parse_camera_capture_stop_request",
@@ -209,6 +215,7 @@ __all__ = [
     "parse_qr_project_list_request",
     "parse_qr_project_path_request",
     "parse_qr_project_snapshot_request",
+    "parse_robot_identity_request",
     "read_bool",
     "read_camera_ids",
     "read_error_code",
@@ -224,6 +231,7 @@ __all__ = [
 # 回调类型别名
 RobotStatePublisher = Callable[[str, Mapping[str, Any]], None]
 CurrentPoseCollector = Callable[[], Mapping[str, object]]
+RobotIdentityCollector = Callable[[int], Mapping[str, object]]
 CameraFrameCollector = Callable[[str, int], Mapping[str, object]]
 CameraCalibrationCollector = Callable[[tuple[str, ...], int, bool], Mapping[str, object]]
 CameraCaptureStartCollector = Callable[[CameraCaptureStartParams], Mapping[str, object]]
@@ -254,6 +262,7 @@ def handle_robot_state_request(
     publish_response: RobotStatePublisher,
     event_writer: JsonlEventWriter | None = None,
     collect_current_pose: CurrentPoseCollector = run_gdk_current_pose_snapshot,
+    collect_robot_identity: RobotIdentityCollector = run_gdk_robot_identity_snapshot,
     collect_camera_frame: CameraFrameCollector = run_gdk_camera_frame_snapshot,
     collect_camera_calibration: CameraCalibrationCollector = run_gdk_camera_calibration_snapshot,
     start_camera_capture: CameraCaptureStartCollector | None = None,
@@ -439,6 +448,19 @@ def handle_robot_state_request(
             publish_response=publish_response,
             event_writer=event_writer,
             stop_camera_capture=stop_camera_capture,
+        )
+        return
+
+    if (
+        request_type == ROBOT_IDENTITY_REQUEST_TYPE
+        or message.topic == settings.robot_identity_request_topic
+    ):
+        handle_robot_identity_request(
+            message,
+            settings=settings,
+            publish_response=publish_response,
+            event_writer=event_writer,
+            collect_snapshot=collect_robot_identity,
         )
         return
 
@@ -1220,6 +1242,55 @@ def handle_current_pose_request(
         event_writer,
         event_type="robot_current_pose_response_published",
         message="current pose response published",
+        topic=request.reply_topic,
+        response=response,
+    )
+
+
+def handle_robot_identity_request(
+    message: TaskflowMessage,
+    *,
+    settings: ExecutorSettings,
+    publish_response: RobotStatePublisher,
+    event_writer: JsonlEventWriter | None = None,
+    collect_snapshot: RobotIdentityCollector = run_gdk_robot_identity_snapshot,
+) -> None:
+    """处理机器人身份查询。解析请求 → 读取 AID/SN → 构建并发布响应。"""
+
+    try:
+        request = parse_robot_identity_request(
+            message.payload,
+            default_reply_topic=settings.robot_identity_response_topic,
+        )
+    except Exception as error:
+        response = error_response(
+            response_type=ROBOT_IDENTITY_REQUEST_TYPE,
+            request_id="",
+            executor_aid=settings.executor_aid,
+            code="INVALID_REQUEST",
+            message=str(error),
+        )
+        publish_response(settings.robot_identity_response_topic, response)
+        write_robot_state_event(
+            event_writer,
+            event_type="robot_identity_request_error",
+            message=str(error),
+            topic=message.topic,
+            response=response,
+        )
+        return
+
+    snapshot = collect_snapshot(request.timeout_ms)
+    response = build_robot_identity_response(
+        request_id=request.request_id,
+        executor_aid=settings.executor_aid,
+        snapshot=snapshot,
+    )
+    publish_response(request.reply_topic, response)
+    write_robot_state_event(
+        event_writer,
+        event_type="robot_identity_response_published",
+        message="robot identity response published",
         topic=request.reply_topic,
         response=response,
     )

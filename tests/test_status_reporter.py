@@ -100,7 +100,7 @@ def test_status_reporter_publishes_node_error_payload() -> None:
     assert payloads[-1]["task_state"] == "ERROR"
 
 
-def test_status_reporter_marks_cancelled_execution_with_error_code() -> None:
+def test_status_reporter_marks_cancelled_execution_as_canceled_terminal_state() -> None:
     payloads: list[dict[str, object]] = []
     taskflow = parse_taskflow_yaml(VALID_RIGHT_ARM_YAML)
     cancellation = TaskflowCancellation(
@@ -126,7 +126,8 @@ def test_status_reporter_marks_cancelled_execution_with_error_code() -> None:
     assert cancel_payload["state"] == "ERROR"
     assert cancel_payload["cancel_state"] == "CANCELED"
     assert cancel_payload["error_code"] == "TASKFLOW_CANCELLED"
-    assert payloads[-1]["task_state"] == "ERROR"
+    assert payloads[-1]["task_state"] == "CANCELED"
+    assert payloads[-1]["status"] == "CANCELED"
     assert payloads[-1]["cancelled"] is True
     assert payloads[-1]["cancel_state"] == "CANCELED"
     assert payloads[-1]["error_code"] == "TASKFLOW_CANCELLED"

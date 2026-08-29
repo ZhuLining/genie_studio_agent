@@ -136,6 +136,30 @@ def test_publish_terminal_status_can_skip_qos_ack_wait(tmp_path) -> None:
     assert client.publish_results[0].waited is False
 
 
+def test_publish_canceled_status_is_terminal_and_waits_for_qos_ack(tmp_path) -> None:
+    client = FakeClient()
+    gateway = MqttGateway(
+        settings=ExecutorSettings(
+            executor_aid="aid-1",
+            mqtt_terminal_status_qos=1,
+            mqtt_terminal_status_wait_timeout=1.25,
+        ),
+        on_taskflow_message=lambda _message: None,
+        event_writer=JsonlEventWriter(tmp_path),
+    )
+    gateway._client = client
+
+    gateway.publish_status({"task_state": "CANCELED", "cancel_state": "CANCELED"})
+
+    [(topic, payload, qos, retain)] = client.published
+    assert topic == "gsa/self/aid-1/status"
+    assert json.loads(payload)["task_state"] == "CANCELED"
+    assert qos == 1
+    assert retain is False
+    assert client.publish_results[0].waited is True
+    assert client.publish_results[0].timeout == 1.25
+
+
 def test_publish_status_requires_connection() -> None:
     gateway = MqttGateway(
         settings=ExecutorSettings(),
@@ -194,6 +218,7 @@ def test_on_connect_subscribes_robot_state_topic_when_handler_configured() -> No
     assert client.subscribed == [
         ("gsa/self/taskflow_yaml", 0),
         ("gsa/self/robot/state/get_current_pose/request", 0),
+        ("gsa/self/robot/state/get_robot_identity/request", 0),
         ("gsa/self/robot/state/get_camera_frame/request", 0),
         ("gsa/self/robot/state/get_camera_calibration/request", 0),
         ("gsa/self/robot/state/camera_capture/start/request", 0),
@@ -291,6 +316,101 @@ def test_on_message_routes_taskflow_cancel_topic_to_cancel_handler() -> None:
 
     assert received_taskflows == []
     assert received_cancel_topics == ["gsa/self/taskflow/run-1/cancel"]
+
+
+def test_handlers_do_not_raise_back_to_paho_thread(tmp_path) -> None:
+    def fail_handler(_message) -> None:
+        raise RuntimeError("handler boom")
+
+    gateway = MqttGateway(
+        settings=ExecutorSettings(),
+        on_taskflow_message=fail_handler,
+        on_robot_state_message=fail_handler,
+        on_taskflow_cancel_message=fail_handler,
+        event_writer=JsonlEventWriter(tmp_path),
+    )
+
+    gateway.handle_message("gsa/self/taskflow_yaml", b"start_node: start\n")
+    gateway.handle_taskflow_cancel_message(
+        "gsa/self/taskflow/run-1/cancel",
+        b'{"reason":"stop"}',
+    )
+    gateway.handle_robot_state_message(
+        "gsa/self/robot/state/get_current_pose/request",
+        b'{"requestId":"req-1"}',
+    )
+
+    [event_file] = list(tmp_path.glob("*.jsonl"))
+    event_types = [
+        json.loads(line)["event_type"]
+        for line in event_file.read_text(encoding="utf-8").splitlines()
+    ]
+    assert "taskflow_yaml_handler_error" in event_types
+    assert "taskflow_cancel_handler_error" in event_types
+    assert "robot_state_request_handler_error" in event_types
+
+
+def test_invalid_utf8_payload_is_recorded_and_dropped(tmp_path) -> None:
+    received_payloads: list[str] = []
+    gateway = MqttGateway(
+        settings=ExecutorSettings(),
+        on_taskflow_message=lambda message: received_payloads.append(message.payload),
+        event_writer=JsonlEventWriter(tmp_path),
+    )
+
+    gateway.handle_message("gsa/self/taskflow_yaml", b"\xff\xfe")
+
+    assert received_payloads == []
+    [event_file] = list(tmp_path.glob("*.jsonl"))
+    event = json.loads(event_file.read_text(encoding="utf-8").splitlines()[0])
+    assert event["event_type"] == "mqtt_invalid_payload_encoding"
+    assert event["topic"] == "gsa/self/taskflow_yaml"
+    assert event["payload"]["route"] == "taskflow_yaml"
+    assert event["payload"]["payload_bytes"] == 2
+
+
+def test_on_message_swallows_route_errors(tmp_path) -> None:
+    gateway = MqttGateway(
+        settings=ExecutorSettings(),
+        on_taskflow_message=lambda _message: None,
+        event_writer=JsonlEventWriter(tmp_path),
+    )
+    message = type(
+        "Message",
+        (),
+        {
+            "topic": "gsa/self/taskflow_yaml",
+            "payload": object(),
+        },
+    )()
+
+    gateway._on_message(None, None, message)
+
+    [event_file] = list(tmp_path.glob("*.jsonl"))
+    event = json.loads(event_file.read_text(encoding="utf-8").splitlines()[0])
+    assert event["event_type"] == "mqtt_message_route_error"
+    assert event["topic"] == "gsa/self/taskflow_yaml"
+
+
+def test_network_loop_watchdog_raises_when_paho_thread_died(tmp_path) -> None:
+    class DeadThread:
+        def is_alive(self) -> bool:
+            return False
+
+    client = type("Client", (), {"_thread": DeadThread()})()
+    gateway = MqttGateway(
+        settings=ExecutorSettings(),
+        on_taskflow_message=lambda _message: None,
+        event_writer=JsonlEventWriter(tmp_path),
+    )
+    gateway._client = client
+
+    with pytest.raises(MqttGatewayError, match="network loop thread stopped"):
+        gateway.ensure_network_loop_alive()
+
+    [event_file] = list(tmp_path.glob("*.jsonl"))
+    event = json.loads(event_file.read_text(encoding="utf-8").splitlines()[0])
+    assert event["event_type"] == "mqtt_loop_thread_dead"
 
 
 @pytest.mark.parametrize(

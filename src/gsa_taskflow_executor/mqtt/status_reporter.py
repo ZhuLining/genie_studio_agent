@@ -1,6 +1,6 @@
 """MQTT 状态上报。
 
-TaskflowStatusReporter 发布 RUNNING/OVER/ERROR 状态载荷到 MQTT status topic。
+TaskflowStatusReporter 发布 RUNNING/OVER/ERROR/CANCELED 状态载荷到 MQTT status topic。
 StatusSequence 生成单调递增序列号，保证桌面端即使 MQTT 乱序也能正确排序。
 """
 
@@ -21,7 +21,7 @@ from gsa_taskflow_executor.taskflow.control import TASKFLOW_CANCELLED_CODE
 from gsa_taskflow_executor.taskflow.models import TaskflowDefinition
 from gsa_taskflow_executor.taskflow.scheduler import NodeExecutionEvent, ScheduleResult
 
-TaskflowRuntimeState = Literal["RUNNING", "OVER", "ERROR"]
+TaskflowRuntimeState = Literal["RUNNING", "OVER", "ERROR", "CANCELED"]
 StatusPublisher = Callable[[Mapping[str, Any]], None]
 
 
@@ -79,7 +79,12 @@ class TaskflowStatusReporter:
         self.publish_status(payload)
 
     def publish_execution_finished(self, result: ScheduleResult) -> None:
-        task_state: TaskflowRuntimeState = "OVER" if result.outcome == "success" else "ERROR"
+        if result.outcome == "success":
+            task_state: TaskflowRuntimeState = "OVER"
+        elif result.outcome == "cancelled":
+            task_state = "CANCELED"
+        else:
+            task_state = "ERROR"
         extra: dict[str, Any] = {
             "terminal_node_id": result.terminal_node_id,
             "visited_node_ids": list(result.visited_node_ids),

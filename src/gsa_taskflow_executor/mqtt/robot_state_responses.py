@@ -15,22 +15,24 @@ from gsa_taskflow_executor.mqtt.robot_state_models import (
     CAMERA_CAPTURE_STOP_REQUEST_TYPE,
     CAMERA_FRAME_REQUEST_TYPE,
     CURRENT_POSE_REQUEST_TYPE,
+    POINT_RECORDING_SAVE_INITIAL_PHOTO_REQUEST_TYPE,
+    POINT_RECORDING_SAVE_TARGET_REQUEST_TYPE,
+    POINT_RECORDING_SUBMIT_REQUEST_TYPE,
     QR_BUILD_MAP_REQUEST_TYPE,
     QR_CAPTURE_START_REQUEST_TYPE,
     QR_CAPTURE_STOP_REQUEST_TYPE,
     QR_DELETE_MAP_REQUEST_TYPE,
     QR_PCD_PREVIEW_REQUEST_TYPE,
-    POINT_RECORDING_SAVE_INITIAL_PHOTO_REQUEST_TYPE,
-    POINT_RECORDING_SAVE_TARGET_REQUEST_TYPE,
-    POINT_RECORDING_SUBMIT_REQUEST_TYPE,
     QR_PROJECT_LIST_REQUEST_TYPE,
     QR_PROJECT_PATH_REQUEST_TYPE,
     QR_PROJECT_SNAPSHOT_REQUEST_TYPE,
+    ROBOT_IDENTITY_REQUEST_TYPE,
 )
 from gsa_taskflow_executor.qr_mapping.capture_service import QR_CAPTURE_BUSY_ERROR_MESSAGE
 
 ROBOT_BUSY_ERROR_CODE = "ROBOT_BUSY"
 ROBOT_BUSY_ERROR_MESSAGE = "GDK 正在执行控制动作，当前位姿读取已拒绝"
+ROBOT_IDENTITY_BUSY_ERROR_MESSAGE = "GDK 正在执行控制动作，机器人身份读取已拒绝"
 CAMERA_BUSY_ERROR_MESSAGE = "GDK 正在执行控制动作，相机图像读取已拒绝"
 CAMERA_CALIBRATION_BUSY_ERROR_MESSAGE = "GDK 正在执行控制动作，相机标定读取已拒绝"
 
@@ -68,6 +70,43 @@ def build_current_pose_response(
         executor_aid=executor_aid,
         code="GDK_UNAVAILABLE",
         message=read_error_message(snapshot),
+        details=dict(snapshot),
+    )
+
+
+def build_robot_identity_response(
+    *,
+    request_id: str,
+    executor_aid: str,
+    snapshot: Mapping[str, object],
+) -> dict[str, object]:
+    """构建机器人身份响应。"""
+
+    if snapshot.get("available") is True:
+        return {
+            "type": ROBOT_IDENTITY_REQUEST_TYPE,
+            "requestId": request_id,
+            "ok": True,
+            "executorAid": executor_aid,
+            "data": dict(snapshot),
+        }
+
+    if snapshot.get("busy") is True:
+        return error_response(
+            response_type=ROBOT_IDENTITY_REQUEST_TYPE,
+            request_id=request_id,
+            executor_aid=executor_aid,
+            code=ROBOT_BUSY_ERROR_CODE,
+            message=ROBOT_IDENTITY_BUSY_ERROR_MESSAGE,
+            details=dict(snapshot),
+        )
+
+    return error_response(
+        response_type=ROBOT_IDENTITY_REQUEST_TYPE,
+        request_id=request_id,
+        executor_aid=executor_aid,
+        code=read_error_code(snapshot, "GDK_ROBOT_IDENTITY_UNAVAILABLE"),
+        message=read_error_message(snapshot, fallback="GDK 机器人身份读取失败"),
         details=dict(snapshot),
     )
 
