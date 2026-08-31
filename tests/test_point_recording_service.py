@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from gsa_taskflow_executor.qr_mapping.point_recording_service import (
+    PointRecordingDeletePointParams,
     PointRecordingSaveInitialPhotoParams,
     PointRecordingSaveTargetParams,
     PointRecordingService,
@@ -107,6 +108,134 @@ def test_project_snapshot_lists_point_recording_records(tmp_path) -> None:
     assert snapshot["initialPhotoPoints"][0]["tfBaselinkTagPath"].endswith(
         "tf_baselink_tag.json"
     )
+
+
+def test_point_recording_service_deletes_target_and_prunes_waypoints(tmp_path) -> None:
+    store, service = make_service(tmp_path)
+    make_mapped_project(store)
+    for name in ("grasp_1", "grasp_2"):
+        service.save_target_point(
+            PointRecordingSaveTargetParams(
+                robot_serial="G2A0004BC01053",
+                project_name="test10",
+                point_name=name,
+                arm="left_arm",
+                camera_id="hand_left_color",
+            )
+        )
+    service.save_initial_photo_point(
+        PointRecordingSaveInitialPhotoParams(
+            robot_serial="G2A0004BC01053",
+            project_name="test10",
+            point_name="photo_001",
+            arm="left_arm",
+            camera_id="hand_left_color",
+        )
+    )
+
+    result = service.delete_target_point(
+        PointRecordingDeletePointParams(
+            robot_serial="G2A0004BC01053",
+            project_name="test10",
+            point_name="grasp_1",
+        )
+    )
+
+    paths = store.build_paths(robot_serial="G2A0004BC01053", project_name="test10")
+    points = json.loads((paths.point_dir / "grasp_points.json").read_text(encoding="utf-8"))
+    tag_ee = json.loads((paths.waypoints_dir / "photo_001" / "tf_tag_ee.json").read_text(encoding="utf-8"))
+    manifest = json.loads(paths.manifest_path.read_text(encoding="utf-8"))
+    [initial] = manifest["pointRecording"]["initialPhotoPoints"]
+    assert result["available"] is True
+    assert result["action"] == "delete_qr_target_point"
+    assert result["affectedInitialPhotoPoints"] == ["photo_001"]
+    assert [item["grasp_name"] for item in points] == ["grasp_2"]
+    assert "grasp_1" not in tag_ee
+    assert initial["targetPointNames"] == ["grasp_2"]
+    assert initial["targetPointCount"] == 1
+
+
+def test_point_recording_service_deletes_initial_photo_waypoint(tmp_path) -> None:
+    store, service = make_service(tmp_path)
+    make_mapped_project(store)
+    service.save_target_point(
+        PointRecordingSaveTargetParams(
+            robot_serial="G2A0004BC01053",
+            project_name="test10",
+            point_name="grasp_1",
+            arm="left_arm",
+            camera_id="hand_left_color",
+        )
+    )
+    service.save_initial_photo_point(
+        PointRecordingSaveInitialPhotoParams(
+            robot_serial="G2A0004BC01053",
+            project_name="test10",
+            point_name="photo_001",
+            arm="left_arm",
+            camera_id="hand_left_color",
+        )
+    )
+
+    result = service.delete_initial_photo_point(
+        PointRecordingDeletePointParams(
+            robot_serial="G2A0004BC01053",
+            project_name="test10",
+            point_name="photo_001",
+        )
+    )
+
+    paths = store.build_paths(robot_serial="G2A0004BC01053", project_name="test10")
+    manifest = json.loads(paths.manifest_path.read_text(encoding="utf-8"))
+    assert result["available"] is True
+    assert result["action"] == "delete_qr_initial_photo_point"
+    assert not (paths.waypoints_dir / "photo_001").exists()
+    assert manifest["pointRecording"]["initialPhotoPoints"] == []
+    assert manifest["activeWaypointName"] is None
+
+
+def test_point_recording_service_overwrites_existing_target_and_invalidates_old_waypoint(tmp_path) -> None:
+    store, service = make_service(tmp_path)
+    make_mapped_project(store)
+    service.save_target_point(
+        PointRecordingSaveTargetParams(
+            robot_serial="G2A0004BC01053",
+            project_name="test10",
+            point_name="grasp_1",
+            arm="left_arm",
+            camera_id="hand_left_color",
+        )
+    )
+    service.save_initial_photo_point(
+        PointRecordingSaveInitialPhotoParams(
+            robot_serial="G2A0004BC01053",
+            project_name="test10",
+            point_name="photo_001",
+            arm="left_arm",
+            camera_id="hand_left_color",
+        )
+    )
+
+    result = service.save_target_point(
+        PointRecordingSaveTargetParams(
+            robot_serial="G2A0004BC01053",
+            project_name="test10",
+            point_name="grasp_1",
+            arm="left_arm",
+            camera_id="hand_left_color",
+        )
+    )
+
+    paths = store.build_paths(robot_serial="G2A0004BC01053", project_name="test10")
+    points = json.loads((paths.point_dir / "grasp_points.json").read_text(encoding="utf-8"))
+    tag_ee = json.loads((paths.waypoints_dir / "photo_001" / "tf_tag_ee.json").read_text(encoding="utf-8"))
+    manifest = json.loads(paths.manifest_path.read_text(encoding="utf-8"))
+    [initial] = manifest["pointRecording"]["initialPhotoPoints"]
+    assert result["overwritten"] is True
+    assert len(points) == 1
+    assert "grasp_1" not in tag_ee
+    assert initial["targetPointNames"] == []
+    assert initial["targetPointCount"] == 0
 
 
 def test_qr_localize_sdk_failure_keeps_stats(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -235,8 +364,19 @@ def fake_sdk_runner(
         json.dumps({"position": [0, 0, 0], "orientation": [0, 0, 0, 1]}),
         encoding="utf-8",
     )
+    grasp_points_path = _point_dir / "grasp_points.json"
+    grasp_points = json.loads(grasp_points_path.read_text(encoding="utf-8"))
+    tag_ee = {
+        item["grasp_name"]: [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ]
+        for item in grasp_points
+    }
     (out_dir / "tf_tag_ee.json").write_text(
-        json.dumps({"position": [0, 0, 0], "orientation": [0, 0, 0, 1]}),
+        json.dumps(tag_ee),
         encoding="utf-8",
     )
     (out_dir / "joints.json").write_text(json.dumps([0.0] * 22), encoding="utf-8")

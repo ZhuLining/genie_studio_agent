@@ -142,6 +142,18 @@ class ExecutorSettings:
     point_recording_save_initial_photo_response_topic: str = (
         "gsa/self/robot/qr_mapping/save_initial_photo_point/response"
     )
+    point_recording_delete_target_request_topic: str = (
+        "gsa/self/robot/qr_mapping/delete_target_point/request"
+    )
+    point_recording_delete_target_response_topic: str = (
+        "gsa/self/robot/qr_mapping/delete_target_point/response"
+    )
+    point_recording_delete_initial_photo_request_topic: str = (
+        "gsa/self/robot/qr_mapping/delete_initial_photo_point/request"
+    )
+    point_recording_delete_initial_photo_response_topic: str = (
+        "gsa/self/robot/qr_mapping/delete_initial_photo_point/response"
+    )
     point_recording_submit_request_topic: str = (
         "gsa/self/robot/qr_mapping/submit_point_recording/request"
     )
@@ -380,6 +392,22 @@ class ExecutorSettings:
                 "POINT_RECORDING_SAVE_INITIAL_PHOTO_RESPONSE_TOPIC",
                 cls.point_recording_save_initial_photo_response_topic,
             ).strip(),
+            point_recording_delete_target_request_topic=source.get(
+                "POINT_RECORDING_DELETE_TARGET_REQUEST_TOPIC",
+                cls.point_recording_delete_target_request_topic,
+            ).strip(),
+            point_recording_delete_target_response_topic=source.get(
+                "POINT_RECORDING_DELETE_TARGET_RESPONSE_TOPIC",
+                cls.point_recording_delete_target_response_topic,
+            ).strip(),
+            point_recording_delete_initial_photo_request_topic=source.get(
+                "POINT_RECORDING_DELETE_INITIAL_PHOTO_REQUEST_TOPIC",
+                cls.point_recording_delete_initial_photo_request_topic,
+            ).strip(),
+            point_recording_delete_initial_photo_response_topic=source.get(
+                "POINT_RECORDING_DELETE_INITIAL_PHOTO_RESPONSE_TOPIC",
+                cls.point_recording_delete_initial_photo_response_topic,
+            ).strip(),
             point_recording_submit_request_topic=source.get(
                 "POINT_RECORDING_SUBMIT_REQUEST_TOPIC",
                 cls.point_recording_submit_request_topic,
@@ -455,6 +483,8 @@ class ExecutorSettings:
             self.qr_mapping_pcd_preview_request_topic,
             self.point_recording_save_target_request_topic,
             self.point_recording_save_initial_photo_request_topic,
+            self.point_recording_delete_target_request_topic,
+            self.point_recording_delete_initial_photo_request_topic,
             self.point_recording_submit_request_topic,
         )
 
@@ -610,6 +640,22 @@ class ExecutorSettings:
         require_non_empty(
             "POINT_RECORDING_SAVE_INITIAL_PHOTO_RESPONSE_TOPIC",
             self.point_recording_save_initial_photo_response_topic,
+        )
+        require_non_empty(
+            "POINT_RECORDING_DELETE_TARGET_REQUEST_TOPIC",
+            self.point_recording_delete_target_request_topic,
+        )
+        require_non_empty(
+            "POINT_RECORDING_DELETE_TARGET_RESPONSE_TOPIC",
+            self.point_recording_delete_target_response_topic,
+        )
+        require_non_empty(
+            "POINT_RECORDING_DELETE_INITIAL_PHOTO_REQUEST_TOPIC",
+            self.point_recording_delete_initial_photo_request_topic,
+        )
+        require_non_empty(
+            "POINT_RECORDING_DELETE_INITIAL_PHOTO_RESPONSE_TOPIC",
+            self.point_recording_delete_initial_photo_response_topic,
         )
         require_non_empty(
             "POINT_RECORDING_SUBMIT_REQUEST_TOPIC",

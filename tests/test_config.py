@@ -90,6 +90,14 @@ def test_default_status_topic() -> None:
         == "gsa/self/robot/qr_mapping/save_initial_photo_point/request"
     )
     assert (
+        settings.point_recording_delete_target_request_topic
+        == "gsa/self/robot/qr_mapping/delete_target_point/request"
+    )
+    assert (
+        settings.point_recording_delete_initial_photo_request_topic
+        == "gsa/self/robot/qr_mapping/delete_initial_photo_point/request"
+    )
+    assert (
         settings.point_recording_submit_request_topic
         == "gsa/self/robot/qr_mapping/submit_point_recording/request"
     )
@@ -164,6 +172,16 @@ def test_env_overrides(monkeypatch) -> None:
         "POINT_RECORDING_SAVE_INITIAL_PHOTO_RESPONSE_TOPIC",
         "point/photo/response",
     )
+    monkeypatch.setenv("POINT_RECORDING_DELETE_TARGET_REQUEST_TOPIC", "point/target/delete/request")
+    monkeypatch.setenv("POINT_RECORDING_DELETE_TARGET_RESPONSE_TOPIC", "point/target/delete/response")
+    monkeypatch.setenv(
+        "POINT_RECORDING_DELETE_INITIAL_PHOTO_REQUEST_TOPIC",
+        "point/photo/delete/request",
+    )
+    monkeypatch.setenv(
+        "POINT_RECORDING_DELETE_INITIAL_PHOTO_RESPONSE_TOPIC",
+        "point/photo/delete/response",
+    )
     monkeypatch.setenv("POINT_RECORDING_SUBMIT_REQUEST_TOPIC", "point/submit/request")
     monkeypatch.setenv("POINT_RECORDING_SUBMIT_RESPONSE_TOPIC", "point/submit/response")
     monkeypatch.setenv("QR_MAPPING_SDK_PATH", "/opt/qr_mapping_sdk")
@@ -224,6 +242,10 @@ def test_env_overrides(monkeypatch) -> None:
     assert settings.point_recording_save_target_response_topic == "point/target/response"
     assert settings.point_recording_save_initial_photo_request_topic == "point/photo/request"
     assert settings.point_recording_save_initial_photo_response_topic == "point/photo/response"
+    assert settings.point_recording_delete_target_request_topic == "point/target/delete/request"
+    assert settings.point_recording_delete_target_response_topic == "point/target/delete/response"
+    assert settings.point_recording_delete_initial_photo_request_topic == "point/photo/delete/request"
+    assert settings.point_recording_delete_initial_photo_response_topic == "point/photo/delete/response"
     assert settings.point_recording_submit_request_topic == "point/submit/request"
     assert settings.point_recording_submit_response_topic == "point/submit/response"
     assert settings.qr_mapping_sdk_path == "/opt/qr_mapping_sdk"

@@ -11,6 +11,7 @@ import base64
 import json
 import math
 import os
+import shutil
 import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -57,6 +58,8 @@ from gsa_taskflow_executor.qr_mapping.project_store import (
 
 ACTION_SAVE_QR_TARGET_POINT = "save_qr_target_point"
 ACTION_SAVE_QR_INITIAL_PHOTO_POINT = "save_qr_initial_photo_point"
+ACTION_DELETE_QR_TARGET_POINT = "delete_qr_target_point"
+ACTION_DELETE_QR_INITIAL_PHOTO_POINT = "delete_qr_initial_photo_point"
 ACTION_SUBMIT_POINT_RECORDING = "submit_point_recording"
 POINT_RECORDING_BUSY_ERROR_MESSAGE = "GDK 正在执行控制动作，点位录制已拒绝"
 DEFAULT_POINT_RECORDING_TIMEOUT_MS = 60000
@@ -123,6 +126,13 @@ class PointRecordingSaveInitialPhotoParams:
     map_name: str | None = None
     timeout_ms: int = DEFAULT_POINT_RECORDING_TIMEOUT_MS
     min_markers: int = DEFAULT_MIN_MARKERS
+
+
+@dataclass(frozen=True)
+class PointRecordingDeletePointParams:
+    robot_serial: str
+    project_name: str
+    point_name: str
 
 
 @dataclass(frozen=True)
@@ -214,8 +224,13 @@ class PointRecordingService:
                 map_name=resolved["mapName"],
                 snapshot=snapshot,
             )
-            save_grasp_point(paths, record)
-            update_manifest_after_target(paths, record)
+            replaced_target = save_grasp_point(paths, record)
+            waypoint_changes = (
+                remove_target_from_initial_waypoints(paths, point_name)
+                if replaced_target
+                else {"affectedInitialPhotoPoints": [], "updatedPaths": []}
+            )
+            update_manifest_after_target(paths, record, invalidate_existing_target=replaced_target)
             return {
                 "available": True,
                 "backend": GDK_BACKEND,
@@ -230,6 +245,9 @@ class PointRecordingService:
                 "savedAt": record["recorded_at"],
                 "pointFilePath": str(paths.point_dir / "grasp_points.json"),
                 "absJointsCount": len(record["abs_joints"]),
+                "overwritten": replaced_target,
+                "affectedInitialPhotoPoints": waypoint_changes["affectedInitialPhotoPoints"],
+                "updatedPaths": waypoint_changes["updatedPaths"],
                 **paths_to_payload(paths),
                 "gdk": snapshot,
                 "collectedAt": utc_now_iso(),
@@ -253,8 +271,9 @@ class PointRecordingService:
             min_markers = normalize_min_markers(params.min_markers)
             target_points = require_target_points_before_initial_photo(paths)
             waypoint_dir = paths.waypoints_dir / point_name
-            if waypoint_dir.exists() and any(waypoint_dir.iterdir()):
-                raise ValueError("同名初始拍照点位已存在，请更换点位名称")
+            if waypoint_dir.exists():
+                # 二次修改允许同名重录；先删除旧 waypoint，避免 SDK 输出和旧文件混在一起。
+                shutil.rmtree(waypoint_dir)
 
             ensure_project_layout(paths)
             snapshot = self._collect_snapshot(
@@ -317,6 +336,70 @@ class PointRecordingService:
             }
         except Exception as error:
             return error_payload(ACTION_SAVE_QR_INITIAL_PHOTO_POINT, error)
+
+    def delete_target_point(self, params: PointRecordingDeletePointParams) -> dict[str, object]:
+        try:
+            paths = self._project_store.build_paths(
+                robot_serial=params.robot_serial,
+                project_name=params.project_name,
+            )
+            point_name = validate_safe_segment(params.point_name, "pointName")
+            file_changes = delete_grasp_point(paths, point_name)
+            waypoint_changes = remove_target_from_initial_waypoints(paths, point_name)
+            update_manifest_after_delete_target(paths, point_name)
+            target_points = read_grasp_points(paths)
+            initial_points = list_initial_photo_records(paths)
+            return {
+                "available": True,
+                "backend": "executor.filesystem",
+                "action": ACTION_DELETE_QR_TARGET_POINT,
+                "robotSerial": params.robot_serial.strip(),
+                "projectName": params.project_name.strip(),
+                "pointKind": "target",
+                "pointName": point_name,
+                "deletedPaths": file_changes["deletedPaths"],
+                "updatedPaths": [
+                    *file_changes["updatedPaths"],
+                    *waypoint_changes["updatedPaths"],
+                    str(paths.manifest_path),
+                ],
+                "affectedInitialPhotoPoints": waypoint_changes["affectedInitialPhotoPoints"],
+                "targetPointCount": len(target_points),
+                "initialPhotoPointCount": len(initial_points),
+                **paths_to_payload(paths),
+                "collectedAt": utc_now_iso(),
+            }
+        except Exception as error:
+            return error_payload(ACTION_DELETE_QR_TARGET_POINT, error)
+
+    def delete_initial_photo_point(self, params: PointRecordingDeletePointParams) -> dict[str, object]:
+        try:
+            paths = self._project_store.build_paths(
+                robot_serial=params.robot_serial,
+                project_name=params.project_name,
+            )
+            point_name = validate_safe_segment(params.point_name, "pointName")
+            deleted_paths = delete_initial_photo_waypoint(paths, point_name)
+            update_manifest_after_delete_initial(paths, point_name)
+            target_points = read_grasp_points(paths)
+            initial_points = list_initial_photo_records(paths)
+            return {
+                "available": True,
+                "backend": "executor.filesystem",
+                "action": ACTION_DELETE_QR_INITIAL_PHOTO_POINT,
+                "robotSerial": params.robot_serial.strip(),
+                "projectName": params.project_name.strip(),
+                "pointKind": "initial_photo",
+                "pointName": point_name,
+                "deletedPaths": deleted_paths,
+                "updatedPaths": [str(paths.manifest_path)],
+                "targetPointCount": len(target_points),
+                "initialPhotoPointCount": len(initial_points),
+                **paths_to_payload(paths),
+                "collectedAt": utc_now_iso(),
+            }
+        except Exception as error:
+            return error_payload(ACTION_DELETE_QR_INITIAL_PHOTO_POINT, error)
 
     def submit_recording(self, params: PointRecordingSubmitParams) -> dict[str, object]:
         try:
@@ -1112,17 +1195,25 @@ def build_grasp_point_record(
     }
 
 
-def save_grasp_point(paths: QrProjectPaths, record: Mapping[str, object]) -> None:
+def save_grasp_point(paths: QrProjectPaths, record: Mapping[str, object]) -> bool:
     grasp_points_path = paths.point_dir / "grasp_points.json"
     points = read_grasp_points(paths)
     point_name = str(record["grasp_name"])
-    if any(item.get("grasp_name") == point_name for item in points):
-        raise ValueError("同名目标点位已存在，请更换点位名称")
+    replaced = any(
+        item.get("grasp_name") == point_name or item.get("pointName") == point_name
+        for item in points
+    )
+    points = [
+        item
+        for item in points
+        if item.get("grasp_name") != point_name and item.get("pointName") != point_name
+    ]
     points.append(dict(record))
     grasp_points_path.write_text(
         json.dumps(to_jsonable(points), ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+    return replaced
 
 
 def read_grasp_points(paths: QrProjectPaths) -> list[dict[str, object]]:
@@ -1167,6 +1258,65 @@ def list_target_point_records(paths: QrProjectPaths) -> list[dict[str, object]]:
             }
         )
     return records
+
+
+def delete_grasp_point(paths: QrProjectPaths, point_name: str) -> dict[str, list[str]]:
+    grasp_points_path = paths.point_dir / "grasp_points.json"
+    points = read_grasp_points(paths)
+    remaining = [
+        item
+        for item in points
+        if item.get("grasp_name") != point_name and item.get("pointName") != point_name
+    ]
+    if len(remaining) == len(points):
+        raise FileNotFoundError(f"未找到目标点位: {point_name}")
+
+    updated_paths: list[str] = []
+    deleted_paths: list[str] = []
+    if remaining:
+        grasp_points_path.write_text(
+            json.dumps(to_jsonable(remaining), ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        updated_paths.append(str(grasp_points_path))
+    elif grasp_points_path.exists():
+        grasp_points_path.unlink()
+        deleted_paths.append(str(grasp_points_path))
+    return {"deletedPaths": deleted_paths, "updatedPaths": updated_paths}
+
+
+def delete_initial_photo_waypoint(paths: QrProjectPaths, point_name: str) -> list[str]:
+    waypoint_dir = paths.waypoints_dir / point_name
+    if not waypoint_dir.exists() or not waypoint_dir.is_dir():
+        raise FileNotFoundError(f"未找到初始拍照点位: {point_name}")
+    shutil.rmtree(waypoint_dir)
+    return [str(waypoint_dir)]
+
+
+def remove_target_from_initial_waypoints(paths: QrProjectPaths, point_name: str) -> dict[str, list[str]]:
+    if not paths.waypoints_dir.exists() or not paths.waypoints_dir.is_dir():
+        return {"affectedInitialPhotoPoints": [], "updatedPaths": []}
+
+    affected: list[str] = []
+    updated_paths: list[str] = []
+    for waypoint_dir in paths.waypoints_dir.iterdir():
+        if not waypoint_dir.is_dir():
+            continue
+        tf_tag_ee_path = waypoint_dir / "tf_tag_ee.json"
+        if not tf_tag_ee_path.exists() or not tf_tag_ee_path.is_file():
+            continue
+        targets = read_json_object(tf_tag_ee_path)
+        if point_name not in targets:
+            continue
+        # 删除目标点位后，旧初始拍照 waypoint 里不能继续暴露该目标，否则应用会引用过期 pose。
+        targets.pop(point_name, None)
+        tf_tag_ee_path.write_text(
+            json.dumps(to_jsonable(targets), ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        affected.append(waypoint_dir.name)
+        updated_paths.append(str(tf_tag_ee_path))
+    return {"affectedInitialPhotoPoints": affected, "updatedPaths": updated_paths}
 
 
 def build_initial_photo_record(
@@ -1265,13 +1415,31 @@ def build_localize_quality(stats: Mapping[str, Any]) -> dict[str, object] | None
     }
 
 
-def update_manifest_after_target(paths: QrProjectPaths, record: Mapping[str, object]) -> None:
+def update_manifest_after_target(
+    paths: QrProjectPaths,
+    record: Mapping[str, object],
+    *,
+    invalidate_existing_target: bool = False,
+) -> None:
     manifest = read_manifest(paths.manifest_path)
     point_recording = dict(manifest.get("pointRecording")) if isinstance(manifest.get("pointRecording"), Mapping) else {}
     targets = list(point_recording.get("targetPoints")) if isinstance(point_recording.get("targetPoints"), list) else []
+    point_name = record.get("pointName") or record.get("grasp_name")
+    initial = list(point_recording.get("initialPhotoPoints")) if isinstance(point_recording.get("initialPhotoPoints"), list) else []
+    targets = [item for item in targets if not manifest_point_name_equals(item, point_name)]
+    if invalidate_existing_target and isinstance(point_name, str):
+        initial = [remove_target_from_initial_record(item, point_name) for item in initial]
     targets.append(build_manifest_point_record(record, kind="target"))
     point_recording["targetPoints"] = targets
-    manifest.update({"pointRecording": point_recording, "updatedAt": utc_now_iso()})
+    point_recording["initialPhotoPoints"] = initial
+    manifest.update(
+        {
+            "pointRecording": point_recording,
+            "targetPointCount": len(targets),
+            "initialPhotoPointCount": len(initial),
+            "updatedAt": utc_now_iso(),
+        }
+    )
     paths.manifest_path.write_text(
         json.dumps(to_jsonable(manifest), ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
@@ -1282,6 +1450,8 @@ def update_manifest_after_initial(paths: QrProjectPaths, record: Mapping[str, ob
     manifest = read_manifest(paths.manifest_path)
     point_recording = dict(manifest.get("pointRecording")) if isinstance(manifest.get("pointRecording"), Mapping) else {}
     initial = list(point_recording.get("initialPhotoPoints")) if isinstance(point_recording.get("initialPhotoPoints"), list) else []
+    point_name = record.get("pointName") or record.get("grasp_name")
+    initial = [item for item in initial if not manifest_point_name_equals(item, point_name)]
     initial.append(build_manifest_point_record(record, kind="initial_photo"))
     point_recording["initialPhotoPoints"] = initial
     manifest.update(
@@ -1289,6 +1459,7 @@ def update_manifest_after_initial(paths: QrProjectPaths, record: Mapping[str, ob
             "projectStatus": "recorded",
             "pointRecording": point_recording,
             "activeWaypointName": record.get("pointName"),
+            "initialPhotoPointCount": len(initial),
             "updatedAt": utc_now_iso(),
         }
     )
@@ -1296,6 +1467,78 @@ def update_manifest_after_initial(paths: QrProjectPaths, record: Mapping[str, ob
         json.dumps(to_jsonable(manifest), ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+
+
+def update_manifest_after_delete_target(paths: QrProjectPaths, point_name: str) -> None:
+    manifest = read_manifest(paths.manifest_path)
+    point_recording = dict(manifest.get("pointRecording")) if isinstance(manifest.get("pointRecording"), Mapping) else {}
+    targets = list(point_recording.get("targetPoints")) if isinstance(point_recording.get("targetPoints"), list) else []
+    initial = list(point_recording.get("initialPhotoPoints")) if isinstance(point_recording.get("initialPhotoPoints"), list) else []
+    targets = [item for item in targets if not manifest_point_name_equals(item, point_name)]
+    initial = [remove_target_from_initial_record(item, point_name) for item in initial]
+    point_recording["targetPoints"] = targets
+    point_recording["initialPhotoPoints"] = initial
+    manifest.update(
+        {
+            "pointRecording": point_recording,
+            "targetPointCount": len(targets),
+            "initialPhotoPointCount": len(initial),
+            "updatedAt": utc_now_iso(),
+        }
+    )
+    if not targets and not initial and manifest.get("projectStatus") == "recorded":
+        manifest["projectStatus"] = "mapped"
+    paths.manifest_path.write_text(
+        json.dumps(to_jsonable(manifest), ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def update_manifest_after_delete_initial(paths: QrProjectPaths, point_name: str) -> None:
+    manifest = read_manifest(paths.manifest_path)
+    point_recording = dict(manifest.get("pointRecording")) if isinstance(manifest.get("pointRecording"), Mapping) else {}
+    initial = list(point_recording.get("initialPhotoPoints")) if isinstance(point_recording.get("initialPhotoPoints"), list) else []
+    initial = [item for item in initial if not manifest_point_name_equals(item, point_name)]
+    point_recording["initialPhotoPoints"] = initial
+    manifest.update(
+        {
+            "pointRecording": point_recording,
+            "initialPhotoPointCount": len(initial),
+            "updatedAt": utc_now_iso(),
+        }
+    )
+    if manifest.get("activeWaypointName") == point_name:
+        next_active = None
+        for item in initial:
+            if isinstance(item, Mapping) and isinstance(item.get("pointName"), str):
+                next_active = item["pointName"]
+                break
+        manifest["activeWaypointName"] = next_active
+    if not read_grasp_points(paths) and not initial and manifest.get("projectStatus") == "recorded":
+        manifest["projectStatus"] = "mapped"
+    paths.manifest_path.write_text(
+        json.dumps(to_jsonable(manifest), ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def remove_target_from_initial_record(item: object, point_name: str) -> object:
+    if not isinstance(item, Mapping):
+        return item
+    updated = dict(item)
+    raw_names = updated.get("targetPointNames")
+    if isinstance(raw_names, list):
+        names = [name for name in raw_names if name != point_name]
+        updated["targetPointNames"] = names
+        updated["targetPointCount"] = len(names)
+    return updated
+
+
+def manifest_point_name_equals(item: object, point_name: object) -> bool:
+    if not isinstance(item, Mapping) or not isinstance(point_name, str):
+        return False
+    raw_name = item.get("pointName") or item.get("grasp_name")
+    return raw_name == point_name
 
 
 def build_manifest_point_record(record: Mapping[str, object], *, kind: str) -> dict[str, object]:

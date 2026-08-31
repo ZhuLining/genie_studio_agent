@@ -41,6 +41,8 @@ from .mqtt.robot_state import (
     CAMERA_CAPTURE_START_REQUEST_TYPE,
     CAMERA_CAPTURE_STOP_REQUEST_TYPE,
     CAMERA_FRAME_REQUEST_TYPE,
+    POINT_RECORDING_DELETE_INITIAL_PHOTO_REQUEST_TYPE,
+    POINT_RECORDING_DELETE_TARGET_REQUEST_TYPE,
     POINT_RECORDING_SAVE_INITIAL_PHOTO_REQUEST_TYPE,
     POINT_RECORDING_SAVE_TARGET_REQUEST_TYPE,
     POINT_RECORDING_SUBMIT_REQUEST_TYPE,
@@ -626,6 +628,10 @@ def main(argv: list[str] | None = None) -> int:
                 save_point_recording_initial_photo=(
                     point_recording_service.save_initial_photo_point
                 ),
+                delete_point_recording_target=point_recording_service.delete_target_point,
+                delete_point_recording_initial_photo=(
+                    point_recording_service.delete_initial_photo_point
+                ),
                 submit_point_recording=point_recording_service.submit_recording,
             )
 
@@ -907,6 +913,12 @@ def publish_robot_state_queue_error(
     elif message.topic == settings.point_recording_save_initial_photo_request_topic:
         response_topic = settings.point_recording_save_initial_photo_response_topic
         response_type = POINT_RECORDING_SAVE_INITIAL_PHOTO_REQUEST_TYPE
+    elif message.topic == settings.point_recording_delete_target_request_topic:
+        response_topic = settings.point_recording_delete_target_response_topic
+        response_type = POINT_RECORDING_DELETE_TARGET_REQUEST_TYPE
+    elif message.topic == settings.point_recording_delete_initial_photo_request_topic:
+        response_topic = settings.point_recording_delete_initial_photo_response_topic
+        response_type = POINT_RECORDING_DELETE_INITIAL_PHOTO_REQUEST_TYPE
     elif message.topic == settings.point_recording_submit_request_topic:
         response_topic = settings.point_recording_submit_response_topic
         response_type = POINT_RECORDING_SUBMIT_REQUEST_TYPE

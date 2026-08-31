@@ -43,9 +43,12 @@ from gsa_taskflow_executor.qr_mapping.capture_service import (
 from gsa_taskflow_executor.qr_mapping.point_recording_service import (
     ACTION_SAVE_QR_INITIAL_PHOTO_POINT,
     ACTION_SAVE_QR_TARGET_POINT,
+    ACTION_DELETE_QR_INITIAL_PHOTO_POINT,
+    ACTION_DELETE_QR_TARGET_POINT,
     ACTION_SUBMIT_POINT_RECORDING,
     DEFAULT_MIN_MARKERS,
     DEFAULT_POINT_RECORDING_TIMEOUT_MS,
+    PointRecordingDeletePointParams,
     PointRecordingSaveInitialPhotoParams,
     PointRecordingSaveTargetParams,
     PointRecordingSubmitParams,
@@ -75,6 +78,8 @@ QR_DELETE_MAP_REQUEST_TYPE = ACTION_DELETE_QR_MAP
 QR_PCD_PREVIEW_REQUEST_TYPE = ACTION_READ_QR_PCD_PREVIEW
 POINT_RECORDING_SAVE_TARGET_REQUEST_TYPE = ACTION_SAVE_QR_TARGET_POINT
 POINT_RECORDING_SAVE_INITIAL_PHOTO_REQUEST_TYPE = ACTION_SAVE_QR_INITIAL_PHOTO_POINT
+POINT_RECORDING_DELETE_TARGET_REQUEST_TYPE = ACTION_DELETE_QR_TARGET_POINT
+POINT_RECORDING_DELETE_INITIAL_PHOTO_REQUEST_TYPE = ACTION_DELETE_QR_INITIAL_PHOTO_POINT
 POINT_RECORDING_SUBMIT_REQUEST_TYPE = ACTION_SUBMIT_POINT_RECORDING
 
 
@@ -235,6 +240,24 @@ class PointRecordingSaveInitialPhotoRequest:
     request_id: str
     reply_topic: str
     params: PointRecordingSaveInitialPhotoParams
+
+
+@dataclass(frozen=True)
+class PointRecordingDeleteTargetRequest:
+    """点位录制删除目标点位请求。"""
+
+    request_id: str
+    reply_topic: str
+    params: PointRecordingDeletePointParams
+
+
+@dataclass(frozen=True)
+class PointRecordingDeleteInitialPhotoRequest:
+    """点位录制删除初始拍照点位请求。"""
+
+    request_id: str
+    reply_topic: str
+    params: PointRecordingDeletePointParams
 
 
 @dataclass(frozen=True)
@@ -857,6 +880,60 @@ def parse_point_recording_save_initial_photo_request(
                 DEFAULT_POINT_RECORDING_TIMEOUT_MS,
             ),
             min_markers=read_positive_int(decoded.get("minMarkers"), DEFAULT_MIN_MARKERS),
+        ),
+    )
+
+
+def parse_point_recording_delete_target_request(
+    payload: str,
+    *,
+    default_reply_topic: str,
+) -> PointRecordingDeleteTargetRequest:
+    """解析点位录制删除目标点位请求。"""
+
+    decoded = parse_json_object(payload, "点位录制删除目标点位请求")
+    request_type = read_optional_string(decoded, "type")
+    if request_type is not None and request_type != POINT_RECORDING_DELETE_TARGET_REQUEST_TYPE:
+        raise ValueError(f"不支持的点位录制请求类型: {request_type}")
+    request_id = read_request_id_from_object(decoded)
+    if not request_id:
+        raise ValueError("点位录制删除目标点位请求缺少 requestId")
+    robot_serial, project_name = read_qr_project_identity(decoded, "点位录制删除目标点位请求")
+    point_name = read_point_recording_point_name(decoded, "点位录制删除目标点位请求")
+    return PointRecordingDeleteTargetRequest(
+        request_id=request_id,
+        reply_topic=read_reply_topic(decoded, default_reply_topic),
+        params=PointRecordingDeletePointParams(
+            robot_serial=robot_serial,
+            project_name=project_name,
+            point_name=point_name,
+        ),
+    )
+
+
+def parse_point_recording_delete_initial_photo_request(
+    payload: str,
+    *,
+    default_reply_topic: str,
+) -> PointRecordingDeleteInitialPhotoRequest:
+    """解析点位录制删除初始拍照点位请求。"""
+
+    decoded = parse_json_object(payload, "点位录制删除初始拍照点位请求")
+    request_type = read_optional_string(decoded, "type")
+    if request_type is not None and request_type != POINT_RECORDING_DELETE_INITIAL_PHOTO_REQUEST_TYPE:
+        raise ValueError(f"不支持的点位录制请求类型: {request_type}")
+    request_id = read_request_id_from_object(decoded)
+    if not request_id:
+        raise ValueError("点位录制删除初始拍照点位请求缺少 requestId")
+    robot_serial, project_name = read_qr_project_identity(decoded, "点位录制删除初始拍照点位请求")
+    point_name = read_point_recording_point_name(decoded, "点位录制删除初始拍照点位请求")
+    return PointRecordingDeleteInitialPhotoRequest(
+        request_id=request_id,
+        reply_topic=read_reply_topic(decoded, default_reply_topic),
+        params=PointRecordingDeletePointParams(
+            robot_serial=robot_serial,
+            project_name=project_name,
+            point_name=point_name,
         ),
     )
 

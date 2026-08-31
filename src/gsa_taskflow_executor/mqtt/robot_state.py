@@ -22,6 +22,8 @@ from gsa_taskflow_executor.mqtt.robot_state_models import (
     CAMERA_CAPTURE_STOP_REQUEST_TYPE,
     CAMERA_FRAME_REQUEST_TYPE,
     CURRENT_POSE_REQUEST_TYPE,
+    POINT_RECORDING_DELETE_INITIAL_PHOTO_REQUEST_TYPE,
+    POINT_RECORDING_DELETE_TARGET_REQUEST_TYPE,
     POINT_RECORDING_SAVE_INITIAL_PHOTO_REQUEST_TYPE,
     POINT_RECORDING_SAVE_TARGET_REQUEST_TYPE,
     POINT_RECORDING_SUBMIT_REQUEST_TYPE,
@@ -39,6 +41,8 @@ from gsa_taskflow_executor.mqtt.robot_state_models import (
     CameraCaptureStopRequest,
     CameraFrameRequest,
     CurrentPoseRequest,
+    PointRecordingDeleteInitialPhotoRequest,
+    PointRecordingDeleteTargetRequest,
     PointRecordingSaveInitialPhotoRequest,
     PointRecordingSaveTargetRequest,
     PointRecordingSubmitRequest,
@@ -57,6 +61,8 @@ from gsa_taskflow_executor.mqtt.robot_state_models import (
     parse_camera_frame_request,
     parse_current_pose_request,
     parse_json_object,
+    parse_point_recording_delete_initial_photo_request,
+    parse_point_recording_delete_target_request,
     parse_point_recording_save_initial_photo_request,
     parse_point_recording_save_target_request,
     parse_point_recording_submit_request,
@@ -88,6 +94,8 @@ from gsa_taskflow_executor.mqtt.robot_state_responses import (
     build_camera_capture_stop_response,
     build_camera_frame_response,
     build_current_pose_response,
+    build_point_recording_delete_initial_photo_response,
+    build_point_recording_delete_target_response,
     build_point_recording_save_initial_photo_response,
     build_point_recording_save_target_response,
     build_point_recording_submit_response,
@@ -111,6 +119,7 @@ from gsa_taskflow_executor.qr_mapping.capture_service import (
     QrCaptureStartParams,
 )
 from gsa_taskflow_executor.qr_mapping.point_recording_service import (
+    PointRecordingDeletePointParams,
     PointRecordingSaveInitialPhotoParams,
     PointRecordingSaveTargetParams,
     PointRecordingService,
@@ -139,6 +148,8 @@ __all__ = [
     "QR_CAPTURE_STOP_REQUEST_TYPE",
     "QR_DELETE_MAP_REQUEST_TYPE",
     "QR_PCD_PREVIEW_REQUEST_TYPE",
+    "POINT_RECORDING_DELETE_INITIAL_PHOTO_REQUEST_TYPE",
+    "POINT_RECORDING_DELETE_TARGET_REQUEST_TYPE",
     "POINT_RECORDING_SAVE_INITIAL_PHOTO_REQUEST_TYPE",
     "POINT_RECORDING_SAVE_TARGET_REQUEST_TYPE",
     "POINT_RECORDING_SUBMIT_REQUEST_TYPE",
@@ -159,6 +170,8 @@ __all__ = [
     "QrCaptureStopRequest",
     "QrDeleteMapRequest",
     "QrPcdPreviewRequest",
+    "PointRecordingDeleteInitialPhotoRequest",
+    "PointRecordingDeleteTargetRequest",
     "PointRecordingSaveInitialPhotoRequest",
     "PointRecordingSaveTargetRequest",
     "PointRecordingSubmitRequest",
@@ -175,6 +188,8 @@ __all__ = [
     "build_qr_capture_stop_response",
     "build_qr_delete_map_response",
     "build_qr_pcd_preview_response",
+    "build_point_recording_delete_initial_photo_response",
+    "build_point_recording_delete_target_response",
     "build_point_recording_save_initial_photo_response",
     "build_point_recording_save_target_response",
     "build_point_recording_submit_response",
@@ -193,6 +208,8 @@ __all__ = [
     "handle_qr_capture_stop_request",
     "handle_qr_delete_map_request",
     "handle_qr_pcd_preview_request",
+    "handle_point_recording_delete_initial_photo_request",
+    "handle_point_recording_delete_target_request",
     "handle_point_recording_save_initial_photo_request",
     "handle_point_recording_save_target_request",
     "handle_point_recording_submit_request",
@@ -209,6 +226,8 @@ __all__ = [
     "parse_qr_capture_stop_request",
     "parse_qr_delete_map_request",
     "parse_qr_pcd_preview_request",
+    "parse_point_recording_delete_initial_photo_request",
+    "parse_point_recording_delete_target_request",
     "parse_point_recording_save_initial_photo_request",
     "parse_point_recording_save_target_request",
     "parse_point_recording_submit_request",
@@ -252,6 +271,10 @@ PointRecordingSaveInitialPhotoCollector = Callable[
     [PointRecordingSaveInitialPhotoParams],
     Mapping[str, object],
 ]
+PointRecordingDeletePointCollector = Callable[
+    [PointRecordingDeletePointParams],
+    Mapping[str, object],
+]
 PointRecordingSubmitCollector = Callable[[PointRecordingSubmitParams], Mapping[str, object]]
 
 
@@ -277,6 +300,8 @@ def handle_robot_state_request(
     read_qr_pcd_preview: QrPcdPreviewCollector | None = None,
     save_point_recording_target: PointRecordingSaveTargetCollector | None = None,
     save_point_recording_initial_photo: PointRecordingSaveInitialPhotoCollector | None = None,
+    delete_point_recording_target: PointRecordingDeletePointCollector | None = None,
+    delete_point_recording_initial_photo: PointRecordingDeletePointCollector | None = None,
     submit_point_recording: PointRecordingSubmitCollector | None = None,
 ) -> None:
     """按请求类型分发到对应 handler。通过 payload type 字段和 MQTT topic 双重匹配。"""
@@ -305,6 +330,32 @@ def handle_robot_state_request(
             publish_response=publish_response,
             event_writer=event_writer,
             save_initial_photo=save_point_recording_initial_photo,
+        )
+        return
+
+    if (
+        request_type == POINT_RECORDING_DELETE_TARGET_REQUEST_TYPE
+        or message.topic == settings.point_recording_delete_target_request_topic
+    ):
+        handle_point_recording_delete_target_request(
+            message,
+            settings=settings,
+            publish_response=publish_response,
+            event_writer=event_writer,
+            delete_target=delete_point_recording_target,
+        )
+        return
+
+    if (
+        request_type == POINT_RECORDING_DELETE_INITIAL_PHOTO_REQUEST_TYPE
+        or message.topic == settings.point_recording_delete_initial_photo_request_topic
+    ):
+        handle_point_recording_delete_initial_photo_request(
+            message,
+            settings=settings,
+            publish_response=publish_response,
+            event_writer=event_writer,
+            delete_initial_photo=delete_point_recording_initial_photo,
         )
         return
 
@@ -936,6 +987,109 @@ def handle_point_recording_save_initial_photo_request(
         event_writer,
         event_type="point_recording_save_initial_photo_response_published",
         message="point recording save initial photo response published",
+        topic=request.reply_topic,
+        response=response,
+    )
+
+
+def handle_point_recording_delete_target_request(
+    message: TaskflowMessage,
+    *,
+    settings: ExecutorSettings,
+    publish_response: RobotStatePublisher,
+    event_writer: JsonlEventWriter | None = None,
+    delete_target: PointRecordingDeletePointCollector | None = None,
+) -> None:
+    """处理点位录制删除目标点位请求。"""
+
+    try:
+        request = parse_point_recording_delete_target_request(
+            message.payload,
+            default_reply_topic=settings.point_recording_delete_target_response_topic,
+        )
+    except Exception as error:
+        response = error_response(
+            response_type=POINT_RECORDING_DELETE_TARGET_REQUEST_TYPE,
+            request_id="",
+            executor_aid=settings.executor_aid,
+            code="INVALID_REQUEST",
+            message=str(error),
+        )
+        publish_response(settings.point_recording_delete_target_response_topic, response)
+        write_robot_state_event(
+            event_writer,
+            event_type="point_recording_delete_target_request_error",
+            message=str(error),
+            topic=message.topic,
+            response=response,
+        )
+        return
+
+    collector = delete_target or default_point_recording_service(settings).delete_target_point
+    result = collector(request.params)
+    response = build_point_recording_delete_target_response(
+        request_id=request.request_id,
+        executor_aid=settings.executor_aid,
+        result=result,
+    )
+    publish_response(request.reply_topic, response)
+    write_robot_state_event(
+        event_writer,
+        event_type="point_recording_delete_target_response_published",
+        message="point recording delete target response published",
+        topic=request.reply_topic,
+        response=response,
+    )
+
+
+def handle_point_recording_delete_initial_photo_request(
+    message: TaskflowMessage,
+    *,
+    settings: ExecutorSettings,
+    publish_response: RobotStatePublisher,
+    event_writer: JsonlEventWriter | None = None,
+    delete_initial_photo: PointRecordingDeletePointCollector | None = None,
+) -> None:
+    """处理点位录制删除初始拍照点位请求。"""
+
+    try:
+        request = parse_point_recording_delete_initial_photo_request(
+            message.payload,
+            default_reply_topic=settings.point_recording_delete_initial_photo_response_topic,
+        )
+    except Exception as error:
+        response = error_response(
+            response_type=POINT_RECORDING_DELETE_INITIAL_PHOTO_REQUEST_TYPE,
+            request_id="",
+            executor_aid=settings.executor_aid,
+            code="INVALID_REQUEST",
+            message=str(error),
+        )
+        publish_response(settings.point_recording_delete_initial_photo_response_topic, response)
+        write_robot_state_event(
+            event_writer,
+            event_type="point_recording_delete_initial_photo_request_error",
+            message=str(error),
+            topic=message.topic,
+            response=response,
+        )
+        return
+
+    collector = (
+        delete_initial_photo
+        or default_point_recording_service(settings).delete_initial_photo_point
+    )
+    result = collector(request.params)
+    response = build_point_recording_delete_initial_photo_response(
+        request_id=request.request_id,
+        executor_aid=settings.executor_aid,
+        result=result,
+    )
+    publish_response(request.reply_topic, response)
+    write_robot_state_event(
+        event_writer,
+        event_type="point_recording_delete_initial_photo_response_published",
+        message="point recording delete initial photo response published",
         topic=request.reply_topic,
         response=response,
     )

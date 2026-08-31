@@ -15,6 +15,8 @@ from gsa_taskflow_executor.mqtt.robot_state_models import (
     CAMERA_CAPTURE_STOP_REQUEST_TYPE,
     CAMERA_FRAME_REQUEST_TYPE,
     CURRENT_POSE_REQUEST_TYPE,
+    POINT_RECORDING_DELETE_INITIAL_PHOTO_REQUEST_TYPE,
+    POINT_RECORDING_DELETE_TARGET_REQUEST_TYPE,
     POINT_RECORDING_SAVE_INITIAL_PHOTO_REQUEST_TYPE,
     POINT_RECORDING_SAVE_TARGET_REQUEST_TYPE,
     POINT_RECORDING_SUBMIT_REQUEST_TYPE,
@@ -454,6 +456,42 @@ def build_point_recording_save_initial_photo_response(
         snapshot=result,
         fallback_code="POINT_RECORDING_SAVE_INITIAL_PHOTO_FAILED",
         fallback_message="初始拍照点位保存失败",
+    )
+
+
+def build_point_recording_delete_target_response(
+    *,
+    request_id: str,
+    executor_aid: str,
+    result: Mapping[str, object],
+) -> dict[str, object]:
+    """构建点位录制目标点位删除响应。"""
+
+    return build_qr_mapping_response(
+        response_type=POINT_RECORDING_DELETE_TARGET_REQUEST_TYPE,
+        request_id=request_id,
+        executor_aid=executor_aid,
+        snapshot=result,
+        fallback_code="POINT_RECORDING_DELETE_TARGET_FAILED",
+        fallback_message="目标点位删除失败",
+    )
+
+
+def build_point_recording_delete_initial_photo_response(
+    *,
+    request_id: str,
+    executor_aid: str,
+    result: Mapping[str, object],
+) -> dict[str, object]:
+    """构建点位录制初始拍照点位删除响应。"""
+
+    return build_qr_mapping_response(
+        response_type=POINT_RECORDING_DELETE_INITIAL_PHOTO_REQUEST_TYPE,
+        request_id=request_id,
+        executor_aid=executor_aid,
+        snapshot=result,
+        fallback_code="POINT_RECORDING_DELETE_INITIAL_PHOTO_FAILED",
+        fallback_message="初始拍照点位删除失败",
     )
 
 

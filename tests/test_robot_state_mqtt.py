@@ -20,6 +20,8 @@ from gsa_taskflow_executor.mqtt.robot_state import (
     parse_camera_capture_stop_request,
     parse_camera_frame_request,
     parse_current_pose_request,
+    parse_point_recording_delete_initial_photo_request,
+    parse_point_recording_delete_target_request,
     parse_point_recording_save_initial_photo_request,
     parse_point_recording_save_target_request,
     parse_qr_build_map_request,
@@ -445,6 +447,46 @@ def test_parse_point_recording_save_initial_photo_request_reads_params() -> None
     assert request.params.min_markers == 5
 
 
+def test_parse_point_recording_delete_target_request_reads_params() -> None:
+    request = parse_point_recording_delete_target_request(
+        json.dumps(
+            {
+                "type": "delete_qr_target_point",
+                "requestId": "req-delete-target",
+                "robotSerial": "G2A0004BC01053",
+                "projectName": "test10",
+                "pointName": "grasp_1",
+            }
+        ),
+        default_reply_topic="gsa/self/robot/qr_mapping/delete_target_point/response",
+    )
+
+    assert request.request_id == "req-delete-target"
+    assert request.params.robot_serial == "G2A0004BC01053"
+    assert request.params.project_name == "test10"
+    assert request.params.point_name == "grasp_1"
+
+
+def test_parse_point_recording_delete_initial_photo_request_reads_params() -> None:
+    request = parse_point_recording_delete_initial_photo_request(
+        json.dumps(
+            {
+                "type": "delete_qr_initial_photo_point",
+                "requestId": "req-delete-photo",
+                "robotSerial": "G2A0004BC01053",
+                "projectName": "test10",
+                "pointName": "photo_001",
+            }
+        ),
+        default_reply_topic="gsa/self/robot/qr_mapping/delete_initial_photo_point/response",
+    )
+
+    assert request.request_id == "req-delete-photo"
+    assert request.params.robot_serial == "G2A0004BC01053"
+    assert request.params.project_name == "test10"
+    assert request.params.point_name == "photo_001"
+
+
 def test_handle_camera_frame_request_publishes_success_response() -> None:
     published: list[tuple[str, dict[str, object]]] = []
     snapshot = {
@@ -558,6 +600,84 @@ def test_handle_robot_state_request_dispatches_point_recording_initial_photo_by_
     assert payload["type"] == "save_qr_initial_photo_point"
     assert payload["ok"] is True
     assert payload["data"]["pointKind"] == "initial_photo"
+
+
+def test_handle_robot_state_request_dispatches_point_recording_delete_target_by_topic() -> None:
+    published: list[tuple[str, dict[str, object]]] = []
+
+    handle_robot_state_request(
+        TaskflowMessage(
+            topic="gsa/self/robot/qr_mapping/delete_target_point/request",
+            payload=json.dumps(
+                {
+                    "requestId": "req-delete-target",
+                    "robotSerial": "G2A0004BC01053",
+                    "projectName": "test10",
+                    "pointName": "grasp_1",
+                }
+            ),
+            received_at="2026-07-27T00:00:00+00:00",
+        ),
+        settings=ExecutorSettings(executor_aid="aid-1"),
+        publish_response=lambda topic, payload: published.append((topic, dict(payload))),
+        delete_point_recording_target=lambda params: {
+            "available": True,
+            "backend": "executor.filesystem",
+            "action": "delete_qr_target_point",
+            "robotSerial": params.robot_serial,
+            "projectName": params.project_name,
+            "pointKind": "target",
+            "pointName": params.point_name,
+            "deletedPaths": [],
+            "targetPointCount": 0,
+            "initialPhotoPointCount": 1,
+        },
+    )
+
+    [(topic, payload)] = published
+    assert topic == "gsa/self/robot/qr_mapping/delete_target_point/response"
+    assert payload["type"] == "delete_qr_target_point"
+    assert payload["ok"] is True
+    assert payload["data"]["pointKind"] == "target"
+
+
+def test_handle_robot_state_request_dispatches_point_recording_delete_initial_photo_by_topic() -> None:
+    published: list[tuple[str, dict[str, object]]] = []
+
+    handle_robot_state_request(
+        TaskflowMessage(
+            topic="gsa/self/robot/qr_mapping/delete_initial_photo_point/request",
+            payload=json.dumps(
+                {
+                    "requestId": "req-delete-photo",
+                    "robotSerial": "G2A0004BC01053",
+                    "projectName": "test10",
+                    "pointName": "photo_001",
+                }
+            ),
+            received_at="2026-07-27T00:00:00+00:00",
+        ),
+        settings=ExecutorSettings(executor_aid="aid-1"),
+        publish_response=lambda topic, payload: published.append((topic, dict(payload))),
+        delete_point_recording_initial_photo=lambda params: {
+            "available": True,
+            "backend": "executor.filesystem",
+            "action": "delete_qr_initial_photo_point",
+            "robotSerial": params.robot_serial,
+            "projectName": params.project_name,
+            "pointKind": "initial_photo",
+            "pointName": params.point_name,
+            "deletedPaths": ["/data/gsa/waypoints/photo_001"],
+            "targetPointCount": 1,
+            "initialPhotoPointCount": 0,
+        },
+    )
+
+    [(topic, payload)] = published
+    assert topic == "gsa/self/robot/qr_mapping/delete_initial_photo_point/response"
+    assert payload["type"] == "delete_qr_initial_photo_point"
+    assert payload["ok"] is True
+    assert payload["data"]["pointName"] == "photo_001"
 
 
 def test_handle_robot_state_request_dispatches_point_recording_submit_by_topic() -> None:
