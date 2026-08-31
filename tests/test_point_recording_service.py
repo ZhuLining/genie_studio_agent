@@ -8,6 +8,7 @@ from gsa_taskflow_executor.qr_mapping.point_recording_service import (
     PointRecordingSaveInitialPhotoParams,
     PointRecordingSaveTargetParams,
     PointRecordingService,
+    PointRecordingSubmitParams,
     QrLocalizeSdkError,
     run_qr_localize_sdk,
 )
@@ -37,18 +38,9 @@ def test_point_recording_service_saves_target_point(tmp_path) -> None:
     assert len(points[0]["abs_joints"]) == 22
 
 
-def test_point_recording_service_saves_initial_photo_and_runs_sdk(tmp_path) -> None:
+def test_point_recording_service_saves_initial_photo_as_draft(tmp_path) -> None:
     store, service = make_service(tmp_path)
     make_mapped_project(store)
-    service.save_target_point(
-        PointRecordingSaveTargetParams(
-            robot_serial="G2A0004BC01053",
-            project_name="test10",
-            point_name="grasp_1",
-            arm="left_arm",
-            camera_id="hand_left_color",
-        )
-    )
 
     result = service.save_initial_photo_point(
         PointRecordingSaveInitialPhotoParams(
@@ -66,19 +58,30 @@ def test_point_recording_service_saves_initial_photo_and_runs_sdk(tmp_path) -> N
     assert result["available"] is True
     assert result["action"] == "save_qr_initial_photo_point"
     assert result["pointKind"] == "initial_photo"
-    assert (paths.point_dir / "scan_image.jpeg").exists()
-    assert (paths.point_dir / "scan_abs_pose.json").exists()
-    assert (paths.point_dir / "scan_abs_joints.json").exists()
-    assert (waypoint_dir / "tf_baselink_tag.json").exists()
-    assert (waypoint_dir / "tf_tag_ee.json").exists()
+    assert result["submitted"] is False
+    assert result["localizationReady"] is False
+    assert (waypoint_dir / "scan_image.jpeg").exists()
+    assert (waypoint_dir / "scan_abs_pose.json").exists()
+    assert (waypoint_dir / "scan_abs_joints.json").exists()
+    assert not (waypoint_dir / "tf_baselink_tag.json").exists()
+    assert not (waypoint_dir / "tf_tag_ee.json").exists()
     manifest = json.loads(paths.manifest_path.read_text(encoding="utf-8"))
-    assert manifest["projectStatus"] == "recorded"
+    assert manifest["projectStatus"] == "recording_dirty"
     assert manifest["activeWaypointName"] == "photo_001"
 
 
-def test_project_snapshot_lists_point_recording_records(tmp_path) -> None:
+def test_point_recording_submit_builds_waypoint_after_any_save_order(tmp_path) -> None:
     store, service = make_service(tmp_path)
     make_mapped_project(store)
+    service.save_initial_photo_point(
+        PointRecordingSaveInitialPhotoParams(
+            robot_serial="G2A0004BC01053",
+            project_name="test10",
+            point_name="photo_001",
+            arm="left_arm",
+            camera_id="hand_left_color",
+        )
+    )
     service.save_target_point(
         PointRecordingSaveTargetParams(
             robot_serial="G2A0004BC01053",
@@ -88,6 +91,30 @@ def test_project_snapshot_lists_point_recording_records(tmp_path) -> None:
             camera_id="hand_left_color",
         )
     )
+
+    submit = service.submit_recording(
+        PointRecordingSubmitParams(
+            robot_serial="G2A0004BC01053",
+            project_name="test10",
+        )
+    )
+
+    paths = store.build_paths(robot_serial="G2A0004BC01053", project_name="test10")
+    waypoint_dir = paths.waypoints_dir / "photo_001"
+    manifest = json.loads(paths.manifest_path.read_text(encoding="utf-8"))
+    assert submit["available"] is True
+    assert submit["targetPointCount"] == 1
+    assert submit["initialPhotoPointCount"] == 1
+    assert (waypoint_dir / "tf_baselink_tag.json").exists()
+    assert (waypoint_dir / "tf_tag_ee.json").exists()
+    assert (waypoint_dir / "joints.json").exists()
+    assert manifest["projectStatus"] == "recorded"
+    assert manifest["pointRecording"]["initialPhotoPoints"][0]["targetPointNames"] == ["grasp_1"]
+
+
+def test_project_snapshot_lists_point_recording_records(tmp_path) -> None:
+    store, service = make_service(tmp_path)
+    make_mapped_project(store)
     service.save_initial_photo_point(
         PointRecordingSaveInitialPhotoParams(
             robot_serial="G2A0004BC01053",
@@ -103,11 +130,10 @@ def test_project_snapshot_lists_point_recording_records(tmp_path) -> None:
         project_name="test10",
     )
 
-    assert snapshot["targetPoints"][0]["pointName"] == "grasp_1"
     assert snapshot["initialPhotoPoints"][0]["pointName"] == "photo_001"
-    assert snapshot["initialPhotoPoints"][0]["tfBaselinkTagPath"].endswith(
-        "tf_baselink_tag.json"
-    )
+    assert snapshot["initialPhotoPoints"][0]["scanReady"] is True
+    assert snapshot["initialPhotoPoints"][0]["localizationReady"] is False
+    assert snapshot["initialPhotoPoints"][0]["tfBaselinkTagPath"] is None
 
 
 def test_point_recording_service_deletes_target_and_prunes_waypoints(tmp_path) -> None:
@@ -132,6 +158,12 @@ def test_point_recording_service_deletes_target_and_prunes_waypoints(tmp_path) -
             camera_id="hand_left_color",
         )
     )
+    service.submit_recording(
+        PointRecordingSubmitParams(
+            robot_serial="G2A0004BC01053",
+            project_name="test10",
+        )
+    )
 
     result = service.delete_target_point(
         PointRecordingDeletePointParams(
@@ -153,6 +185,7 @@ def test_point_recording_service_deletes_target_and_prunes_waypoints(tmp_path) -
     assert "grasp_1" not in tag_ee
     assert initial["targetPointNames"] == ["grasp_2"]
     assert initial["targetPointCount"] == 1
+    assert manifest["projectStatus"] == "recording_dirty"
 
 
 def test_point_recording_service_deletes_initial_photo_waypoint(tmp_path) -> None:
@@ -215,6 +248,12 @@ def test_point_recording_service_overwrites_existing_target_and_invalidates_old_
             camera_id="hand_left_color",
         )
     )
+    service.submit_recording(
+        PointRecordingSubmitParams(
+            robot_serial="G2A0004BC01053",
+            project_name="test10",
+        )
+    )
 
     result = service.save_target_point(
         PointRecordingSaveTargetParams(
@@ -236,6 +275,7 @@ def test_point_recording_service_overwrites_existing_target_and_invalidates_old_
     assert "grasp_1" not in tag_ee
     assert initial["targetPointNames"] == []
     assert initial["targetPointCount"] == 0
+    assert manifest["projectStatus"] == "recording_dirty"
 
 
 def test_qr_localize_sdk_failure_keeps_stats(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:

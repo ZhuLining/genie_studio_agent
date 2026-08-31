@@ -444,7 +444,11 @@ def list_initial_photo_records(
     *,
     manifest: Mapping[str, Any],
 ) -> list[dict[str, object]]:
-    """列出 qr_localize SDK 已生成的初始拍照点 waypoint 目录。"""
+    """列出初始拍照点目录。
+
+    保存阶段目录里只有 scan_* 草稿；提交录制后才会补齐 tf_* / joints.json。
+    快照必须把这两种状态都返回给客户端，避免二次修改时误判点位丢失。
+    """
 
     if not paths.waypoints_dir.exists() or not paths.waypoints_dir.is_dir():
         return []
@@ -464,31 +468,71 @@ def list_initial_photo_records(
         point_name = waypoint_dir.name
         stats_path = waypoint_dir / "locate_stats.json"
         stats = read_json_object(stats_path)
+        scan_metadata = read_json_object(waypoint_dir / "scan_metadata.json")
         metadata = metadata_by_name.get(point_name, {})
+        tf_baselink_tag_path = waypoint_dir / "tf_baselink_tag.json"
+        tf_tag_ee_path = waypoint_dir / "tf_tag_ee.json"
+        joints_path = waypoint_dir / "joints.json"
+        localization_ready = (
+            tf_baselink_tag_path.exists()
+            and tf_tag_ee_path.exists()
+            and joints_path.exists()
+        )
         records.append(
             {
                 "pointKind": "initial_photo",
                 "pointName": point_name,
-                "arm": metadata.get("arm"),
-                "cameraId": metadata.get("cameraId"),
-                "mapName": metadata.get("mapName"),
+                "arm": metadata.get("arm") or scan_metadata.get("arm"),
+                "cameraId": metadata.get("cameraId") or scan_metadata.get("cameraId"),
+                "mapName": metadata.get("mapName") or scan_metadata.get("mapName"),
                 "savedAt": metadata.get("savedAt") or file_mtime_iso(waypoint_dir),
                 "waypointDir": str(waypoint_dir),
-                "tfBaselinkTagPath": str(waypoint_dir / "tf_baselink_tag.json")
-                if (waypoint_dir / "tf_baselink_tag.json").exists()
+                "tfBaselinkTagPath": str(tf_baselink_tag_path)
+                if tf_baselink_tag_path.exists()
                 else None,
-                "tfTagEePath": str(waypoint_dir / "tf_tag_ee.json")
-                if (waypoint_dir / "tf_tag_ee.json").exists()
+                "tfTagEePath": str(tf_tag_ee_path)
+                if tf_tag_ee_path.exists()
                 else None,
-                "jointsPath": str(waypoint_dir / "joints.json")
-                if (waypoint_dir / "joints.json").exists()
+                "jointsPath": str(joints_path)
+                if joints_path.exists()
                 else None,
                 "statsPath": str(stats_path) if stats_path.exists() else None,
                 "quality": build_localize_quality(stats),
+                "targetPointCount": metadata.get("targetPointCount") or 0,
+                "targetPointNames": metadata.get("targetPointNames") or [],
+                "minMarkers": metadata.get("minMarkers") or scan_metadata.get("minMarkers"),
+                "submitted": localization_ready,
+                "localizationReady": localization_ready,
+                "scanReady": initial_photo_scan_ready(waypoint_dir),
+                "scan": read_initial_photo_scan_files(waypoint_dir),
             }
         )
     records.sort(key=lambda item: str(item.get("savedAt") or ""), reverse=True)
     return records
+
+
+def initial_photo_scan_ready(waypoint_dir: Path) -> bool:
+    return (
+        (waypoint_dir / "scan_abs_pose.json").exists()
+        and (waypoint_dir / "scan_abs_joints.json").exists()
+        and any(
+            (waypoint_dir / file_name).exists()
+            for file_name in ("scan_image.jpeg", "scan_image.jpg", "scan_image.png")
+        )
+    )
+
+
+def read_initial_photo_scan_files(waypoint_dir: Path) -> dict[str, object] | None:
+    for file_name in ("scan_image.jpeg", "scan_image.jpg", "scan_image.png"):
+        image_path = waypoint_dir / file_name
+        if image_path.exists() and image_path.is_file():
+            return {
+                "scanImagePath": str(image_path),
+                "scanAbsPosePath": str(waypoint_dir / "scan_abs_pose.json"),
+                "scanAbsJointsPath": str(waypoint_dir / "scan_abs_joints.json"),
+                "scanMetadataPath": str(waypoint_dir / "scan_metadata.json"),
+            }
+    return None
 
 
 def read_json_list(path: Path) -> list[Mapping[str, Any]]:

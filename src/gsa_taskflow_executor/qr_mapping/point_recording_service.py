@@ -2,7 +2,8 @@
 
 方案 2 下点位录制产物必须落在 executor 所在 Ubuntu 主机。客户端只传
 robotSerial/projectName/mapName/pointName 等业务参数，executor 负责只读采样
-GDK 当前末端位姿、关节和相机帧，并调用离线 qr_localize SDK 生成 waypoint。
+GDK 当前末端位姿、关节和相机帧。保存阶段只写草稿原始数据，提交阶段再
+统一调用离线 qr_localize SDK 生成应用运行所需 waypoint。
 """
 
 from __future__ import annotations
@@ -68,6 +69,15 @@ DEFAULT_MIN_MARKERS = 3
 MAX_MIN_MARKERS = 32
 DEFAULT_MAX_MOTION_DURING_CAPTURE_MM = 1.0
 DEFAULT_MAX_ROTATION_DURING_CAPTURE_DEG = 0.5
+PROJECT_STATUS_POINT_RECORDING_DIRTY = "recording_dirty"
+PROJECT_STATUS_RECORDED = "recorded"
+PROJECT_STATUS_MAPPED = "mapped"
+WAYPOINT_GENERATED_FILES = (
+    "tf_baselink_tag.json",
+    "tf_tag_ee.json",
+    "joints.json",
+    "locate_stats.json",
+)
 
 POINT_RECORDING_JOINT_NAMES = [
     "idx01_body_joint1",
@@ -225,12 +235,10 @@ class PointRecordingService:
                 snapshot=snapshot,
             )
             replaced_target = save_grasp_point(paths, record)
-            waypoint_changes = (
-                remove_target_from_initial_waypoints(paths, point_name)
-                if replaced_target
-                else {"affectedInitialPhotoPoints": [], "updatedPaths": []}
-            )
-            update_manifest_after_target(paths, record, invalidate_existing_target=replaced_target)
+            # 目标点位一旦新增/覆盖，已有 waypoint 可能不再代表最终目标集合。
+            # 标记 dirty，要求用户提交录制后再允许应用二维码定位消费。
+            waypoint_changes = remove_target_from_initial_waypoints(paths, point_name)
+            update_manifest_after_target(paths, record, invalidate_existing_target=True)
             return {
                 "available": True,
                 "backend": GDK_BACKEND,
@@ -269,10 +277,9 @@ class PointRecordingService:
             validate_arm_camera(params.arm, params.camera_id)
             validate_timeout_ms(params.timeout_ms)
             min_markers = normalize_min_markers(params.min_markers)
-            target_points = require_target_points_before_initial_photo(paths)
             waypoint_dir = paths.waypoints_dir / point_name
             if waypoint_dir.exists():
-                # 二次修改允许同名重录；先删除旧 waypoint，避免 SDK 输出和旧文件混在一起。
+                # 二次修改允许同名重录；先删除旧目录，避免原始扫描图和旧 SDK 输出混在一起。
                 shutil.rmtree(waypoint_dir)
 
             ensure_project_layout(paths)
@@ -288,28 +295,17 @@ class PointRecordingService:
                 cleanup_temp_image(snapshot)
                 return dict(snapshot)
 
-            scan_files = materialize_scan_files(
+            scan_files = materialize_initial_photo_scan_files(
                 paths=paths,
                 snapshot=snapshot,
                 point_name=point_name,
                 arm=params.arm,
                 camera_id=params.camera_id,
                 map_name=resolved["mapName"],
+                min_markers=min_markers,
             )
-            stats_path = waypoint_dir / "locate_stats.json"
-            sdk_result = self._sdk_runner(
-                self._localize_sdk_python,
-                resolve_qr_localize_sdk_path(self._localize_sdk_path),
-                paths.point_dir,
-                resolved["mapYmlPath"],
-                resolved["calibrationPath"],
-                resolved["extrinsicPath"],
-                waypoint_dir,
-                min_markers,
-                stats_path,
-                self._localize_timeout_seconds,
-            )
-            record = build_initial_photo_record(
+            target_points = read_grasp_points(paths)
+            record = build_initial_photo_draft_record(
                 paths=paths,
                 point_name=point_name,
                 arm=params.arm,
@@ -317,21 +313,19 @@ class PointRecordingService:
                 map_name=resolved["mapName"],
                 scan_files=scan_files,
                 waypoint_dir=waypoint_dir,
-                stats_path=stats_path,
-                sdk_result=sdk_result,
+                min_markers=min_markers,
                 target_points=target_points,
             )
             update_manifest_after_initial(paths, record)
             return {
                 "available": True,
-                "backend": "executor.qr_localize_sdk",
+                "backend": GDK_BACKEND,
                 "action": ACTION_SAVE_QR_INITIAL_PHOTO_POINT,
                 "robotSerial": params.robot_serial.strip(),
                 "projectName": params.project_name.strip(),
                 **record,
                 **paths_to_payload(paths),
                 "gdk": summarize_gdk_snapshot(snapshot),
-                "sdk": sdk_result,
                 "collectedAt": utc_now_iso(),
             }
         except Exception as error:
@@ -412,16 +406,32 @@ class PointRecordingService:
             missing = missing_submit_resources(paths, target_points, initial_points)
             if missing:
                 raise ValueError("点位录制产物不完整: " + "、".join(missing))
+
+            built_initial_points = self._build_all_initial_photo_waypoints(
+                paths=paths,
+                initial_points=initial_points,
+                target_points=target_points,
+            )
             manifest = read_manifest(paths.manifest_path)
+            point_recording = dict(manifest.get("pointRecording")) if isinstance(manifest.get("pointRecording"), Mapping) else {}
+            point_recording["targetPoints"] = [
+                build_manifest_point_record(item, kind="target") for item in target_points
+            ]
+            point_recording["initialPhotoPoints"] = [
+                build_manifest_point_record(item, kind="initial_photo") for item in built_initial_points
+            ]
             manifest.update(
                 {
-                    "projectStatus": "recorded",
+                    "projectStatus": PROJECT_STATUS_RECORDED,
+                    "pointRecording": point_recording,
                     "pointRecordingSubmittedAt": utc_now_iso(),
                     "targetPointCount": len(target_points),
-                    "initialPhotoPointCount": len(initial_points),
+                    "initialPhotoPointCount": len(built_initial_points),
+                    "activeWaypointName": read_first_point_name(built_initial_points),
                     "updatedAt": utc_now_iso(),
                 }
             )
+            manifest.pop("pointRecordingDirtyAt", None)
             paths.manifest_path.write_text(
                 json.dumps(to_jsonable(manifest), ensure_ascii=False, indent=2) + "\n",
                 encoding="utf-8",
@@ -433,13 +443,88 @@ class PointRecordingService:
                 "robotSerial": params.robot_serial.strip(),
                 "projectName": params.project_name.strip(),
                 "targetPointCount": len(target_points),
-                "initialPhotoPointCount": len(initial_points),
+                "initialPhotoPointCount": len(built_initial_points),
+                "builtInitialPhotoPoints": built_initial_points,
                 "submittedAt": manifest["pointRecordingSubmittedAt"],
                 **paths_to_payload(paths),
                 "collectedAt": utc_now_iso(),
             }
         except Exception as error:
             return error_payload(ACTION_SUBMIT_POINT_RECORDING, error)
+
+    def _build_all_initial_photo_waypoints(
+        self,
+        *,
+        paths: QrProjectPaths,
+        initial_points: Sequence[Mapping[str, object]],
+        target_points: Sequence[Mapping[str, object]],
+    ) -> list[dict[str, object]]:
+        runtime_root = paths.project_root / ".runtime" / "point_recording_submit" / uuid4().hex
+        runtime_root.mkdir(parents=True, exist_ok=True)
+        built: list[dict[str, object]] = []
+        try:
+            for item in sorted(initial_points, key=lambda point: str(point.get("pointName") or "")):
+                built.append(
+                    self._build_initial_photo_waypoint(
+                        paths=paths,
+                        initial_point=item,
+                        target_points=target_points,
+                        runtime_root=runtime_root,
+                    )
+                )
+        finally:
+            shutil.rmtree(runtime_root, ignore_errors=True)
+        return built
+
+    def _build_initial_photo_waypoint(
+        self,
+        *,
+        paths: QrProjectPaths,
+        initial_point: Mapping[str, object],
+        target_points: Sequence[Mapping[str, object]],
+        runtime_root: Path,
+    ) -> dict[str, object]:
+        point_name = validate_safe_segment(str(initial_point.get("pointName") or ""), "pointName")
+        waypoint_dir = paths.waypoints_dir / point_name
+        metadata = read_initial_photo_metadata(waypoint_dir, initial_point)
+        camera_id = str(metadata["cameraId"])
+        map_name = str(metadata["mapName"])
+        min_markers = normalize_min_markers(int(metadata.get("minMarkers", DEFAULT_MIN_MARKERS)))
+        resolved = resolve_recording_resources(paths, map_name, camera_id)
+        sdk_point_dir = prepare_localize_sdk_point_dir(
+            paths=paths,
+            waypoint_dir=waypoint_dir,
+            runtime_root=runtime_root,
+            point_name=point_name,
+        )
+        clear_generated_waypoint_outputs(waypoint_dir)
+        stats_path = waypoint_dir / "locate_stats.json"
+        sdk_result = self._sdk_runner(
+            self._localize_sdk_python,
+            resolve_qr_localize_sdk_path(self._localize_sdk_path),
+            sdk_point_dir,
+            resolved["mapYmlPath"],
+            resolved["calibrationPath"],
+            resolved["extrinsicPath"],
+            waypoint_dir,
+            min_markers,
+            stats_path,
+            self._localize_timeout_seconds,
+        )
+        scan_files = existing_initial_photo_scan_files(waypoint_dir)
+        return build_initial_photo_record(
+            paths=paths,
+            point_name=point_name,
+            arm=str(metadata["arm"]),
+            camera_id=camera_id,
+            map_name=map_name,
+            scan_files=scan_files,
+            waypoint_dir=waypoint_dir,
+            stats_path=stats_path,
+            sdk_result=sdk_result,
+            target_points=target_points,
+            min_markers=min_markers,
+        )
 
     def _collect_snapshot(
         self,
@@ -1104,7 +1189,7 @@ def build_snapshot_result(
     return result
 
 
-def materialize_scan_files(
+def materialize_initial_photo_scan_files(
     *,
     paths: QrProjectPaths,
     snapshot: Mapping[str, object],
@@ -1112,15 +1197,19 @@ def materialize_scan_files(
     arm: str,
     camera_id: str,
     map_name: str,
+    min_markers: int,
 ) -> dict[str, object]:
     temp_image_path = Path(str(snapshot["imageTempPath"]))
     scan_image_file_name = str(snapshot["scanImageFileName"])
-    remove_existing_scan_images(paths.point_dir)
-    scan_image_path = paths.point_dir / scan_image_file_name
+    waypoint_dir = paths.waypoints_dir / point_name
+    waypoint_dir.mkdir(parents=True, exist_ok=True)
+    remove_existing_scan_images(waypoint_dir)
+    clear_generated_waypoint_outputs(waypoint_dir)
+    scan_image_path = waypoint_dir / scan_image_file_name
     temp_image_path.replace(scan_image_path)
-    scan_pose_path = paths.point_dir / "scan_abs_pose.json"
-    scan_joints_path = paths.point_dir / "scan_abs_joints.json"
-    scan_metadata_path = paths.point_dir / "scan_metadata.json"
+    scan_pose_path = waypoint_dir / "scan_abs_pose.json"
+    scan_joints_path = waypoint_dir / "scan_abs_joints.json"
+    scan_metadata_path = waypoint_dir / "scan_metadata.json"
     scan_pose_path.write_text(
         json.dumps(to_jsonable(snapshot["absPose"]), ensure_ascii=False, separators=(",", ":")),
         encoding="utf-8",
@@ -1137,6 +1226,7 @@ def materialize_scan_files(
                     "arm": arm,
                     "cameraId": camera_id,
                     "mapName": map_name,
+                    "minMarkers": min_markers,
                     "timestampNs": snapshot.get("timestampNs"),
                     "imageSha256": snapshot.get("imageSha256"),
                     "stationarity": snapshot.get("stationarity"),
@@ -1331,6 +1421,7 @@ def build_initial_photo_record(
     stats_path: Path,
     sdk_result: Mapping[str, object],
     target_points: Sequence[Mapping[str, object]],
+    min_markers: int,
 ) -> dict[str, object]:
     stats = read_json_object(stats_path)
     target_point_names = read_target_point_names(target_points)
@@ -1349,8 +1440,121 @@ def build_initial_photo_record(
         "quality": build_localize_quality(stats),
         "targetPointCount": len(target_point_names),
         "targetPointNames": target_point_names,
+        "minMarkers": min_markers,
+        "submitted": True,
+        "localizationReady": (waypoint_dir / "tf_tag_ee.json").exists()
+        and (waypoint_dir / "tf_baselink_tag.json").exists()
+        and (waypoint_dir / "joints.json").exists(),
         "scan": dict(scan_files),
         "sdk": dict(sdk_result),
+    }
+
+
+def build_initial_photo_draft_record(
+    *,
+    paths: QrProjectPaths,
+    point_name: str,
+    arm: str,
+    camera_id: str,
+    map_name: str,
+    scan_files: Mapping[str, object],
+    waypoint_dir: Path,
+    min_markers: int,
+    target_points: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    target_point_names = read_target_point_names(target_points)
+    return {
+        "pointKind": "initial_photo",
+        "pointName": point_name,
+        "arm": arm,
+        "cameraId": camera_id,
+        "mapName": map_name,
+        "savedAt": utc_now_iso(),
+        "waypointDir": str(waypoint_dir),
+        "tfBaselinkTagPath": None,
+        "tfTagEePath": None,
+        "jointsPath": None,
+        "statsPath": None,
+        "quality": None,
+        "targetPointCount": len(target_point_names),
+        "targetPointNames": target_point_names,
+        "minMarkers": min_markers,
+        "submitted": False,
+        "localizationReady": False,
+        "scanReady": True,
+        "scan": dict(scan_files),
+    }
+
+
+def prepare_localize_sdk_point_dir(
+    *,
+    paths: QrProjectPaths,
+    waypoint_dir: Path,
+    runtime_root: Path,
+    point_name: str,
+) -> Path:
+    input_dir = runtime_root / point_name / "point"
+    input_dir.mkdir(parents=True, exist_ok=True)
+    grasp_points_path = paths.point_dir / "grasp_points.json"
+    if not grasp_points_path.exists():
+        raise FileNotFoundError(f"未找到目标点位文件: {grasp_points_path}")
+    shutil.copy2(grasp_points_path, input_dir / "grasp_points.json")
+    for file_name in ("scan_abs_pose.json", "scan_abs_joints.json", "scan_metadata.json"):
+        source = waypoint_dir / file_name
+        if not source.exists():
+            raise FileNotFoundError(f"初始拍照点位缺少 {file_name}: {source}")
+        shutil.copy2(source, input_dir / file_name)
+    image_path = find_initial_photo_scan_image(waypoint_dir)
+    shutil.copy2(image_path, input_dir / image_path.name)
+    return input_dir
+
+
+def existing_initial_photo_scan_files(waypoint_dir: Path) -> dict[str, object]:
+    image_path = find_initial_photo_scan_image(waypoint_dir)
+    return {
+        "scanImagePath": str(image_path),
+        "scanAbsPosePath": str(waypoint_dir / "scan_abs_pose.json"),
+        "scanAbsJointsPath": str(waypoint_dir / "scan_abs_joints.json"),
+        "scanMetadataPath": str(waypoint_dir / "scan_metadata.json"),
+    }
+
+
+def find_initial_photo_scan_image(waypoint_dir: Path) -> Path:
+    for file_name in ("scan_image.jpeg", "scan_image.jpg", "scan_image.png"):
+        path = waypoint_dir / file_name
+        if path.exists() and path.is_file():
+            return path
+    raise FileNotFoundError(f"初始拍照点位缺少扫描图: {waypoint_dir}")
+
+
+def clear_generated_waypoint_outputs(waypoint_dir: Path) -> None:
+    for file_name in WAYPOINT_GENERATED_FILES:
+        path = waypoint_dir / file_name
+        if path.exists() and path.is_file():
+            path.unlink()
+
+
+def read_initial_photo_metadata(
+    waypoint_dir: Path,
+    record: Mapping[str, object],
+) -> dict[str, object]:
+    scan_metadata = read_json_object(waypoint_dir / "scan_metadata.json")
+    arm = record.get("arm") or scan_metadata.get("arm")
+    camera_id = record.get("cameraId") or scan_metadata.get("cameraId")
+    map_name = record.get("mapName") or scan_metadata.get("mapName")
+    min_markers = record.get("minMarkers") or scan_metadata.get("minMarkers") or DEFAULT_MIN_MARKERS
+    if not isinstance(arm, str) or arm not in ARM_FRAME_NAMES:
+        raise ValueError(f"初始拍照点位缺少有效执行手臂: {waypoint_dir}")
+    if not isinstance(camera_id, str) or not camera_id.strip():
+        raise ValueError(f"初始拍照点位缺少有效相机: {waypoint_dir}")
+    if not isinstance(map_name, str) or not map_name.strip():
+        raise ValueError(f"初始拍照点位缺少有效地图名称: {waypoint_dir}")
+    validate_arm_camera(arm, camera_id.strip())
+    return {
+        "arm": arm,
+        "cameraId": camera_id.strip(),
+        "mapName": map_name.strip(),
+        "minMarkers": normalize_min_markers(int(min_markers)),
     }
 
 
@@ -1373,33 +1577,63 @@ def list_initial_photo_records(paths: QrProjectPaths) -> list[dict[str, object]]
         point_name = waypoint_dir.name
         stats_path = waypoint_dir / "locate_stats.json"
         stats = read_json_object(stats_path)
+        scan_metadata = read_json_object(waypoint_dir / "scan_metadata.json")
         metadata = metadata_by_name.get(point_name, {})
+        tf_tag_ee_path = waypoint_dir / "tf_tag_ee.json"
+        tf_baselink_tag_path = waypoint_dir / "tf_baselink_tag.json"
+        joints_path = waypoint_dir / "joints.json"
+        scan_ready = initial_photo_scan_ready(waypoint_dir)
+        localization_ready = (
+            tf_tag_ee_path.exists()
+            and tf_baselink_tag_path.exists()
+            and joints_path.exists()
+        )
         records.append(
             {
                 "pointKind": "initial_photo",
                 "pointName": point_name,
-                "arm": metadata.get("arm"),
-                "cameraId": metadata.get("cameraId"),
-                "mapName": metadata.get("mapName"),
+                "arm": metadata.get("arm") or scan_metadata.get("arm"),
+                "cameraId": metadata.get("cameraId") or scan_metadata.get("cameraId"),
+                "mapName": metadata.get("mapName") or scan_metadata.get("mapName"),
                 "savedAt": metadata.get("savedAt") or file_mtime_iso(waypoint_dir),
                 "waypointDir": str(waypoint_dir),
-                "tfBaselinkTagPath": str(waypoint_dir / "tf_baselink_tag.json")
-                if (waypoint_dir / "tf_baselink_tag.json").exists()
+                "tfBaselinkTagPath": str(tf_baselink_tag_path)
+                if tf_baselink_tag_path.exists()
                 else None,
-                "tfTagEePath": str(waypoint_dir / "tf_tag_ee.json")
-                if (waypoint_dir / "tf_tag_ee.json").exists()
+                "tfTagEePath": str(tf_tag_ee_path)
+                if tf_tag_ee_path.exists()
                 else None,
-                "jointsPath": str(waypoint_dir / "joints.json")
-                if (waypoint_dir / "joints.json").exists()
+                "jointsPath": str(joints_path)
+                if joints_path.exists()
                 else None,
                 "statsPath": str(stats_path) if stats_path.exists() else None,
                 "quality": build_localize_quality(stats),
-                "targetPointCount": metadata.get("targetPointCount"),
-                "targetPointNames": metadata.get("targetPointNames"),
+                "targetPointCount": metadata.get("targetPointCount") or 0,
+                "targetPointNames": metadata.get("targetPointNames") or [],
+                "minMarkers": metadata.get("minMarkers") or scan_metadata.get("minMarkers"),
+                "submitted": localization_ready,
+                "localizationReady": localization_ready,
+                "scanReady": scan_ready,
+                "scan": existing_initial_photo_scan_files_or_none(waypoint_dir),
             }
         )
     records.sort(key=lambda item: str(item.get("savedAt") or ""), reverse=True)
     return records
+
+
+def initial_photo_scan_ready(waypoint_dir: Path) -> bool:
+    return (
+        (waypoint_dir / "scan_abs_pose.json").exists()
+        and (waypoint_dir / "scan_abs_joints.json").exists()
+        and any((waypoint_dir / file_name).exists() for file_name in ("scan_image.jpeg", "scan_image.jpg", "scan_image.png"))
+    )
+
+
+def existing_initial_photo_scan_files_or_none(waypoint_dir: Path) -> dict[str, object] | None:
+    try:
+        return existing_initial_photo_scan_files(waypoint_dir)
+    except FileNotFoundError:
+        return None
 
 
 def build_localize_quality(stats: Mapping[str, Any]) -> dict[str, object] | None:
@@ -1434,9 +1668,11 @@ def update_manifest_after_target(
     point_recording["initialPhotoPoints"] = initial
     manifest.update(
         {
+            "projectStatus": PROJECT_STATUS_POINT_RECORDING_DIRTY,
             "pointRecording": point_recording,
             "targetPointCount": len(targets),
             "initialPhotoPointCount": len(initial),
+            "pointRecordingDirtyAt": utc_now_iso(),
             "updatedAt": utc_now_iso(),
         }
     )
@@ -1456,10 +1692,11 @@ def update_manifest_after_initial(paths: QrProjectPaths, record: Mapping[str, ob
     point_recording["initialPhotoPoints"] = initial
     manifest.update(
         {
-            "projectStatus": "recorded",
+            "projectStatus": PROJECT_STATUS_POINT_RECORDING_DIRTY,
             "pointRecording": point_recording,
             "activeWaypointName": record.get("pointName"),
             "initialPhotoPointCount": len(initial),
+            "pointRecordingDirtyAt": utc_now_iso(),
             "updatedAt": utc_now_iso(),
         }
     )
@@ -1480,14 +1717,14 @@ def update_manifest_after_delete_target(paths: QrProjectPaths, point_name: str) 
     point_recording["initialPhotoPoints"] = initial
     manifest.update(
         {
+            "projectStatus": next_point_recording_status(targets, initial),
             "pointRecording": point_recording,
             "targetPointCount": len(targets),
             "initialPhotoPointCount": len(initial),
+            "pointRecordingDirtyAt": utc_now_iso(),
             "updatedAt": utc_now_iso(),
         }
     )
-    if not targets and not initial and manifest.get("projectStatus") == "recorded":
-        manifest["projectStatus"] = "mapped"
     paths.manifest_path.write_text(
         json.dumps(to_jsonable(manifest), ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
@@ -1500,10 +1737,13 @@ def update_manifest_after_delete_initial(paths: QrProjectPaths, point_name: str)
     initial = list(point_recording.get("initialPhotoPoints")) if isinstance(point_recording.get("initialPhotoPoints"), list) else []
     initial = [item for item in initial if not manifest_point_name_equals(item, point_name)]
     point_recording["initialPhotoPoints"] = initial
+    targets = read_grasp_points(paths)
     manifest.update(
         {
+            "projectStatus": next_point_recording_status(targets, initial),
             "pointRecording": point_recording,
             "initialPhotoPointCount": len(initial),
+            "pointRecordingDirtyAt": utc_now_iso(),
             "updatedAt": utc_now_iso(),
         }
     )
@@ -1514,11 +1754,20 @@ def update_manifest_after_delete_initial(paths: QrProjectPaths, point_name: str)
                 next_active = item["pointName"]
                 break
         manifest["activeWaypointName"] = next_active
-    if not read_grasp_points(paths) and not initial and manifest.get("projectStatus") == "recorded":
-        manifest["projectStatus"] = "mapped"
     paths.manifest_path.write_text(
         json.dumps(to_jsonable(manifest), ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
+    )
+
+
+def next_point_recording_status(
+    target_points: Sequence[object],
+    initial_points: Sequence[object],
+) -> str:
+    return (
+        PROJECT_STATUS_POINT_RECORDING_DIRTY
+        if target_points or initial_points
+        else PROJECT_STATUS_MAPPED
     )
 
 
@@ -1566,6 +1815,14 @@ def read_target_point_names(target_points: Sequence[Mapping[str, object]]) -> li
     return names
 
 
+def read_first_point_name(records: Sequence[Mapping[str, object]]) -> str | None:
+    for item in records:
+        name = item.get("pointName") or item.get("grasp_name")
+        if isinstance(name, str) and name.strip():
+            return name.strip()
+    return None
+
+
 def missing_submit_resources(
     paths: QrProjectPaths,
     target_points: Sequence[Mapping[str, object]],
@@ -1576,11 +1833,20 @@ def missing_submit_resources(
         missing.append("目标点位")
     if not initial_points:
         missing.append("初始拍照点位")
-    for file_name in ("scan_abs_pose.json", "scan_abs_joints.json"):
-        if not (paths.point_dir / file_name).exists():
-            missing.append(file_name)
-    if not any((paths.point_dir / file_name).exists() for file_name in ("scan_image.jpeg", "scan_image.jpg", "scan_image.png")):
-        missing.append("scan_image")
+    for item in initial_points:
+        point_name = item.get("pointName")
+        if not isinstance(point_name, str) or not point_name:
+            missing.append("初始拍照点位名称")
+            continue
+        waypoint_dir = paths.waypoints_dir / point_name
+        for file_name in ("scan_abs_pose.json", "scan_abs_joints.json", "scan_metadata.json"):
+            if not (waypoint_dir / file_name).exists():
+                missing.append(f"{point_name}/{file_name}")
+        if not any(
+            (waypoint_dir / file_name).exists()
+            for file_name in ("scan_image.jpeg", "scan_image.jpg", "scan_image.png")
+        ):
+            missing.append(f"{point_name}/scan_image")
     return missing
 
 

@@ -195,6 +195,42 @@ def test_qr_pose_service_outputs_target_action_data(tmp_path, monkeypatch) -> No
     }
 
 
+def test_qr_pose_service_refuses_dirty_point_recording_project(tmp_path) -> None:
+    store = QrProjectStore(tmp_path)
+    paths = store.ensure_project_layout(
+        robot_serial="G2A0004BC01053",
+        project_name="test10",
+    )
+    paths.manifest_path.write_text(
+        json.dumps({"activeMapName": "test10", "projectStatus": "recording_dirty"}),
+        encoding="utf-8",
+    )
+
+    service = QrPoseService(
+        project_store=store,
+        session_manager=None,  # type: ignore[arg-type]
+    )
+    result = service.locate(
+        QrPoseParams(
+            robot_serial="G2A0004BC01053",
+            project_name="test10",
+            initial_photo_point_name="paizhao001",
+            map_name="test10",
+            arm="left_arm",
+            camera_id="hand_left_color",
+            timeout=60,
+            min_markers=3,
+            return_to_initial_photo_pose=True,
+            return_pose_speed=0.03,
+            return_pose_timeout=50,
+        )
+    )
+
+    assert result["available"] is False
+    assert result["errorCode"] == "QR_POSE_FAILED"
+    assert "未提交修改" in result["errorMsg"]
+
+
 def test_qr_pose_service_reports_initial_photo_return_failure(tmp_path, monkeypatch) -> None:
     store = QrProjectStore(tmp_path)
     paths = store.ensure_project_layout(

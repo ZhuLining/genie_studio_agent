@@ -116,6 +116,10 @@ class QrPoseService:
                 robot_serial=params.robot_serial,
                 project_name=params.project_name,
             )
+            manifest = read_json_object(paths.manifest_path)
+            project_status = manifest.get("projectStatus")
+            if project_status == "recording_dirty":
+                raise ValueError("点位录制存在未提交修改，请先在点位录制页面点击提交录制")
             validate_arm_camera(params.arm, params.camera_id)
             validate_timeout_ms(int(params.timeout * 1000))
             initial_photo_point = validate_safe_segment(
