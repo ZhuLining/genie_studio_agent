@@ -177,6 +177,112 @@ def test_health_check_cli_prints_json_and_returns_health_exit_code(
     assert printed["status"] == "error"
 
 
+def test_deployment_config_check_cli_rejects_dev_executor_aid(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "MQTT_BROKER_URL=mqtt://broker.internal:1883",
+                "EXECUTOR_AID=gsa-dev",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    exit_code = cli.main(["--env-file", str(env_file), "--deployment-config-check"])
+
+    assert exit_code == 1
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["type"] == "executor_deployment_config_check"
+    assert printed["status"] == "error"
+    checks = {check["name"]: check for check in printed["checks"]}
+    assert checks["executor_aid"]["status"] == "error"
+
+
+def test_listen_returns_nonzero_when_deployment_config_check_fails(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "MQTT_BROKER_URL=mqtt://broker.internal:1883",
+                "EXECUTOR_AID=G2A0004BC01053",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        cli,
+        "build_deployment_config_check_payload",
+        lambda **_kwargs: {
+            "type": "executor_deployment_config_check",
+            "status": "error",
+            "checks": [
+                {
+                    "name": "executor_aid",
+                    "status": "error",
+                    "message": "failed",
+                    "detail": {},
+                }
+            ],
+        },
+    )
+
+    exit_code = cli.main(["--env-file", str(env_file), "--listen"])
+
+    assert exit_code == 1
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["type"] == "executor_deployment_config_check"
+    assert printed["status"] == "error"
+
+
+def test_gdk_env_check_cli_returns_nonzero_when_gdk_unavailable(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "MQTT_BROKER_URL=mqtt://127.0.0.1:1883",
+                "LD_LIBRARY_PATH=/opt/agibot/lib",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    captured_env: dict[str, str] = {}
+
+    def fake_gdk_env_check(*, environ=None):
+        assert environ is not None
+        captured_env.update(environ)
+        return {
+            "available": False,
+            "backend": "agibot_gdk",
+            "error_stage": "import_agibot_gdk",
+            "error_type": "ModuleNotFoundError",
+            "error_msg": "No module named agibot_gdk",
+        }
+
+    monkeypatch.setattr(cli, "run_gdk_env_check", fake_gdk_env_check)
+
+    exit_code = cli.main(["--env-file", str(env_file), "--gdk-env-check"])
+
+    assert exit_code == 1
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["available"] is False
+    assert printed["error_stage"] == "import_agibot_gdk"
+    assert captured_env["MQTT_BROKER_URL"] == "mqtt://127.0.0.1:1883"
+    assert captured_env["LD_LIBRARY_PATH"] == "/opt/agibot/lib"
+
+
 def test_publish_robot_state_queue_error_uses_point_recording_response_topic() -> None:
     published: list[tuple[str, dict[str, object]]] = []
 

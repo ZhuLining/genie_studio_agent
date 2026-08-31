@@ -1,6 +1,8 @@
 """GDK 末端执行器控制运行时。
 
-通过 agibot_gdk.Robot.move_ee_pos() 控制夹爪开合。
+默认通过 agibot_gdk.Robot.move_ee_pos() 控制夹爪开合。
+若同一条 workflow 前序节点已经进入 end_effector_pose_control 伺服链路，
+则改走伺服夹爪路径，避免混用 GDK 文档明确禁止的末端控制接口。
 支持 omnipicker/dahuan/ctek90d 三种单关节末端（opening 0~1 线性映射）；
 o10_t2/o12_t2 等多关节末端暂未适配。
 """
@@ -12,11 +14,19 @@ import os
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from math import ceil
 from typing import Any
 
 from gsa_taskflow_executor.taskflow.models import EndEffectorParams
 
-from .control_probe import is_zero_error, utc_now_iso
+from .control_probe import (
+    ARM_FRAME_NAMES,
+    copy_gdk_pose,
+    extract_arm_frame_poses,
+    get_abs_pose_group_value,
+    is_zero_error,
+    utc_now_iso,
+)
 from .motion_runtime import TASKFLOW_ABS_JOINT_CONFIRMATION
 from .readonly import GDK_BACKEND, to_jsonable
 from .recovery import maybe_mark_gdk_recovery_required, recovery_refused_payload
@@ -32,6 +42,8 @@ ACTION_TASKFLOW_END_EFFECTOR = "taskflow_end_effector"
 GDK_END_EFFECTOR_TYPE_UNKNOWN = "GDK_END_EFFECTOR_TYPE_UNKNOWN"
 GDK_END_EFFECTOR_TYPE_UNSUPPORTED = "GDK_END_EFFECTOR_TYPE_UNSUPPORTED"
 GDK_END_EFFECTOR_TYPE_MISMATCH = "GDK_END_EFFECTOR_TYPE_MISMATCH"
+GDK_END_EFFECTOR_SERVO_STATE_UNAVAILABLE = "GDK_END_EFFECTOR_SERVO_STATE_UNAVAILABLE"
+GDK_END_EFFECTOR_SERVO_STATE_MISMATCH = "GDK_END_EFFECTOR_SERVO_STATE_MISMATCH"
 
 # PDF 示例给出了这些单关节末端的开/合范围；opening=1 表示打开，0 表示闭合。
 SINGLE_JOINT_END_EFFECTOR_RANGES = {
@@ -40,6 +52,13 @@ SINGLE_JOINT_END_EFFECTOR_RANGES = {
     "ctek90d": {"open": -0.91, "closed": 0.0},
 }
 MULTI_JOINT_END_EFFECTOR_TYPES = frozenset({"o10_t2", "o12_t2"})
+
+SERVO_GRIPPER_METHOD = "end_effector_pose_control"
+SERVO_GRIPPER_CONTROL_METHOD = "servo_gripper_hold_current_pose"
+SERVO_GRIPPER_RATE_HZ = 50.0
+SERVO_GRIPPER_LIFE_TIME_SECONDS = 0.02
+SERVO_GRIPPER_MIN_DURATION_SECONDS = 0.3
+SERVO_GRIPPER_FINAL_HOLD_SECONDS = 0.2
 
 
 @dataclass(frozen=True)
@@ -53,6 +72,20 @@ class EndEffectorMoveCommand:
     right_end_effector_type: str | None
 
 
+@dataclass(frozen=True)
+class ServoGripperJoints:
+    names: list[str]
+    start_positions: list[float]
+
+
+@dataclass(frozen=True)
+class ServoGripperCommand:
+    names: list[str]
+    start_positions: list[float]
+    target_positions: list[float]
+    controlled_arms: list[str]
+
+
 def run_gdk_end_effector_control(
     end_effector_params: EndEffectorParams,
     *,
@@ -60,8 +93,14 @@ def run_gdk_end_effector_control(
     import_module: Callable[[str], Any] = importlib.import_module,
     session_manager: GdkSessionManager | None = None,
     sleep: Callable[[float], None] = time.sleep,
+    prefer_servo: bool = False,
 ) -> dict[str, object]:
-    """通过 GDK move_ee_pos 控制末端执行器开合。"""
+    """控制末端执行器开合。
+
+    prefer_servo=True 时复用 end_effector_pose_control 下发夹爪关节目标。
+    这是为 ABS_POSE 后续夹爪动作准备的安全路径：GDK 4.1.5 文档明确
+    move_ee_pos 不应和伺服接口混用。
+    """
 
     env = environ if environ is not None else os.environ
     gate_result = check_taskflow_end_effector_safety_gate(env)
@@ -78,9 +117,11 @@ def run_gdk_end_effector_control(
             import_module=import_module,
             session_manager=session_manager,
             sleep=sleep,
+            prefer_servo=prefer_servo,
         )
 
-    # 末端 move_ee_pos 是同步 C 扩展调用；父进程只保留互斥锁。
+    # 末端控制可能走 move_ee_pos，也可能走 servo gripper；二者都触碰 GDK 控制通道，
+    # 父进程只保留互斥锁，阻塞和超时恢复交给常驻 worker。
     # 常驻 worker 复用 GDK 初始化，超时时再杀掉并重启该 worker。
     manager = session_manager or GdkSessionManager()
     try:
@@ -103,6 +144,7 @@ def run_gdk_end_effector_control(
         result = run_end_effector_in_subprocess(
             end_effector_params,
             safety_gate=confirmed_taskflow_safety_gate(),
+            prefer_servo=prefer_servo,
         )
         maybe_mark_gdk_recovery_required(result, operation=ACTION_TASKFLOW_END_EFFECTOR)
         result["gdk_parent_lock"] = {
@@ -118,6 +160,7 @@ def run_gdk_end_effector_control_in_process(
     import_module: Callable[[str], Any] = importlib.import_module,
     session_manager: GdkSessionManager | None = None,
     sleep: Callable[[float], None] = time.sleep,
+    prefer_servo: bool = False,
 ) -> dict[str, object]:
     manager = session_manager or GdkSessionManager(import_module=import_module)
     try:
@@ -156,6 +199,7 @@ def run_gdk_end_effector_control_in_process(
                 end_effector_params,
                 agibot_gdk=lease.agibot_gdk,
                 sleep=sleep,
+                prefer_servo=prefer_servo,
             )
         except Exception as error:
             result = unavailable_result("execute_end_effector_control", error)
@@ -197,6 +241,7 @@ def execute_end_effector_control(
     *,
     agibot_gdk: Any,
     sleep: Callable[[float], None] = time.sleep,
+    prefer_servo: bool = False,
 ) -> dict[str, object]:
     before_end_state = read_end_state(robot)
     command_result = build_end_effector_move_command(end_effector_params, before_end_state)
@@ -236,6 +281,16 @@ def execute_end_effector_control(
                 ),
                 "before_end_state": to_jsonable(before_end_state),
             },
+        )
+
+    if prefer_servo:
+        return execute_servo_gripper_control(
+            robot,
+            end_effector_params,
+            command,
+            before_end_state=before_end_state,
+            agibot_gdk=agibot_gdk,
+            sleep=sleep,
         )
 
     joint_states = build_gdk_joint_states(
@@ -303,6 +358,407 @@ def execute_end_effector_control(
             "after_end_state": to_jsonable(after_end_state),
         },
     }
+
+
+def execute_servo_gripper_control(
+    robot: Any,
+    end_effector_params: EndEffectorParams,
+    command: EndEffectorMoveCommand,
+    *,
+    before_end_state: Mapping[str, Any],
+    agibot_gdk: Any,
+    sleep: Callable[[float], None] = time.sleep,
+) -> dict[str, object]:
+    """通过 end_effector_pose_control 驱动夹爪关节。
+
+    这个路径专门用于 ABS_POSE 之后的末端控制：保持当前左右末端 pose 不变，
+    只在 EndEffectorPose 中填入夹爪 joint_names / joint_positions，避免从
+    伺服接口切回 move_ee_pos 导致 GDK 控制通道冲突。
+    """
+
+    servo_command_result = build_servo_gripper_command(
+        end_effector_params,
+        command,
+        before_end_state,
+    )
+    if isinstance(servo_command_result, dict):
+        return servo_command_result
+    servo_command = servo_command_result
+
+    motion_status = robot.get_motion_control_status()
+    frame_poses = extract_arm_frame_poses(motion_status)
+    missing_frame_names = [
+        frame_name
+        for frame_name in (ARM_FRAME_NAMES["left_arm"], ARM_FRAME_NAMES["right_arm"])
+        if frame_name not in frame_poses
+    ]
+    if missing_frame_names:
+        return refused_result(
+            stage="read_motion_control_status",
+            message="motion_control_status 缺少末端 frame，无法通过伺服接口保持当前位姿",
+            safety_confirmed=True,
+            extra={
+                "error_code": GDK_END_EFFECTOR_SERVO_STATE_UNAVAILABLE,
+                "target_end": end_effector_params.target_end,
+                "missing_frame_names": missing_frame_names,
+                "raw": {"motion_status": to_jsonable(motion_status)},
+            },
+        )
+
+    control_method = getattr(robot, SERVO_GRIPPER_METHOD, None)
+    if not callable(control_method):
+        raise RuntimeError(f"robot.{SERVO_GRIPPER_METHOD} is unavailable")
+
+    group_value = get_servo_gripper_group_value(agibot_gdk, end_effector_params.target_end)
+    duration_seconds = max(
+        float(end_effector_params.post_wait_seconds),
+        SERVO_GRIPPER_MIN_DURATION_SECONDS,
+    )
+    step_count = max(2, int(ceil(duration_seconds * SERVO_GRIPPER_RATE_HZ)))
+    final_hold_steps = max(1, int(ceil(SERVO_GRIPPER_FINAL_HOLD_SECONDS * SERVO_GRIPPER_RATE_HZ)))
+    dt_seconds = 1.0 / SERVO_GRIPPER_RATE_HZ
+    move_return: object = 0
+
+    for step_index in range(step_count):
+        ratio = step_index / (step_count - 1)
+        joint_positions = interpolate_positions(
+            servo_command.start_positions,
+            servo_command.target_positions,
+            ratio,
+        )
+        move_return = send_servo_gripper_control_step(
+            agibot_gdk=agibot_gdk,
+            frame_poses=frame_poses,
+            group_value=group_value,
+            joint_names=servo_command.names,
+            joint_positions=joint_positions,
+            control_method=control_method,
+            step_index=step_index + 1,
+        )
+        sleep(dt_seconds)
+
+    for hold_index in range(final_hold_steps):
+        move_return = send_servo_gripper_control_step(
+            agibot_gdk=agibot_gdk,
+            frame_poses=frame_poses,
+            group_value=group_value,
+            joint_names=servo_command.names,
+            joint_positions=servo_command.target_positions,
+            control_method=control_method,
+            step_index=step_count + hold_index + 1,
+        )
+        sleep(dt_seconds)
+
+    after_end_state = read_end_state(robot)
+    actual_openness = extract_actual_openness(after_end_state, end_effector_params.target_end)
+    actual_openness_source = "gdk_after_end_state"
+    if actual_openness is None:
+        actual_openness = command.requested_openings
+        actual_openness_source = "requested_opening_fallback"
+
+    return {
+        "available": True,
+        "executed": True,
+        "backend": GDK_BACKEND,
+        "action": ACTION_TASKFLOW_END_EFFECTOR,
+        "collected_at": utc_now_iso(),
+        "method": SERVO_GRIPPER_METHOD,
+        "control_method": SERVO_GRIPPER_CONTROL_METHOD,
+        "target_end": end_effector_params.target_end,
+        "group": end_effector_params.target_end,
+        "end_effector_group": to_jsonable(group_value),
+        "end_effector_type": command.end_effector_type,
+        "target_type": command.end_effector_type,
+        "opening": end_effector_params.opening,
+        "left_opening": command.left_opening,
+        "right_opening": command.right_opening,
+        "left_end_effector_type": command.left_end_effector_type,
+        "right_end_effector_type": command.right_end_effector_type,
+        "post_wait_seconds": end_effector_params.post_wait_seconds,
+        "wait_after_command": True,
+        "actual_openness": actual_openness,
+        "actual_openness_source": actual_openness_source,
+        "target_positions": servo_command.target_positions,
+        "start_positions": servo_command.start_positions,
+        "positions_len": len(servo_command.target_positions),
+        "positions_layout": build_positions_layout(end_effector_params.target_end),
+        "end_effector_joint_names": servo_command.names,
+        "end_effector_joint_positions": servo_command.target_positions,
+        "controlled_arms": servo_command.controlled_arms,
+        "servo_duration_seconds": duration_seconds,
+        "servo_rate_hz": SERVO_GRIPPER_RATE_HZ,
+        "servo_life_time_seconds": SERVO_GRIPPER_LIFE_TIME_SECONDS,
+        "servo_step_count": step_count,
+        "servo_final_hold_steps": final_hold_steps,
+        "move_return": to_jsonable(move_return),
+        "timeout": end_effector_params.timeout,
+        "safety_gate": {
+            "enabled": True,
+            "confirmed": True,
+            "expected_confirmation": TASKFLOW_ABS_JOINT_CONFIRMATION,
+        },
+        "raw": {
+            "before_end_state": to_jsonable(before_end_state),
+            "after_end_state": to_jsonable(after_end_state),
+            "motion_status_before": to_jsonable(motion_status),
+        },
+    }
+
+
+def build_servo_gripper_command(
+    end_effector_params: EndEffectorParams,
+    command: EndEffectorMoveCommand,
+    before_end_state: Mapping[str, Any],
+) -> ServoGripperCommand | dict[str, object]:
+    if command.positions is None:
+        raise RuntimeError("servo gripper command requires target positions")
+
+    names: list[str] = []
+    start_positions: list[float] = []
+    target_positions: list[float] = []
+    controlled_arms: list[str] = []
+    for target_end in target_end_sides(end_effector_params.target_end):
+        side_result = read_servo_side_joints(before_end_state, target_end)
+        if isinstance(side_result, dict):
+            return side_result
+        side_target_position_result = read_servo_side_target_position(
+            end_effector_params.target_end,
+            target_end,
+            command.positions,
+        )
+        if isinstance(side_target_position_result, dict):
+            return side_target_position_result
+        side_target_position = side_target_position_result
+        names.extend(side_result.names)
+        start_positions.extend(side_result.start_positions)
+        target_positions.extend([side_target_position] * len(side_result.names))
+        controlled_arms.append(target_end_to_arm(target_end))
+
+    return ServoGripperCommand(
+        names=names,
+        start_positions=start_positions,
+        target_positions=target_positions,
+        controlled_arms=controlled_arms,
+    )
+
+
+def read_servo_side_target_position(
+    target_end: str,
+    side_target_end: str,
+    command_positions: Sequence[float],
+) -> float | dict[str, object]:
+    if target_end == "dual_tool":
+        expected_len = 2
+        if len(command_positions) != expected_len:
+            return refused_result(
+                stage="validate_servo_gripper_target_positions",
+                message="dual_tool servo gripper 需要左右两侧各 1 个目标开合位置",
+                safety_confirmed=True,
+                extra={
+                    "error_code": GDK_END_EFFECTOR_SERVO_STATE_MISMATCH,
+                    "target_end": target_end,
+                    "target_positions_len": len(command_positions),
+                    "positions_layout": build_positions_layout(target_end),
+                },
+            )
+        return float(command_positions[0 if side_target_end == "left_tool" else 1])
+
+    if len(command_positions) != 1:
+        return refused_result(
+            stage="validate_servo_gripper_target_positions",
+            message="单侧 servo gripper 需要 1 个目标开合位置",
+            safety_confirmed=True,
+            extra={
+                "error_code": GDK_END_EFFECTOR_SERVO_STATE_MISMATCH,
+                "target_end": target_end,
+                "target_positions_len": len(command_positions),
+                "positions_layout": build_positions_layout(target_end),
+            },
+        )
+    return float(command_positions[0])
+
+
+def read_servo_side_joints(
+    end_state: Mapping[str, Any],
+    target_end: str,
+) -> ServoGripperJoints | dict[str, object]:
+    side = "left" if target_end == "left_tool" else "right"
+    for candidate in servo_side_state_candidates(end_state, target_end, side):
+        names = read_string_sequence_from_keys(
+            candidate,
+            ("names", "joint_names", "end_effector_joint_names"),
+        )
+        positions = read_servo_positions_from_state(candidate)
+        if names and positions and len(names) == len(positions):
+            return ServoGripperJoints(names=names, start_positions=positions)
+
+    return refused_result(
+        stage="read_servo_gripper_joints",
+        message="get_end_state() 未返回可用于伺服夹爪控制的关节名/当前位置",
+        safety_confirmed=True,
+        extra={
+            "error_code": GDK_END_EFFECTOR_SERVO_STATE_UNAVAILABLE,
+            "target_end": target_end,
+            "before_end_state": to_jsonable(end_state),
+        },
+    )
+
+
+def servo_side_state_candidates(
+    end_state: Mapping[str, Any],
+    target_end: str,
+    side: str,
+) -> list[Mapping[str, Any]]:
+    candidates: list[Mapping[str, Any]] = []
+    for key in (
+        f"{side}_end_state",
+        target_end,
+        f"{side}_tool",
+        f"{side}_end",
+        f"{side}_end_effector",
+        side,
+    ):
+        value = end_state.get(key)
+        if isinstance(value, Mapping):
+            candidates.append(value)
+    return candidates
+
+
+def read_string_sequence_from_keys(
+    mapping: Mapping[str, Any],
+    keys: Sequence[str],
+) -> list[str] | None:
+    for key in keys:
+        value = mapping.get(key)
+        if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
+            strings = [item.strip() for item in value if isinstance(item, str) and item.strip()]
+            if len(strings) == len(value) and strings:
+                return strings
+    return None
+
+
+def read_servo_positions_from_state(mapping: Mapping[str, Any]) -> list[float] | None:
+    positions = first_numeric_sequence(
+        mapping,
+        ("positions", "joint_positions", "end_effector_joint_positions"),
+    )
+    if positions is not None:
+        return positions
+
+    end_states = mapping.get("end_states")
+    if not isinstance(end_states, Sequence) or isinstance(end_states, str | bytes | bytearray):
+        return None
+
+    positions = []
+    for state in end_states:
+        position = (
+            state.get("position")
+            if isinstance(state, Mapping)
+            else getattr(state, "position", None)
+        )
+        if isinstance(position, bool) or not isinstance(position, int | float):
+            return None
+        positions.append(float(position))
+    return positions if positions else None
+
+
+def target_end_sides(target_end: str) -> list[str]:
+    if target_end == "dual_tool":
+        return ["left_tool", "right_tool"]
+    return [target_end]
+
+
+def target_end_to_arm(target_end: str) -> str:
+    if target_end == "left_tool":
+        return "left_arm"
+    if target_end == "right_tool":
+        return "right_arm"
+    raise RuntimeError(f"unsupported target_end for servo gripper: {target_end}")
+
+
+def get_servo_gripper_group_value(agibot_gdk: Any, target_end: str) -> object:
+    if target_end == "left_tool":
+        return get_abs_pose_group_value(agibot_gdk, "left_arm")
+    if target_end == "right_tool":
+        return get_abs_pose_group_value(agibot_gdk, "right_arm")
+
+    value = getattr(agibot_gdk, "kBothArms", None)
+    if value is not None:
+        return value
+    enum_cls = getattr(agibot_gdk, "EndEffectorControlGroup", None)
+    if enum_cls is not None:
+        value = getattr(enum_cls, "kBothArms", None)
+        if value is not None:
+            return value
+    raise RuntimeError("agibot_gdk.EndEffectorControlGroup.kBothArms is unavailable")
+
+
+def send_servo_gripper_control_step(
+    *,
+    agibot_gdk: Any,
+    frame_poses: Mapping[str, Mapping[str, object]],
+    group_value: object,
+    joint_names: Sequence[str],
+    joint_positions: Sequence[float],
+    control_method: Callable[[Any], object],
+    step_index: int,
+) -> object:
+    end_pose = build_hold_current_servo_gripper_pose(
+        agibot_gdk=agibot_gdk,
+        frame_poses=frame_poses,
+        group_value=group_value,
+        joint_names=joint_names,
+        joint_positions=joint_positions,
+    )
+    move_return = control_method(end_pose)
+    if not is_zero_error(move_return):
+        raise RuntimeError(
+            f"{SERVO_GRIPPER_METHOD} returned {move_return!r} at gripper step {step_index}"
+        )
+    return move_return
+
+
+def build_hold_current_servo_gripper_pose(
+    *,
+    agibot_gdk: Any,
+    frame_poses: Mapping[str, Mapping[str, object]],
+    group_value: object,
+    joint_names: Sequence[str],
+    joint_positions: Sequence[float],
+) -> Any:
+    end_pose_cls = getattr(agibot_gdk, "EndEffectorPose", None)
+    if not callable(end_pose_cls):
+        raise RuntimeError("agibot_gdk.EndEffectorPose is unavailable")
+
+    left_frame = ARM_FRAME_NAMES["left_arm"]
+    right_frame = ARM_FRAME_NAMES["right_arm"]
+    left_raw_pose = frame_poses.get(left_frame, {}).get("raw_pose")
+    right_raw_pose = frame_poses.get(right_frame, {}).get("raw_pose")
+    if left_raw_pose is None:
+        raise RuntimeError(f"No {left_frame} pose in motion_control_status")
+    if right_raw_pose is None:
+        raise RuntimeError(f"No {right_frame} pose in motion_control_status")
+
+    end_pose = end_pose_cls()
+    end_pose.group = group_value
+    end_pose.life_time = SERVO_GRIPPER_LIFE_TIME_SECONDS
+    # 即使只控制单侧夹爪，也同步带上左右当前 pose，避免伺服接口拿默认 pose 造成姿态跳变。
+    end_pose.left_end_effector_pose = copy_gdk_pose(agibot_gdk, left_raw_pose)
+    end_pose.right_end_effector_pose = copy_gdk_pose(agibot_gdk, right_raw_pose)
+    end_pose.end_effector_joint_names = list(joint_names)
+    end_pose.end_effector_joint_positions = [float(position) for position in joint_positions]
+    return end_pose
+
+
+def interpolate_positions(
+    start_positions: Sequence[float],
+    target_positions: Sequence[float],
+    ratio: float,
+) -> list[float]:
+    return [
+        float(start) + (float(target) - float(start)) * ratio
+        for start, target in zip(start_positions, target_positions, strict=True)
+    ]
 
 
 def check_taskflow_end_effector_safety_gate(

@@ -22,6 +22,9 @@ DEFAULT_REQUIRED_ENV_KEYS = (
     "QR_LOCALIZE_SDK_PATH",
     "QR_LOCALIZE_SDK_PYTHON",
 )
+ALLOW_LOCAL_MQTT_BROKER_ENV = "ALLOW_LOCAL_MQTT_BROKER"
+DEVELOPMENT_EXECUTOR_AIDS = {"gsa-dev"}
+LOCAL_MQTT_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
 @dataclass(frozen=True)
@@ -72,6 +75,8 @@ def main(argv: list[str] | None = None) -> int:
     for key in DEFAULT_REQUIRED_ENV_KEYS:
         checks.append(check_required_env(env, key))
 
+    checks.append(check_executor_aid_not_development_default(env))
+    checks.append(check_mqtt_broker_not_unconfirmed_localhost(env))
     checks.append(check_executor_mode(env))
     checks.append(check_safety_gate(env, args.strict_safety_gate))
     checks.extend(check_sdk_paths(env))
@@ -176,6 +181,60 @@ def check_required_env(env: dict[str, str], key: str) -> CheckResult:
         ok=False,
         severity="error",
         message=f"{key} 未配置。",
+    )
+
+
+def check_executor_aid_not_development_default(env: dict[str, str]) -> CheckResult:
+    aid = env.get("EXECUTOR_AID", "").strip()
+    if not aid:
+        return CheckResult(
+            name="executor_aid_default",
+            ok=True,
+            severity="error",
+            message="EXECUTOR_AID 空值由必填检查处理。",
+        )
+    ok = aid.lower() not in DEVELOPMENT_EXECUTOR_AIDS
+    return CheckResult(
+        name="executor_aid_default",
+        ok=ok,
+        severity="error",
+        message=(
+            "EXECUTOR_AID 已替换开发默认值。"
+            if ok
+            else "EXECUTOR_AID 仍是开发默认值 gsa-dev，状态 topic 会和客户端目标 AID 错配。"
+        ),
+        details={"executorAid": aid},
+    )
+
+
+def check_mqtt_broker_not_unconfirmed_localhost(env: dict[str, str]) -> CheckResult:
+    broker_url = env.get("MQTT_BROKER_URL", "").strip()
+    if not broker_url:
+        return CheckResult(
+            name="mqtt_broker_localhost_confirmation",
+            ok=True,
+            severity="error",
+            message="MQTT_BROKER_URL 空值由必填检查处理。",
+        )
+
+    parsed = urlparse(broker_url)
+    host = (parsed.hostname or "").lower()
+    local_allowed = env.get(ALLOW_LOCAL_MQTT_BROKER_ENV, "").strip() == "1"
+    ok = host not in LOCAL_MQTT_HOSTS or local_allowed
+    return CheckResult(
+        name="mqtt_broker_localhost_confirmation",
+        ok=ok,
+        severity="error",
+        message=(
+            "MQTT broker 地址已通过发布确认。"
+            if ok
+            else "MQTT_BROKER_URL 指向本机地址，需确认 broker 与 executor 同机并设置 "
+            f"{ALLOW_LOCAL_MQTT_BROKER_ENV}=1。"
+        ),
+        details={
+            "brokerUrl": redact_url(broker_url),
+            "allowLocalMqttBroker": local_allowed,
+        },
     )
 
 

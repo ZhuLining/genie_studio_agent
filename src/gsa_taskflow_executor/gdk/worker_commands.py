@@ -164,11 +164,12 @@ def execute_motion_abs_joint_command(
         try:
             agibot_gdk = state.require_agibot_gdk()
             robot = agibot_gdk.Robot()
+            abs_pose_limits = cast(Mapping[str, object] | None, payload.get("abs_pose_limits"))
             result = motion_runtime.execute_motion_plan_targets(
                 robot,
                 motion_params,
                 agibot_gdk=agibot_gdk,
-                abs_pose_limits=payload.get("abs_pose_limits"),
+                abs_pose_limits=abs_pose_limits,
             )
         except motion_runtime.UnsupportedGdkControlModeError as error:
             result = motion_runtime.refused_control_mode_result(error)
@@ -207,6 +208,7 @@ def execute_end_effector_command(
                 robot,
                 cast(EndEffectorParams, payload["end_effector_params"]),
                 agibot_gdk=agibot_gdk,
+                prefer_servo=payload.get("prefer_servo") is True,
             )
         except Exception as error:
             result = end_effector_runtime.unavailable_result(

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from gsa_taskflow_executor.gdk.readonly import run_gdk_readonly_probe
+from gsa_taskflow_executor.gdk.readonly import run_gdk_env_check, run_gdk_readonly_probe
 
 
 class FakeRobot:
@@ -45,6 +45,58 @@ class FakeRobot:
 
 class FakeAgibotGdk:
     Robot = FakeRobot
+
+
+def test_gdk_env_check_imports_module_without_creating_robot() -> None:
+    env = {
+        "PYTHONPATH": "/opt/agibot/python",
+        "LD_LIBRARY_PATH": "/opt/agibot/lib",
+        "CYCLONEDDS_URI": "file:///etc/agibot/cyclonedds.xml",
+        "UNRELATED": "value",
+    }
+
+    result = run_gdk_env_check(lambda _name: FakeAgibotGdk, environ=env)
+
+    assert result["available"] is True
+    assert result["backend"] == "agibot_gdk"
+    assert result["environment"] == {
+        "pythonpath_configured": True,
+        "ld_library_path_configured": True,
+        "gdk_related_keys": ["CYCLONEDDS_URI", "LD_LIBRARY_PATH", "PYTHONPATH"],
+    }
+    assert result["module"] == {
+        "required_attributes": ["Robot"],
+        "has_robot": True,
+        "has_gdk_init": False,
+    }
+
+
+def test_gdk_env_check_returns_error_when_import_fails() -> None:
+    def missing_importer(_name: str) -> Any:
+        raise ModuleNotFoundError("No module named agibot_gdk")
+
+    result = run_gdk_env_check(missing_importer, environ={})
+
+    assert result["available"] is False
+    assert result["backend"] == "agibot_gdk"
+    assert result["error_stage"] == "import_agibot_gdk"
+    assert result["error_type"] == "ModuleNotFoundError"
+    assert result["environment"] == {
+        "pythonpath_configured": False,
+        "ld_library_path_configured": False,
+        "gdk_related_keys": [],
+    }
+
+
+def test_gdk_env_check_rejects_module_without_robot_factory() -> None:
+    class BrokenAgibotGdk:
+        pass
+
+    result = run_gdk_env_check(lambda _name: BrokenAgibotGdk, environ={})
+
+    assert result["available"] is False
+    assert result["error_stage"] == "validate_agibot_gdk_module"
+    assert result["missing_attributes"] == ["Robot"]
 
 
 def test_gdk_readonly_probe_summarizes_joint_states() -> None:

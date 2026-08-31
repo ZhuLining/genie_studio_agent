@@ -129,12 +129,14 @@ def run_end_effector_in_subprocess(
     end_effector_params: object,
     *,
     safety_gate: Mapping[str, object],
+    prefer_servo: bool = False,
 ) -> dict[str, object]:
     from gsa_taskflow_executor.gdk.worker_runtime import run_end_effector_in_worker
 
     return run_end_effector_in_worker(
         end_effector_params,
         safety_gate=safety_gate,
+        prefer_servo=prefer_servo,
     )
 
 
@@ -210,7 +212,11 @@ def motion_abs_joint_child(result_queue: Any, motion_params: object) -> None:
         result_queue.put(result)
 
 
-def end_effector_child(result_queue: Any, end_effector_params: object) -> None:
+def end_effector_child(
+    result_queue: Any,
+    end_effector_params: object,
+    prefer_servo: bool = False,
+) -> None:
     from gsa_taskflow_executor.gdk import end_effector_runtime
     from gsa_taskflow_executor.taskflow.models import EndEffectorParams
 
@@ -235,6 +241,7 @@ def end_effector_child(result_queue: Any, end_effector_params: object) -> None:
                 robot,
                 cast(EndEffectorParams, end_effector_params),
                 agibot_gdk=agibot_gdk,
+                prefer_servo=prefer_servo,
             )
     except Exception as error:
         result = end_effector_runtime.unavailable_result(

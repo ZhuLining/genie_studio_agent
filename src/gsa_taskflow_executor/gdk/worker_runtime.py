@@ -12,6 +12,7 @@
                                       ├─ motion_abs_joint → Robot.move_arm_joint()
                                       │                    / end_effector_pose_control()
                                       ├─ end_effector    → Robot.move_ee_pos()
+                                      │                    / end_effector_pose_control()
                                       ├─ code_script     → run_script_safely()
                                       └─ shutdown        → release_gdk()
                                       │
@@ -620,11 +621,15 @@ def run_end_effector_in_worker(
     end_effector_params: object,
     *,
     safety_gate: Mapping[str, object],
+    prefer_servo: bool = False,
 ) -> dict[str, object]:
     """通过持久 worker 执行末端控制。"""
     return get_default_gdk_worker_manager().run_command(
         kind="end_effector",
-        payload={"end_effector_params": end_effector_params},
+        payload={
+            "end_effector_params": end_effector_params,
+            "prefer_servo": prefer_servo,
+        },
         action="taskflow_end_effector",
         backend=GDK_BACKEND,
         timeout_seconds=read_timeout_seconds(end_effector_params),

@@ -10,6 +10,10 @@ Group=gsa
 WorkingDirectory=/opt/gsa_taskflow_executor
 Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=/etc/gsa-taskflow-executor/gsa-taskflow-executor.env
+# GDK/DDS 依赖 LD_LIBRARY_PATH/PYTHONPATH 等进程启动前环境；不要依赖人工 shell source。
+EnvironmentFile=-/etc/gsa-taskflow-executor/gdk.env
+ExecStartPre=/opt/gsa_taskflow_executor/.venv/bin/gsa-taskflow-executor --deployment-config-check
+ExecStartPre=/opt/gsa_taskflow_executor/.venv/bin/gsa-taskflow-executor --gdk-env-check
 ExecStart=/opt/gsa_taskflow_executor/.venv/bin/gsa-taskflow-executor --listen
 Restart=on-failure
 RestartSec=3
@@ -20,6 +24,8 @@ ReadWritePaths=/var/log/gsa-taskflow-executor /data/gsa
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
+# G2 默认 GDK 环境位于 /home/u/.cache/agibot/app；仅以只读 bind 暴露给 executor。
+BindReadOnlyPaths=-/home/u/.cache/agibot/app
 ProtectSystem=full
 
 [Install]

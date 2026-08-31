@@ -597,6 +597,84 @@ def test_end_effector_skill_gdk_adapter_calls_gdk_runtime(monkeypatch) -> None:
     }
 
 
+def test_end_effector_skill_prefers_servo_after_same_arm_abs_pose(monkeypatch) -> None:
+    node = TaskflowNode(
+        node_id="末端控制",
+        node_type="worker",
+        assignments={},
+        skill_name="control_end_effector_skill",
+        params_template={
+            "target_end": "right_tool",
+            "end_effector_type": "omnipicker",
+            "opening": 0.3,
+            "timeout": 20,
+        },
+        capture_state_detail=True,
+        output_var="末端控制",
+        output_contract={},
+    )
+    calls: list[bool] = []
+
+    def fake_end_effector_runtime(
+        end_effector_params: object,
+        *,
+        environ: dict[str, str] | None = None,
+        session_manager: GdkSessionManager | None = None,
+        prefer_servo: bool = False,
+    ) -> dict[str, object]:
+        del end_effector_params, environ, session_manager
+        calls.append(prefer_servo)
+        return {
+            "available": True,
+            "executed": True,
+            "backend": "agibot_gdk.Robot",
+            "action": "taskflow_end_effector",
+            "method": "end_effector_pose_control",
+            "control_method": "servo_gripper_hold_current_pose",
+            "controlled_arms": ["right_arm"],
+        }
+
+    monkeypatch.setattr(
+        skill_runtime,
+        "run_gdk_end_effector_control",
+        fake_end_effector_runtime,
+    )
+    store = VariableStore(
+        variables={
+            "位姿调整": {
+                "detail": {
+                    "outputs": {
+                        "primary_control_type": "ABS_POSE",
+                        "primary_body_part": "right_arm",
+                        "gdk_result": {
+                            "action": "taskflow_abs_pose",
+                            "control_type": "ABS_POSE",
+                            "method": "end_effector_pose_control",
+                            "body_part": "right_arm",
+                        },
+                    }
+                }
+            }
+        }
+    )
+
+    result = SkillRuntime().run(
+        node,
+        SkillExecutionContext(
+            app_execution_id="qr-pose-servo-end-effector-run",
+            variable_store=store,
+            mode="gdk",
+        ),
+    )
+
+    assert calls == [True]
+    assert result.outputs is not None
+    assert result.outputs["prefer_servo"] is True
+    assert result.outputs["method"] == "end_effector_pose_control"
+    assert result.outputs["control_method"] == "servo_gripper_hold_current_pose"
+    assert result.outputs["controlled_arms"] == ["right_arm"]
+
+
 def test_end_effector_skill_gdk_outputs_resolved_dual_side_fields(monkeypatch) -> None:
     node = TaskflowNode(
         node_id="末端控制",

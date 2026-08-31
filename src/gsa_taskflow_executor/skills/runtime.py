@@ -281,11 +281,23 @@ class EndEffectorSkillGdk:
         except TaskflowParseError as error:
             raise SkillRuntimeError(str(error)) from error
 
-        end_effector_result = run_gdk_end_effector_control(
-            end_effector_params,
-            environ=self.environ,
-            session_manager=self.gdk_session_manager,
+        prefer_servo = should_prefer_servo_end_effector_path(
+            context.variable_store,
+            end_effector_params=end_effector_params,
         )
+        if prefer_servo:
+            end_effector_result = run_gdk_end_effector_control(
+                end_effector_params,
+                environ=self.environ,
+                session_manager=self.gdk_session_manager,
+                prefer_servo=True,
+            )
+        else:
+            end_effector_result = run_gdk_end_effector_control(
+                end_effector_params,
+                environ=self.environ,
+                session_manager=self.gdk_session_manager,
+            )
         if end_effector_result.get("executed") is not True:
             error_msg = end_effector_result.get("error_msg")
             message = str(error_msg or "GDK 末端控制执行失败")
@@ -301,6 +313,7 @@ class EndEffectorSkillGdk:
             params_template=resolved_params,
             end_effector_params=end_effector_params,
         )
+        outputs["prefer_servo"] = prefer_servo
         # GDK runtime 会补齐从真机状态推断出的型号与左右开度；这些值必须进入
         # VariableStore，否则后续代码节点会拿到解析前的空值。
         merge_end_effector_result_outputs(outputs, end_effector_result)
@@ -329,10 +342,112 @@ class EndEffectorSkillGdk:
                 "mode": context.mode,
                 "adapter": "gdk",
                 "params_template": deepcopy(dict(resolved_params)),
+                "prefer_servo": prefer_servo,
                 "end_effector_result": deepcopy(end_effector_result),
             },
             outputs=outputs,
         )
+
+
+def should_prefer_servo_end_effector_path(
+    variable_store: VariableStore,
+    *,
+    end_effector_params: EndEffectorParams,
+) -> bool:
+    """判断末端控制是否应复用伺服接口。
+
+    GDK 4.1.5 文档明确 move_ee_pos 不可与伺服接口混用。二维码定位后常见链路是
+    ABS_POSE → 末端控制，因此只要同一 workflow 上游同臂执行过 ABS_POSE，就把
+    夹爪开合切到 end_effector_pose_control 的 joint_names/joint_positions 路径。
+    """
+
+    target_arms = end_effector_target_arms(end_effector_params.target_end)
+    for node_scope in variable_store.variables.values():
+        if upstream_node_used_abs_pose_servo(node_scope, target_arms=target_arms):
+            return True
+    return False
+
+
+def upstream_node_used_abs_pose_servo(
+    node_scope: object,
+    *,
+    target_arms: set[str],
+) -> bool:
+    if not isinstance(node_scope, Mapping):
+        return False
+    detail = node_scope.get("detail")
+    if not isinstance(detail, Mapping):
+        return False
+
+    outputs = detail.get("outputs")
+    if isinstance(outputs, Mapping) and motion_outputs_match_abs_pose(
+        outputs,
+        target_arms=target_arms,
+    ):
+        return True
+
+    gdk_result = detail.get("gdk_result")
+    if isinstance(gdk_result, Mapping):
+        return gdk_result_matches_abs_pose_servo(gdk_result, target_arms=target_arms)
+    return False
+
+
+def motion_outputs_match_abs_pose(
+    outputs: Mapping[str, object],
+    *,
+    target_arms: set[str],
+) -> bool:
+    if outputs.get("primary_control_type") != "ABS_POSE":
+        return False
+    body_part = outputs.get("primary_body_part")
+    if isinstance(body_part, str) and body_part:
+        return body_part in target_arms
+    gdk_result = outputs.get("gdk_result")
+    if isinstance(gdk_result, Mapping):
+        return gdk_result_matches_abs_pose_servo(gdk_result, target_arms=target_arms)
+    return True
+
+
+def gdk_result_matches_abs_pose_servo(
+    gdk_result: Mapping[str, object],
+    *,
+    target_arms: set[str],
+) -> bool:
+    if not (
+        gdk_result.get("control_type") == "ABS_POSE"
+        or gdk_result.get("action") == "taskflow_abs_pose"
+        or gdk_result.get("method") == "end_effector_pose_control"
+    ):
+        return False
+
+    result_arms = read_gdk_result_arms(gdk_result)
+    if not result_arms:
+        return True
+    return bool(result_arms.intersection(target_arms))
+
+
+def read_gdk_result_arms(gdk_result: Mapping[str, object]) -> set[str]:
+    arms: set[str] = set()
+    body_part = gdk_result.get("body_part")
+    if isinstance(body_part, str) and body_part:
+        arms.add(body_part)
+    requested_body_parts = gdk_result.get("requested_body_parts")
+    if isinstance(requested_body_parts, Sequence) and not isinstance(
+        requested_body_parts,
+        str | bytes | bytearray,
+    ):
+        arms.update(part for part in requested_body_parts if isinstance(part, str) and part)
+    return arms
+
+
+def end_effector_target_arms(target_end: str) -> set[str]:
+    if target_end == "left_tool":
+        return {"left_arm"}
+    if target_end == "right_tool":
+        return {"right_arm"}
+    if target_end == "dual_tool":
+        return {"left_arm", "right_arm"}
+    return set()
 
 
 class ForceControlSkillGdk:
@@ -746,6 +861,9 @@ def merge_end_effector_result_outputs(
         "right_opening",
         "left_end_effector_type",
         "right_end_effector_type",
+        "method",
+        "control_method",
+        "controlled_arms",
     ):
         if key in end_effector_result:
             outputs[key] = deepcopy(end_effector_result[key])

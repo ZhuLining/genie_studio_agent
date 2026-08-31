@@ -20,8 +20,19 @@ def test_systemd_service_uses_gdk_executor_entrypoint() -> None:
         in service
     )
     assert "EnvironmentFile=/etc/gsa-taskflow-executor/gsa-taskflow-executor.env" in service
+    assert "EnvironmentFile=-/etc/gsa-taskflow-executor/gdk.env" in service
+    assert (
+        "ExecStartPre=/opt/gsa_taskflow_executor/.venv/bin/gsa-taskflow-executor "
+        "--deployment-config-check"
+    ) in service
+    assert (
+        "ExecStartPre=/opt/gsa_taskflow_executor/.venv/bin/gsa-taskflow-executor "
+        "--gdk-env-check"
+    ) in service
     assert "ReadWritePaths=/var/log/gsa-taskflow-executor" in service
     assert "/data/gsa" in service
+    assert "ProtectHome=true" in service
+    assert "BindReadOnlyPaths=-/home/u/.cache/agibot/app" in service
 
 
 def test_runtime_dependencies_do_not_include_unused_pydantic_stack() -> None:
@@ -42,6 +53,9 @@ def test_deploy_env_template_uses_gdk_mode() -> None:
     assert "MQTT_TERMINAL_STATUS_QOS=1" in env_file
     assert "TASKFLOW_QUEUE_MAXSIZE=16" in env_file
     assert "TASKFLOW_QUEUE_FULL_POLICY=reject" in env_file
+    assert "MQTT_BROKER_URL=mqtt://127.0.0.1:1883" not in env_file
+    assert "\nMQTT_BROKER_URL=\n" in env_file
+    assert "ALLOW_LOCAL_MQTT_BROKER=" in env_file
     assert "ROBOT_STATE_QUEUE_MAXSIZE=8" in env_file
     assert "ROBOT_STATE_QUEUE_FULL_POLICY=reject" in env_file
     assert "DIAGNOSTICS_MQTT_CONNECT_TIMEOUT=2.0" in env_file
@@ -94,9 +108,25 @@ def test_deploy_env_template_uses_gdk_mode() -> None:
         in env_file
     )
     assert "EXECUTOR_MODE=gdk" in env_file
+    assert "EXECUTOR_AID=gsa-dev" not in env_file
+    assert "\nEXECUTOR_AID=\n" in env_file
     assert "# ENABLE_GDK_CONTROL=1" in env_file
     assert "# CONFIRM_GDK_CONTROL=TASKFLOW_ABS_JOINT" in env_file
     assert "SKILL_REGISTRY_FILE=/etc/gsa-taskflow-executor/skills.yaml" in env_file
+    assert "gsa-taskflow-executor.gdk.env.example" in env_file
+
+
+def test_deploy_gdk_env_template_documents_systemd_startup_env() -> None:
+    env_file = (
+        PROJECT_ROOT / "deploy" / "gsa-taskflow-executor.gdk.env.example"
+    ).read_text(encoding="utf-8")
+
+    assert "systemd EnvironmentFile" in env_file
+    assert "PYTHONPATH" in env_file
+    assert "LD_LIBRARY_PATH" in env_file
+    assert "CYCLONEDDS_URI" in env_file
+    assert "FASTRTPS_DEFAULT_PROFILES_FILE" in env_file
+    assert "source /home/u/.cache/agibot/app/env.sh" in env_file
 
 
 def test_qr_pose_delivery_smoke_script_accepts_valid_baseline(tmp_path: Path) -> None:
@@ -135,7 +165,8 @@ def test_qr_pose_delivery_smoke_script_accepts_valid_baseline(tmp_path: Path) ->
         "\n".join(
             [
                 "MQTT_BROKER_URL=mqtt://127.0.0.1:1883",
-                "EXECUTOR_AID=gsa-dev",
+                "ALLOW_LOCAL_MQTT_BROKER=1",
+                "EXECUTOR_AID=G2A0004BC01053",
                 "EXECUTOR_MODE=gdk",
                 f"GSA_DATA_ROOT={data_root}",
                 f"QR_MAPPING_SDK_PATH={mapping_sdk}",
@@ -173,6 +204,53 @@ def test_qr_pose_delivery_smoke_script_accepts_valid_baseline(tmp_path: Path) ->
     assert payload["errorCount"] == 0
 
 
+def test_qr_pose_delivery_smoke_script_rejects_dev_executor_aid(
+    tmp_path: Path,
+) -> None:
+    data_root = tmp_path / "gsa_data"
+    mapping_sdk = tmp_path / "sdk" / "qr_mapping_sdk"
+    localize_sdk = tmp_path / "sdk" / "qr_localize_sdk"
+    for directory in (data_root, mapping_sdk, localize_sdk):
+        directory.mkdir(parents=True)
+    env_file = tmp_path / ".env.local"
+    env_file.write_text(
+        "\n".join(
+            [
+                "MQTT_BROKER_URL=mqtt://broker.internal:1883",
+                "EXECUTOR_AID=gsa-dev",
+                "EXECUTOR_MODE=gdk",
+                f"GSA_DATA_ROOT={data_root}",
+                f"QR_MAPPING_SDK_PATH={mapping_sdk}",
+                f"QR_MAPPING_SDK_PYTHON={sys.executable}",
+                f"QR_LOCALIZE_SDK_PATH={localize_sdk}",
+                f"QR_LOCALIZE_SDK_PYTHON={sys.executable}",
+                "ENABLE_GDK_CONTROL=1",
+                "CONFIRM_GDK_CONTROL=TASKFLOW_ABS_JOINT",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    script = PROJECT_ROOT / "scripts" / "qr_pose_delivery_smoke.py"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--env-file",
+            str(env_file),
+            "--strict-safety-gate",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 1
+    payload = json.loads(completed.stdout)
+    checks = {check["name"]: check for check in payload["checks"]}
+    assert checks["executor_aid_default"]["ok"] is False
+
+
 def test_deploy_docs_reference_qr_pose_delivery_baseline() -> None:
     deploy_readme = (PROJECT_ROOT / "deploy" / "README.md").read_text(encoding="utf-8")
     baseline = (
@@ -180,6 +258,10 @@ def test_deploy_docs_reference_qr_pose_delivery_baseline() -> None:
     ).read_text(encoding="utf-8")
 
     assert "qr_pose_delivery_smoke.py" in deploy_readme
+    assert "gsa-taskflow-executor.gdk.env.example" in deploy_readme
+    assert "--deployment-config-check" in deploy_readme
+    assert "--gdk-env-check" in deploy_readme
+    assert "BindReadOnlyPaths" in deploy_readme
     assert "docs/qr_pose_delivery_baseline.md" in deploy_readme
     assert "二维码建图工具" in baseline
     assert "点位录制" in baseline

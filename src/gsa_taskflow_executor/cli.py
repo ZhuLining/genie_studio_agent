@@ -26,7 +26,7 @@ from .gdk.camera_frame import run_gdk_camera_frame_snapshot
 from .gdk.control_probe import ALLOWED_ACTIONS, run_gdk_control_probe
 from .gdk.current_pose import run_gdk_current_pose_snapshot
 from .gdk.motion_runtime import TASKFLOW_ABS_JOINT_CONFIRMATION
-from .gdk.readonly import run_gdk_readonly_probe
+from .gdk.readonly import run_gdk_env_check, run_gdk_readonly_probe
 from .gdk.recovery import current_gdk_recovery_requirement
 from .gdk.session import GdkSessionManager
 from .gdk.worker_runtime import (
@@ -58,6 +58,10 @@ from .qr_mapping.point_recording_service import PointRecordingService
 from .qr_mapping.pose_service import QrPoseService
 from .qr_mapping.project_store import QrProjectStore
 from .runtime.config import ConfigError, ExecutorSettings, build_env_source
+from .runtime.deployment import (
+    build_deployment_config_check_payload,
+    deployment_config_exit_code,
+)
 from .runtime.diagnostics import (
     build_health_check_payload,
     build_runtime_diagnostics_payload,
@@ -124,9 +128,25 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--deployment-config-check",
+        action="store_true",
+        help=(
+            "Validate production deployment settings and exit non-zero when required "
+            "values still use unsafe development defaults."
+        ),
+    )
+    parser.add_argument(
         "--gdk-readonly-probe",
         action="store_true",
         help="Run a one-shot read-only agibot_gdk probe and exit without robot control.",
+    )
+    parser.add_argument(
+        "--gdk-env-check",
+        action="store_true",
+        help=(
+            "Verify that the current process environment can import agibot_gdk and exit "
+            "non-zero when GDK is unavailable. Intended for systemd ExecStartPre."
+        ),
     )
     parser.add_argument(
         "--gdk-control-probe",
@@ -195,6 +215,19 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return health_check_exit_code(payload)
 
+    if args.deployment_config_check:
+        payload = build_deployment_config_check_payload(
+            settings=settings,
+            runtime_env=runtime_env,
+        )
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return deployment_config_exit_code(payload)
+
+    if args.gdk_env_check:
+        result = run_gdk_env_check(environ=runtime_env)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0 if result.get("available") is True else 1
+
     if args.gdk_readonly_probe:
         writer = JsonlEventWriter.from_settings(settings)
         result = run_gdk_readonly_probe()
@@ -240,6 +273,15 @@ def main(argv: list[str] | None = None) -> int:
     # ---- --listen 长连接模式 ----
 
     if args.listen:
+        deployment_check = build_deployment_config_check_payload(
+            settings=settings,
+            runtime_env=runtime_env,
+        )
+        deployment_exit_code = deployment_config_exit_code(deployment_check)
+        if deployment_exit_code != 0:
+            print(json.dumps(deployment_check, ensure_ascii=False, indent=2))
+            return deployment_exit_code
+
         # 共享基础设施（listen 生命周期内复用）
         writer = JsonlEventWriter.from_settings(settings)
         gdk_session = GdkSessionManager()

@@ -39,6 +39,15 @@ def test_point_recording_service_saves_target_point(tmp_path) -> None:
 def test_point_recording_service_saves_initial_photo_and_runs_sdk(tmp_path) -> None:
     store, service = make_service(tmp_path)
     make_mapped_project(store)
+    service.save_target_point(
+        PointRecordingSaveTargetParams(
+            robot_serial="G2A0004BC01053",
+            project_name="test10",
+            point_name="grasp_1",
+            arm="left_arm",
+            camera_id="hand_left_color",
+        )
+    )
 
     result = service.save_initial_photo_point(
         PointRecordingSaveInitialPhotoParams(

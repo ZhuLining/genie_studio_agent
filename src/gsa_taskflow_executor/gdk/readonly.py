@@ -13,6 +13,63 @@ from typing import Any
 
 GDK_BACKEND = "agibot_gdk.Robot"
 GDK_MODULE_NAME = "agibot_gdk"
+GDK_IMPORT_REQUIRED_ATTRIBUTES = ("Robot",)
+GDK_ENV_KEY_HINTS = (
+    "GDK",
+    "DDS",
+    "CYCLONEDDS",
+    "FASTRTPS",
+    "RMW",
+    "ROS",
+    "AMENT",
+    "LD_LIBRARY_PATH",
+    "PYTHONPATH",
+)
+
+
+def run_gdk_env_check(
+    import_module: Callable[[str], Any] = importlib.import_module,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, object]:
+    """只验证 systemd 进程环境是否足以导入 GDK，不创建 Robot。
+
+    LD_LIBRARY_PATH/PYTHONPATH 必须在 Python 进程启动前由 systemd 注入；
+    这里不尝试运行 env.sh，避免交互 shell 和正式服务看到两套环境。
+    """
+
+    resolved_environ = environ or {}
+    environment = summarize_gdk_environment(resolved_environ)
+    try:
+        agibot_gdk = import_module(GDK_MODULE_NAME)
+    except Exception as error:
+        return gdk_env_check_error("import_agibot_gdk", error, environment=environment)
+
+    missing_attributes = [
+        name for name in GDK_IMPORT_REQUIRED_ATTRIBUTES if not hasattr(agibot_gdk, name)
+    ]
+    if missing_attributes:
+        return gdk_env_check_error(
+            "validate_agibot_gdk_module",
+            AttributeError(
+                "agibot_gdk missing required attributes: "
+                + ", ".join(missing_attributes)
+            ),
+            environment=environment,
+            extra={"missing_attributes": missing_attributes},
+        )
+
+    return {
+        "available": True,
+        "backend": GDK_MODULE_NAME,
+        "checked_at": utc_now_iso(),
+        "environment": environment,
+        "module": {
+            "required_attributes": list(GDK_IMPORT_REQUIRED_ATTRIBUTES),
+            "has_robot": hasattr(agibot_gdk, "Robot"),
+            "has_gdk_init": callable(getattr(agibot_gdk, "gdk_init", None)),
+        },
+    }
 
 
 def run_gdk_readonly_probe(
@@ -127,6 +184,40 @@ def is_zero_error(error_code: Any) -> bool:
     if isinstance(error_code, str):
         return error_code.strip() in {"", "0"}
     return False
+
+
+def summarize_gdk_environment(environ: Mapping[str, str]) -> dict[str, object]:
+    """输出 GDK/DDS 环境摘要，只暴露 key，不回显路径值或潜在敏感内容。"""
+
+    gdk_related_keys = sorted(
+        key for key in environ if any(hint in key.upper() for hint in GDK_ENV_KEY_HINTS)
+    )
+    return {
+        "pythonpath_configured": bool(environ.get("PYTHONPATH")),
+        "ld_library_path_configured": bool(environ.get("LD_LIBRARY_PATH")),
+        "gdk_related_keys": gdk_related_keys,
+    }
+
+
+def gdk_env_check_error(
+    stage: str,
+    error: Exception,
+    *,
+    environment: Mapping[str, object],
+    extra: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "available": False,
+        "backend": GDK_MODULE_NAME,
+        "checked_at": utc_now_iso(),
+        "environment": dict(environment),
+        "error_stage": stage,
+        "error_type": type(error).__name__,
+        "error_msg": str(error),
+    }
+    if extra:
+        payload.update(extra)
+    return payload
 
 
 def unavailable_result(stage: str, error: Exception) -> dict[str, object]:
