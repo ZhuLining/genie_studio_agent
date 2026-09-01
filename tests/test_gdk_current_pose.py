@@ -36,11 +36,43 @@ WAIST = [
 ]
 
 
+class FakeVector3:
+    def __init__(self, x: float, y: float, z: float) -> None:
+        self.x = x
+        self.y = y
+        self.z = z
+
+
+class FakeQuaternion:
+    def __init__(self, x: float, y: float, z: float, w: float) -> None:
+        self.x = x
+        self.y = y
+        self.z = z
+        self.w = w
+
+
+class FakePose:
+    def __init__(
+        self,
+        position: tuple[float, float, float],
+        orientation: tuple[float, float, float, float],
+    ) -> None:
+        self.position = FakeVector3(*position)
+        self.orientation = FakeQuaternion(*orientation)
+
+
 class FakeMotionStatus:
     mode = 1
     control_mode = 1
     error_code = 0
     error_msg = ""
+    frame_names = ["arm_l_end_link", "arm_r_end_link", "left_tool0_body", "right_tool0_body"]
+    frame_poses = [
+        FakePose((0.1, 0.2, 0.3), (0.0, 0.1, 0.2, 0.97)),
+        FakePose((0.4, -0.2, 0.8), (0.3, 0.4, 0.5, 0.7)),
+        FakePose((0.11, 0.21, 0.31), (0.0, 0.1, 0.2, 0.97)),
+        FakePose((0.41, -0.21, 0.81), (0.3, 0.4, 0.5, 0.7)),
+    ]
 
 
 class FakeRobot:
@@ -97,6 +129,14 @@ def test_current_pose_snapshot_matches_desktop_contract() -> None:
     assert result["groups"]["right_arm"]["positions"] == [0.08, 0.09, 0.1, 0.11, 0.12, 0.13, 0.14]
     assert result["groups"]["waist"]["positions"] == [0.15, 0.16, 0.17, 0.18, 0.19]
     assert result["groups"]["waist"]["joints"][0]["limit"] == {"min": -3.14, "max": 3.14}
+    assert result["framePoses"]["left_arm"] == {
+        "bodyPart": "left_arm",
+        "frameName": "arm_l_end_link",
+        "position": [0.1, 0.2, 0.3],
+        "orientation": [0.0, 0.1, 0.2, 0.97],
+        "values": [0.1, 0.2, 0.3, 0.0, 0.1, 0.2, 0.97],
+    }
+    assert result["framePoses"]["right_arm"]["values"] == [0.4, -0.2, 0.8, 0.3, 0.4, 0.5, 0.7]
     assert result["motionStatus"] == {
         "mode": 1,
         "controlMode": 1,

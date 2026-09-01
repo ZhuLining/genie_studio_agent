@@ -11,8 +11,10 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from .control_probe import (
+    ARM_FRAME_NAMES,
     LEFT_ARM_JOINTS,
     RIGHT_ARM_JOINTS,
+    extract_arm_frame_poses,
     is_zero_error,
     read_joint_position,
     utc_now_iso,
@@ -152,6 +154,7 @@ def build_current_pose_snapshot(
             ),
             "waist": build_group_snapshot("waist", WAIST_JOINTS, states_by_name, limits),
         },
+        "framePoses": build_arm_frame_pose_snapshots(motion_status),
         "nonzeroErrorJoints": build_nonzero_error_joints(state_items),
         "motionStatus": {
             "mode": to_jsonable(getattr(motion_status, "mode", None)),
@@ -161,6 +164,42 @@ def build_current_pose_snapshot(
         },
         "wholeBodyStatus": to_jsonable(whole_body_status),
     }
+
+
+def build_arm_frame_pose_snapshots(motion_status: Any) -> dict[str, dict[str, object]]:
+    """从 motion_control_status 读取左右臂末端绝对位姿。
+
+    ABS_POSE 使用的是末端 frame pose，不是关节角；这里只读 arm_l/r_end_link，
+    不读取或切换 tool0/TCP frame，避免把坐标系策略混入“获取当前值”按钮。
+    """
+
+    frame_poses = extract_arm_frame_poses(motion_status)
+    snapshots: dict[str, dict[str, object]] = {}
+    for body_part, frame_name in ARM_FRAME_NAMES.items():
+        pose = frame_poses.get(frame_name)
+        if pose is None:
+            continue
+        position = pose.get("position")
+        orientation = pose.get("orientation")
+        if not isinstance(position, Sequence) or isinstance(position, str | bytes | bytearray):
+            continue
+        if not isinstance(orientation, Sequence) or isinstance(
+            orientation,
+            str | bytes | bytearray,
+        ):
+            continue
+        position_values = [float(value) for value in position]
+        orientation_values = [float(value) for value in orientation]
+        if len(position_values) != 3 or len(orientation_values) != 4:
+            continue
+        snapshots[body_part] = {
+            "bodyPart": body_part,
+            "frameName": frame_name,
+            "position": position_values,
+            "orientation": orientation_values,
+            "values": [*position_values, *orientation_values],
+        }
+    return snapshots
 
 
 def build_group_snapshot(
