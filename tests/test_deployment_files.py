@@ -16,22 +16,26 @@ def test_systemd_service_uses_gdk_executor_entrypoint() -> None:
     )
 
     assert (
-        "ExecStart=/opt/gsa_taskflow_executor/.venv/bin/gsa-taskflow-executor --listen"
+        "ExecStart=/home/u/project/gsa_taskflow_executor/.venv/bin/gsa-taskflow-executor --listen"
         in service
     )
+    assert "User=u" in service
+    assert "User=gsa" not in service
+    assert "Group=gsa" not in service
+    assert "WorkingDirectory=/home/u/project/gsa_taskflow_executor" in service
     assert "EnvironmentFile=/etc/gsa-taskflow-executor/gsa-taskflow-executor.env" in service
     assert "EnvironmentFile=-/etc/gsa-taskflow-executor/gdk.env" in service
     assert (
-        "ExecStartPre=/opt/gsa_taskflow_executor/.venv/bin/gsa-taskflow-executor "
+        "ExecStartPre=/home/u/project/gsa_taskflow_executor/.venv/bin/gsa-taskflow-executor "
         "--deployment-config-check"
     ) in service
     assert (
-        "ExecStartPre=/opt/gsa_taskflow_executor/.venv/bin/gsa-taskflow-executor "
+        "ExecStartPre=/home/u/project/gsa_taskflow_executor/.venv/bin/gsa-taskflow-executor "
         "--gdk-env-check"
     ) in service
-    assert "ReadWritePaths=/var/log/gsa-taskflow-executor" in service
+    assert "ReadWritePaths=/home/u/project/gsa_taskflow_executor/logs /data/gsa" in service
     assert "/data/gsa" in service
-    assert "ProtectHome=true" in service
+    assert "ProtectHome=false" in service
     assert "BindReadOnlyPaths=-/home/u/.cache/agibot/app" in service
 
 
@@ -112,6 +116,17 @@ def test_deploy_env_template_uses_gdk_mode() -> None:
     assert "\nEXECUTOR_AID=\n" in env_file
     assert "# ENABLE_GDK_CONTROL=1" in env_file
     assert "# CONFIRM_GDK_CONTROL=TASKFLOW_ABS_JOINT" in env_file
+    assert "QR_MAPPING_SDK_PATH=/home/u/project/gsa_taskflow_executor/sdk" in env_file
+    assert (
+        "QR_MAPPING_SDK_PYTHON=/home/u/project/gsa_taskflow_executor/.venv/bin/python"
+        in env_file
+    )
+    assert "QR_LOCALIZE_SDK_PATH=/home/u/project/gsa_taskflow_executor/sdk" in env_file
+    assert (
+        "QR_LOCALIZE_SDK_PYTHON=/home/u/project/gsa_taskflow_executor/.venv/bin/python"
+        in env_file
+    )
+    assert "EXECUTOR_LOG_DIR=/home/u/project/gsa_taskflow_executor/logs" in env_file
     assert "SKILL_REGISTRY_FILE=/etc/gsa-taskflow-executor/skills.yaml" in env_file
     assert "gsa-taskflow-executor.gdk.env.example" in env_file
 

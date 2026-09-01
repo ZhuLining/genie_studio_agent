@@ -5,25 +5,23 @@ After=network-online.target
 
 [Service]
 Type=simple
-User=gsa
-Group=gsa
-WorkingDirectory=/opt/gsa_taskflow_executor
+User=u
+WorkingDirectory=/home/u/project/gsa_taskflow_executor
 Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=/etc/gsa-taskflow-executor/gsa-taskflow-executor.env
 # GDK/DDS 依赖 LD_LIBRARY_PATH/PYTHONPATH 等进程启动前环境；不要依赖人工 shell source。
 EnvironmentFile=-/etc/gsa-taskflow-executor/gdk.env
-ExecStartPre=/opt/gsa_taskflow_executor/.venv/bin/gsa-taskflow-executor --deployment-config-check
-ExecStartPre=/opt/gsa_taskflow_executor/.venv/bin/gsa-taskflow-executor --gdk-env-check
-ExecStart=/opt/gsa_taskflow_executor/.venv/bin/gsa-taskflow-executor --listen
+ExecStartPre=/home/u/project/gsa_taskflow_executor/.venv/bin/gsa-taskflow-executor --deployment-config-check
+ExecStartPre=/home/u/project/gsa_taskflow_executor/.venv/bin/gsa-taskflow-executor --gdk-env-check
+ExecStart=/home/u/project/gsa_taskflow_executor/.venv/bin/gsa-taskflow-executor --listen
 Restart=on-failure
 RestartSec=3
-LogsDirectory=gsa-taskflow-executor
-# GSA_DATA_ROOT 默认使用 /data/gsa；二维码建图、点位录制和二维码定位
-# 必须共享同一份 Ubuntu 侧产物目录，避免客户端本机路径进入正式链路。
-ReadWritePaths=/var/log/gsa-taskflow-executor /data/gsa
+# 当前现场沿用 /home/u/project 联调目录，日志写入项目 logs；
+# GSA_DATA_ROOT 若继续使用 /data/gsa，需要确保 u 用户具备写权限。
+ReadWritePaths=/home/u/project/gsa_taskflow_executor/logs /data/gsa
 NoNewPrivileges=true
 PrivateTmp=true
-ProtectHome=true
+ProtectHome=false
 # G2 默认 GDK 环境位于 /home/u/.cache/agibot/app；仅以只读 bind 暴露给 executor。
 BindReadOnlyPaths=-/home/u/.cache/agibot/app
 ProtectSystem=full
