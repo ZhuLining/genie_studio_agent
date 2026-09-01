@@ -1,0 +1,32 @@
+[Unit]
+Description=GSA Taskflow Executor (home/u deployment)
+Documentation=file:/home/u/project/gsa_taskflow_executor/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=u
+WorkingDirectory=/home/u/project/gsa_taskflow_executor
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/home/u/project/gsa_taskflow_executor/.env.local
+EnvironmentFile=-/home/u/project/gsa_taskflow_executor/.gdk.env
+ExecStartPre=/home/u/project/gsa_taskflow_executor/.venv/bin/gsa-taskflow-executor --deployment-config-check
+ExecStartPre=/home/u/project/gsa_taskflow_executor/.venv/bin/gsa-taskflow-executor --gdk-env-check
+ExecStart=/home/u/project/gsa_taskflow_executor/.venv/bin/gsa-taskflow-executor --listen
+Restart=on-failure
+RestartSec=3
+TimeoutStartSec=30
+TimeoutStopSec=20
+KillSignal=SIGINT
+
+# 该模板沿用 /home/u/project 前台联调目录，因此不能开启 ProtectHome=true。
+# 如迁移到 /opt/gsa_taskflow_executor + /data/gsa，可改用默认 service 模板。
+ProtectHome=false
+ProtectSystem=full
+PrivateTmp=true
+NoNewPrivileges=true
+ReadWritePaths=/home/u/project/gsa_taskflow_executor/logs
+
+[Install]
+WantedBy=multi-user.target
