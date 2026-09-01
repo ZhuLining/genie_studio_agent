@@ -215,7 +215,18 @@ class MqttGateway:
             raise MqttGatewayError("MQTT 尚未连接，不能发布消息")
 
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-        self._client.publish(topic, body, qos=0)
+        result = self._client.publish(topic, body, qos=0)
+        publish_rc = getattr(result, "rc", None)
+        if publish_rc not in (None, 0):
+            self.logger.error(
+                "MQTT publish failed topic=%s rc=%s payload=%s",
+                topic,
+                publish_rc,
+                sanitize_event_payload(
+                    dict(payload),
+                    config=self._payload_sanitizer_config,
+                ),
+            )
         self.record_event(
             RuntimeEvent(
                 event_type=event_type,
@@ -629,3 +640,6 @@ def wait_for_publish(result: Any, *, timeout: float | None = None) -> None:
             result.wait_for_publish(timeout=timeout)
         except TypeError:
             result.wait_for_publish()
+    rc = getattr(result, "rc", None)
+    if rc not in (None, 0):
+        logging.getLogger(__name__).error("MQTT publish rejected rc=%s", rc)

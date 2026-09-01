@@ -511,6 +511,22 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 )
                 return
+            except Exception as error:  # noqa: BLE001 - 兜底：任何预期外异常必须给客户端终态 ERROR
+                logger.exception("unexpected taskflow execution error: %s", error)
+                reporter.publish_execution_error(
+                    message=f"taskflow execution failed: {error}",
+                    app_execution_id=taskflow.app_execution_id,
+                )
+                writer.write(
+                    RuntimeEvent(
+                        event_type="taskflow_execution_unexpected_error",
+                        level="error",
+                        message=str(error),
+                        app_execution_id=taskflow.app_execution_id,
+                        topic=message.topic,
+                    )
+                )
+                return
             finally:
                 execution_controller.finish_execution(taskflow.app_execution_id)
 

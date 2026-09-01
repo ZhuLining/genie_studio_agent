@@ -28,7 +28,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable, Mapping
 from multiprocessing import get_context
-from queue import Empty
+from queue import Empty, Full
 from threading import Lock
 from typing import Any
 from uuid import uuid4
@@ -115,7 +115,10 @@ class GdkWorkerProcessManager:
                         "backend": backend,
                         "safety_gate": dict(safety_gate),
                     }
-                    command_queue.put(
+                    # 用 put_nowait：队列 maxsize=1，在锁内只允许一条在途命令。
+                    # 若 worker 挂死未清空队列，阻塞 put 会让主进程一起卡死；
+                    # put_nowait 抛 Full 走下方 except，把问题转化为可恢复的失败结果。
+                    command_queue.put_nowait(
                         {
                             "command_id": command_id,
                             "kind": kind,
