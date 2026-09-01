@@ -373,10 +373,16 @@ def check_data_root(env: dict[str, str]) -> list[CheckResult]:
                 ok=False,
                 severity="warning",
                 message=(
-                    "GSA_DATA_ROOT 位于 /home；默认 systemd service 的 ProtectHome "
-                    "会阻止访问。"
+                    "GSA_DATA_ROOT 位于 /home；请确认 systemd service 已设置 "
+                    "ProtectHome=false，且 ReadWritePaths 包含该目录。"
                 ),
-                details={"path": str(root), "recommendation": "正式部署建议改用 /data/gsa"},
+                details={
+                    "path": str(root),
+                    "recommendation": (
+                        "如果 service 启用了 ProtectHome=true，需要把数据根移出 /home "
+                        "或调整 service 沙箱配置。"
+                    ),
+                },
             )
         )
     return checks

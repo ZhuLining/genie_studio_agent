@@ -17,8 +17,8 @@ ExecStart=/home/u/project/gsa_taskflow_executor/.venv/bin/gsa-taskflow-executor 
 Restart=on-failure
 RestartSec=3
 # 当前现场沿用 /home/u/project 联调目录，日志写入项目 logs；
-# GSA_DATA_ROOT 若继续使用 /data/gsa，需要确保 u 用户具备写权限。
-ReadWritePaths=/home/u/project/gsa_taskflow_executor/logs /data/gsa
+# GSA_DATA_ROOT 当前使用 /home/u/gsa_data，必须和 env 文件保持一致。
+ReadWritePaths=/home/u/project/gsa_taskflow_executor/logs /home/u/gsa_data
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=false

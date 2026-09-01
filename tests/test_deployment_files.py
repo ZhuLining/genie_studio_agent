@@ -33,8 +33,11 @@ def test_systemd_service_uses_gdk_executor_entrypoint() -> None:
         "ExecStartPre=/home/u/project/gsa_taskflow_executor/.venv/bin/gsa-taskflow-executor "
         "--gdk-env-check"
     ) in service
-    assert "ReadWritePaths=/home/u/project/gsa_taskflow_executor/logs /data/gsa" in service
-    assert "/data/gsa" in service
+    assert (
+        "ReadWritePaths=/home/u/project/gsa_taskflow_executor/logs /home/u/gsa_data"
+        in service
+    )
+    assert "/data/gsa" not in service
     assert "ProtectHome=false" in service
     assert "BindReadOnlyPaths=-/home/u/.cache/agibot/app" in service
 
@@ -111,6 +114,7 @@ def test_deploy_env_template_uses_gdk_mode() -> None:
         "ROBOT_CAMERA_CAPTURE_FRAME_TOPIC_TEMPLATE=gsa/self/robot/state/camera_capture/{sessionId}/frame"
         in env_file
     )
+    assert "GSA_DATA_ROOT=/home/u/gsa_data" in env_file
     assert "EXECUTOR_MODE=gdk" in env_file
     assert "EXECUTOR_AID=gsa-dev" not in env_file
     assert "\nEXECUTOR_AID=\n" in env_file
