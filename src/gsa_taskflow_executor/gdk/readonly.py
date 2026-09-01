@@ -17,6 +17,7 @@ GDK_IMPORT_REQUIRED_ATTRIBUTES = ("Robot",)
 GDK_ENV_KEY_HINTS = (
     "GDK",
     "DDS",
+    "AORTA",
     "CYCLONEDDS",
     "FASTRTPS",
     "RMW",
