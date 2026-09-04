@@ -22,6 +22,12 @@ from gsa_taskflow_executor.gdk.camera_capture import (
     CameraCaptureStartParams,
 )
 from gsa_taskflow_executor.gdk.camera_frame import DEFAULT_CAMERA_TIMEOUT_MS
+from gsa_taskflow_executor.gdk.recovery import (
+    DEFAULT_RECOVERY_CONFIRM_SAMPLE_COUNT,
+    DEFAULT_RECOVERY_CONFIRM_SAMPLE_INTERVAL_SECONDS,
+    DEFAULT_RECOVERY_MAX_JOINT_VELOCITY,
+    DEFAULT_RECOVERY_MAX_POSITION_DELTA,
+)
 from gsa_taskflow_executor.gdk.robot_identity import (
     ACTION_GET_ROBOT_IDENTITY,
     DEFAULT_ROBOT_IDENTITY_TIMEOUT_MS,
@@ -41,10 +47,10 @@ from gsa_taskflow_executor.qr_mapping.capture_service import (
     QrCaptureStartParams,
 )
 from gsa_taskflow_executor.qr_mapping.point_recording_service import (
-    ACTION_SAVE_QR_INITIAL_PHOTO_POINT,
-    ACTION_SAVE_QR_TARGET_POINT,
     ACTION_DELETE_QR_INITIAL_PHOTO_POINT,
     ACTION_DELETE_QR_TARGET_POINT,
+    ACTION_SAVE_QR_INITIAL_PHOTO_POINT,
+    ACTION_SAVE_QR_TARGET_POINT,
     ACTION_SUBMIT_POINT_RECORDING,
     DEFAULT_MIN_MARKERS,
     DEFAULT_POINT_RECORDING_TIMEOUT_MS,
@@ -63,6 +69,7 @@ from gsa_taskflow_executor.qr_mapping.project_store import (
 
 # 请求类型常量
 CURRENT_POSE_REQUEST_TYPE = "get_current_pose"
+GDK_RECOVERY_CONFIRM_REQUEST_TYPE = "confirm_gdk_recovery"
 ROBOT_IDENTITY_REQUEST_TYPE = ACTION_GET_ROBOT_IDENTITY
 CAMERA_FRAME_REQUEST_TYPE = "get_camera_frame"
 CAMERA_CALIBRATION_REQUEST_TYPE = ACTION_GET_CAMERA_CALIBRATION
@@ -89,6 +96,18 @@ class CurrentPoseRequest:
 
     request_id: str
     reply_topic: str
+
+
+@dataclass(frozen=True)
+class GdkRecoveryConfirmRequest:
+    """显式 GDK 恢复确认请求。"""
+
+    request_id: str
+    reply_topic: str
+    sample_count: int
+    sample_interval_seconds: float
+    max_joint_velocity: float
+    max_position_delta: float
 
 
 @dataclass(frozen=True)
@@ -300,6 +319,53 @@ def parse_current_pose_request(payload: str, *, default_reply_topic: str) -> Cur
         raise ValueError("当前位姿请求缺少 replyTopic")
 
     return CurrentPoseRequest(request_id=request_id, reply_topic=reply_topic)
+
+
+def parse_gdk_recovery_confirm_request(
+    payload: str,
+    *,
+    default_reply_topic: str,
+    default_sample_count: int = DEFAULT_RECOVERY_CONFIRM_SAMPLE_COUNT,
+    default_sample_interval_seconds: float = DEFAULT_RECOVERY_CONFIRM_SAMPLE_INTERVAL_SECONDS,
+    default_max_joint_velocity: float = DEFAULT_RECOVERY_MAX_JOINT_VELOCITY,
+    default_max_position_delta: float = DEFAULT_RECOVERY_MAX_POSITION_DELTA,
+) -> GdkRecoveryConfirmRequest:
+    """解析显式 GDK 恢复确认请求 JSON。"""
+
+    decoded = parse_json_object(payload, "GDK 恢复确认请求")
+    request_type = read_optional_string(decoded, "type")
+    if request_type is not None and request_type != GDK_RECOVERY_CONFIRM_REQUEST_TYPE:
+        raise ValueError(f"不支持的机器人状态请求类型: {request_type}")
+
+    request_id = read_request_id_from_object(decoded)
+    if not request_id:
+        raise ValueError("GDK 恢复确认请求缺少 requestId")
+
+    return GdkRecoveryConfirmRequest(
+        request_id=request_id,
+        reply_topic=read_reply_topic(decoded, default_reply_topic),
+        sample_count=read_positive_int(
+            read_first_present(decoded.get("sampleCount"), decoded.get("sample_count")),
+            default_sample_count,
+        ),
+        sample_interval_seconds=read_positive_float(
+            read_first_present(
+                decoded.get("sampleIntervalSeconds"),
+                decoded.get("sample_interval_seconds"),
+                read_milliseconds_as_seconds(decoded.get("sampleIntervalMs")),
+                read_milliseconds_as_seconds(decoded.get("sample_interval_ms")),
+            ),
+            default_sample_interval_seconds,
+        ),
+        max_joint_velocity=read_non_negative_float(
+            read_first_present(decoded.get("maxJointVelocity"), decoded.get("max_joint_velocity")),
+            default_max_joint_velocity,
+        ),
+        max_position_delta=read_non_negative_float(
+            read_first_present(decoded.get("maxPositionDelta"), decoded.get("max_position_delta")),
+            default_max_position_delta,
+        ),
+    )
 
 
 def parse_robot_identity_request(
@@ -920,7 +986,10 @@ def parse_point_recording_delete_initial_photo_request(
 
     decoded = parse_json_object(payload, "点位录制删除初始拍照点位请求")
     request_type = read_optional_string(decoded, "type")
-    if request_type is not None and request_type != POINT_RECORDING_DELETE_INITIAL_PHOTO_REQUEST_TYPE:
+    if (
+        request_type is not None
+        and request_type != POINT_RECORDING_DELETE_INITIAL_PHOTO_REQUEST_TYPE
+    ):
         raise ValueError(f"不支持的点位录制请求类型: {request_type}")
     request_id = read_request_id_from_object(decoded)
     if not request_id:
@@ -1119,6 +1188,35 @@ def read_positive_float(value: Any, fallback: float) -> float:
     if isinstance(value, (int, float)) and float(value) > 0:
         return float(value)
     return fallback
+
+
+def read_non_negative_float(value: Any, fallback: float) -> float:
+    """读取非负浮点数。非法输入返回 fallback。"""
+
+    if isinstance(value, bool):
+        return fallback
+    if isinstance(value, (int, float)) and float(value) >= 0:
+        return float(value)
+    return fallback
+
+
+def read_first_present(*values: Any) -> Any:
+    """返回第一个非 None 值；避免把 0 当作缺省。"""
+
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
+def read_milliseconds_as_seconds(value: Any) -> float | None:
+    """读取毫秒配置并转成秒。非法输入返回 None 交给调用方 fallback。"""
+
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)) and float(value) > 0:
+        return float(value) / 1000.0
+    return None
 
 
 def read_bounded_positive_int(value: Any, *, fallback: int, max_value: int) -> int:

@@ -309,6 +309,7 @@ def test_scheduler_timer_and_count_loop_execute_in_order() -> None:
     assert result.variables["代码1"]["detail"]["outputs"]["out_1"] == "代码1-3"
     assert result.variables["代码2"]["detail"]["outputs"]["out_2"] == "代码2-3"
     loop_outputs = result.variables["循环"]["detail"]["outputs"]
+    assert loop_outputs["contract_version"] == 2
     assert loop_outputs["completed_iterations"] == 3
     assert loop_outputs["iteration_max"] == 3
     assert [item["outcome"] for item in loop_outputs["iteration_results"]] == [
@@ -316,6 +317,16 @@ def test_scheduler_timer_and_count_loop_execute_in_order() -> None:
         "success",
         "success",
     ]
+    assert [
+        item["nodes"]["代码1"]["detail"]["outputs"]["out_1"]
+        for item in loop_outputs["iterations"]
+    ] == ["代码1-1", "代码1-2", "代码1-3"]
+    assert loop_outputs["last_iteration"]["nodes"]["代码2"]["detail"]["outputs"]["out_2"] == (
+        "代码2-3"
+    )
+    assert result.variables["循环"]["detail"]["outputs"]["iterations"][0]["nodes"]["代码1"][
+        "detail"
+    ]["outputs"]["out_1"] == "代码1-1"
 
 
 def test_scheduler_timer_can_be_interrupted_by_cancellation() -> None:
@@ -369,6 +380,8 @@ def test_scheduler_loop_failure_marks_parent_loop_error() -> None:
     assert loop_detail["failed_iteration"] == 1
     assert loop_detail["failed_child_node"] == "代码2"
     assert loop_detail["outputs"]["completed_iterations"] == 0
+    assert loop_detail["outputs"]["contract_version"] == 2
+    assert loop_detail["outputs"]["iterations"][0]["failed_child_node"] == "代码2"
 
 
 def test_scheduler_force_control_stub_returns_unverified_error() -> None:

@@ -7,12 +7,14 @@ from gsa_taskflow_executor.mqtt.robot_state import (
     build_camera_capture_stop_response,
     build_camera_frame_response,
     build_current_pose_response,
+    build_gdk_recovery_confirm_response,
     build_robot_identity_response,
     handle_camera_calibration_request,
     handle_camera_capture_start_request,
     handle_camera_capture_stop_request,
     handle_camera_frame_request,
     handle_current_pose_request,
+    handle_gdk_recovery_confirm_request,
     handle_robot_identity_request,
     handle_robot_state_request,
     parse_camera_calibration_request,
@@ -20,6 +22,7 @@ from gsa_taskflow_executor.mqtt.robot_state import (
     parse_camera_capture_stop_request,
     parse_camera_frame_request,
     parse_current_pose_request,
+    parse_gdk_recovery_confirm_request,
     parse_point_recording_delete_initial_photo_request,
     parse_point_recording_delete_target_request,
     parse_point_recording_save_initial_photo_request,
@@ -75,6 +78,30 @@ def test_parse_robot_identity_request_defaults_timeout() -> None:
     assert request.timeout_ms == 3000
 
 
+def test_parse_gdk_recovery_confirm_request_reads_stability_policy() -> None:
+    request = parse_gdk_recovery_confirm_request(
+        json.dumps(
+            {
+                "type": "confirm_gdk_recovery",
+                "requestId": "req-recovery",
+                "replyTopic": "robot/recovery/response",
+                "sampleCount": 4,
+                "sampleIntervalMs": 150,
+                "maxJointVelocity": 0,
+                "maxPositionDelta": 0.001,
+            }
+        ),
+        default_reply_topic="gsa/self/robot/state/get_current_pose/response",
+    )
+
+    assert request.request_id == "req-recovery"
+    assert request.reply_topic == "robot/recovery/response"
+    assert request.sample_count == 4
+    assert request.sample_interval_seconds == 0.15
+    assert request.max_joint_velocity == 0
+    assert request.max_position_delta == 0.001
+
+
 def test_handle_current_pose_request_publishes_success_response() -> None:
     published: list[tuple[str, dict[str, object]]] = []
     snapshot = {
@@ -97,6 +124,60 @@ def test_handle_current_pose_request_publishes_success_response() -> None:
     assert payload["ok"] is True
     assert payload["executorAid"] == "aid-1"
     assert payload["data"] == snapshot
+
+
+def test_handle_gdk_recovery_confirm_request_publishes_success_response() -> None:
+    published: list[tuple[str, dict[str, object]]] = []
+
+    def confirm_recovery(
+        *,
+        sample_count: int,
+        sample_interval_seconds: float,
+        max_joint_velocity: float,
+        max_position_delta: float,
+    ) -> dict[str, object]:
+        return {
+            "available": True,
+            "backend": "agibot_gdk.Robot",
+            "action": "confirm_gdk_recovery",
+            "confirmed": True,
+            "sampleCount": sample_count,
+            "sampleIntervalSeconds": sample_interval_seconds,
+            "policy": {
+                "max_joint_velocity": max_joint_velocity,
+                "max_position_delta": max_position_delta,
+            },
+            "collectedAt": "2026-08-11T00:00:00+00:00",
+            "samples": [],
+            "gdk_recovery": {"confirmed": True, "state": "CONFIRMED"},
+        }
+
+    handle_gdk_recovery_confirm_request(
+        make_message(
+            json.dumps(
+                {
+                    "type": "confirm_gdk_recovery",
+                    "requestId": "req-recovery",
+                    "sampleCount": 5,
+                    "sampleIntervalSeconds": 0.1,
+                    "maxJointVelocity": 0.004,
+                    "maxPositionDelta": 0.001,
+                }
+            )
+        ),
+        settings=ExecutorSettings(executor_aid="aid-1"),
+        publish_response=lambda topic, payload: published.append((topic, dict(payload))),
+        confirm_recovery=confirm_recovery,
+    )
+
+    [(topic, payload)] = published
+    assert topic == "gsa/self/robot/state/get_current_pose/response"
+    assert payload["type"] == "confirm_gdk_recovery"
+    assert payload["requestId"] == "req-recovery"
+    assert payload["ok"] is True
+    assert payload["data"]["sampleCount"] == 5
+    assert payload["data"]["sampleIntervalSeconds"] == 0.1
+    assert payload["data"]["policy"]["max_joint_velocity"] == 0.004
 
 
 def test_handle_current_pose_request_publishes_invalid_request_error() -> None:
@@ -180,6 +261,23 @@ def test_build_current_pose_response_maps_busy_snapshot_to_robot_busy() -> None:
     assert response["requestId"] == "req-3"
     assert response["error"]["code"] == "ROBOT_BUSY"
     assert response["error"]["message"] == "GDK 正在执行控制动作，当前位姿读取已拒绝"
+
+
+def test_build_gdk_recovery_confirm_response_maps_unconfirmed_to_error() -> None:
+    response = build_gdk_recovery_confirm_response(
+        request_id="req-recovery",
+        executor_aid="aid-1",
+        result={
+            "available": False,
+            "confirmed": False,
+            "errorCode": "GDK_RECOVERY_NOT_CONFIRMED",
+            "errorMsg": "GDK 恢复确认未通过，控制命令仍保持阻断",
+        },
+    )
+
+    assert response["ok"] is False
+    assert response["type"] == "confirm_gdk_recovery"
+    assert response["error"]["code"] == "GDK_RECOVERY_NOT_CONFIRMED"
 
 
 def test_build_robot_identity_response_maps_busy_snapshot_to_robot_busy() -> None:
@@ -641,7 +739,7 @@ def test_handle_robot_state_request_dispatches_point_recording_delete_target_by_
     assert payload["data"]["pointKind"] == "target"
 
 
-def test_handle_robot_state_request_dispatches_point_recording_delete_initial_photo_by_topic() -> None:
+def test_handle_robot_state_request_dispatches_point_recording_delete_photo_by_topic() -> None:
     published: list[tuple[str, dict[str, object]]] = []
 
     handle_robot_state_request(

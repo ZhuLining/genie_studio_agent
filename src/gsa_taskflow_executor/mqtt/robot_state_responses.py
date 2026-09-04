@@ -15,6 +15,7 @@ from gsa_taskflow_executor.mqtt.robot_state_models import (
     CAMERA_CAPTURE_STOP_REQUEST_TYPE,
     CAMERA_FRAME_REQUEST_TYPE,
     CURRENT_POSE_REQUEST_TYPE,
+    GDK_RECOVERY_CONFIRM_REQUEST_TYPE,
     POINT_RECORDING_DELETE_INITIAL_PHOTO_REQUEST_TYPE,
     POINT_RECORDING_DELETE_TARGET_REQUEST_TYPE,
     POINT_RECORDING_SAVE_INITIAL_PHOTO_REQUEST_TYPE,
@@ -73,6 +74,33 @@ def build_current_pose_response(
         code="GDK_UNAVAILABLE",
         message=read_error_message(snapshot),
         details=dict(snapshot),
+    )
+
+
+def build_gdk_recovery_confirm_response(
+    *,
+    request_id: str,
+    executor_aid: str,
+    result: Mapping[str, object],
+) -> dict[str, object]:
+    """构建显式恢复确认响应。只有多帧停稳通过才返回 ok=True。"""
+
+    if result.get("confirmed") is True:
+        return {
+            "type": GDK_RECOVERY_CONFIRM_REQUEST_TYPE,
+            "requestId": request_id,
+            "ok": True,
+            "executorAid": executor_aid,
+            "data": dict(result),
+        }
+
+    return error_response(
+        response_type=GDK_RECOVERY_CONFIRM_REQUEST_TYPE,
+        request_id=request_id,
+        executor_aid=executor_aid,
+        code=read_error_code(result, "GDK_RECOVERY_NOT_CONFIRMED"),
+        message=read_error_message(result, fallback="GDK 恢复确认未通过"),
+        details=dict(result),
     )
 
 

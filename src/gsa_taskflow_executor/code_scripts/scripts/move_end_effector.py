@@ -88,8 +88,8 @@ def run(inputs: Mapping[str, object], context: CodeScriptContext) -> dict[str, o
             },
         )
 
-    # 这里是代码节点脚本真正的 GDK 控制主体：独立脚本文件负责构造 JointStates
-    # 并调用 move_ee_pos；runtime 只负责白名单、变量注入和进程级 GDK session。
+    # 这里是代码节点脚本真正的 GDK 控制主体：move_ee_pos 是阻塞控制调用。
+    # runtime 只负责白名单、变量注入和进程级 GDK session，不负责解除恢复门。
     joint_states = build_gdk_joint_states(
         agibot_gdk,
         group=end_effector_params.target_end,

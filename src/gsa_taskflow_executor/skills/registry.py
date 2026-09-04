@@ -17,6 +17,12 @@ from typing import Any, Literal, cast
 import yaml
 
 from gsa_taskflow_executor.runtime.config import ExecutorSettings
+from gsa_taskflow_executor.taskflow.capabilities import (
+    EXECUTOR_SKILL_IMPLEMENTATIONS,
+    SkillImplementationName,
+    iter_default_skill_capabilities,
+    supported_skill_message,
+)
 from gsa_taskflow_executor.taskflow.models import (
     TaskflowDefinition,
     TaskflowParseError,
@@ -30,7 +36,7 @@ from gsa_taskflow_executor.taskflow.skill_params import (
 )
 
 SkillAdapter = Literal["gdk"]
-SkillImplementation = Literal["motion_plan", "script", "end_effector", "force_control", "qr_pose"]
+SkillImplementation = SkillImplementationName
 YamlMapping = Mapping[str, Any]
 
 
@@ -64,36 +70,13 @@ class SkillRegistry:
     def default(cls) -> SkillRegistry:
         return cls(
             skills={
-                "motion_plan_skill": SkillDefinition(
-                    name="motion_plan_skill",
+                capability.skill_name: SkillDefinition(
+                    name=capability.skill_name,
                     adapter="gdk",
-                    implementation="motion_plan",
-                    description="GDK motion planning skill.",
-                ),
-                "script_skill": SkillDefinition(
-                    name="script_skill",
-                    adapter="gdk",
-                    implementation="script",
-                    description="GDK whitelisted script skill.",
-                ),
-                "control_end_effector_skill": SkillDefinition(
-                    name="control_end_effector_skill",
-                    adapter="gdk",
-                    implementation="end_effector",
-                    description="GDK end-effector open/close skill.",
-                ),
-                "force_control_skill": SkillDefinition(
-                    name="force_control_skill",
-                    adapter="gdk",
-                    implementation="force_control",
-                    description="GDK force-control skill, blocked until robot verification.",
-                ),
-                "qr_pose_skill": SkillDefinition(
-                    name="qr_pose_skill",
-                    adapter="gdk",
-                    implementation="qr_pose",
-                    description="GDK QR pose localization skill.",
-                ),
+                    implementation=capability.implementation,
+                    description=capability.description,
+                )
+                for capability in iter_default_skill_capabilities()
             }
         )
 
@@ -202,19 +185,9 @@ def parse_skill_definition(name: str, raw_config: Any) -> SkillDefinition:
     if adapter_value != "gdk":
         raise SkillRegistryError(f"{path}.adapter 只支持 gdk，不支持 {adapter_value}")
 
-    allowed_implementations = {
-        "motion_plan_skill": "motion_plan",
-        "script_skill": "script",
-        "control_end_effector_skill": "end_effector",
-        "force_control_skill": "force_control",
-        "qr_pose_skill": "qr_pose",
-    }
-    expected_implementation = allowed_implementations.get(name)
+    expected_implementation = EXECUTOR_SKILL_IMPLEMENTATIONS.get(name)
     if expected_implementation is None:
-        raise SkillRegistryError(
-            "MVP 当前只支持 motion_plan_skill、script_skill、"
-            "control_end_effector_skill、force_control_skill 和 qr_pose_skill"
-        )
+        raise SkillRegistryError(supported_skill_message())
     implementation_value = read_optional_string(
         config,
         ("implementation",),

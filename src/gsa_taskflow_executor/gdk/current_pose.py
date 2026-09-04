@@ -1,12 +1,13 @@
 """GDK 当前关节位姿快照。
 
 通过只读 GDK 接口采集 arm/waist 关节位置、速度、力矩，含运动控制状态校验。
-支持恢复门确认（timeout/cancel 后必须成功采集位姿才能继续控制）。
+支持显式多帧恢复确认（timeout/cancel 后普通位姿查询不会解锁控制）。
 """
 
 from __future__ import annotations
 
 import importlib
+import time
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
@@ -21,8 +22,16 @@ from .control_probe import (
 )
 from .motion_runtime import WAIST_JOINTS
 from .readonly import GDK_BACKEND, to_jsonable
-from .recovery import attach_gdk_recovery_payload, confirm_gdk_recovery_from_snapshot
+from .recovery import (
+    GDK_RECOVERY_NOT_CONFIRMED_CODE,
+    GdkRecoveryStabilityPolicy,
+    attach_gdk_recovery_payload,
+    confirm_gdk_recovery_from_snapshots,
+    current_gdk_recovery_payload,
+)
 from .session import GdkSessionImportError, GdkSessionInitError, GdkSessionManager
+
+ACTION_CONFIRM_GDK_RECOVERY = "confirm_gdk_recovery"
 
 
 def run_gdk_current_pose_snapshot(
@@ -115,11 +124,110 @@ def run_gdk_current_pose_snapshot(
 
         snapshot["gdk_init"] = lease.init_result
         snapshot["gdk_session"] = lease.to_payload()
-        attach_gdk_recovery_payload(
-            snapshot,
-            confirm_gdk_recovery_from_snapshot(snapshot),
-        )
+        attach_gdk_recovery_payload(snapshot, current_gdk_recovery_payload())
         return snapshot
+
+
+def run_gdk_recovery_confirmation_snapshot(
+    *,
+    sample_count: int,
+    sample_interval_seconds: float,
+    max_joint_velocity: float,
+    max_position_delta: float,
+    import_module: Callable[[str], Any] = importlib.import_module,
+    session_manager: GdkSessionManager | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+) -> dict[str, object]:
+    """显式恢复确认：多帧只读采样停稳后才清除 STOP_UNCONFIRMED。
+
+    普通 get_current_pose 只能读取状态，不能解除恢复门。这里独立成确认动作，
+    是为了让 UI/现场操作把“看一眼当前位姿”和“确认机器人已停稳可继续控制”分开。
+    """
+
+    policy = GdkRecoveryStabilityPolicy(
+        sample_count=sample_count,
+        sample_interval_seconds=sample_interval_seconds,
+        max_joint_velocity=max_joint_velocity,
+        max_position_delta=max_position_delta,
+    )
+    samples: list[Mapping[str, Any]] = []
+    for index in range(policy.sample_count):
+        snapshot = run_gdk_current_pose_snapshot(
+            import_module=import_module,
+            session_manager=session_manager,
+        )
+        samples.append(snapshot)
+        if snapshot.get("available") is not True:
+            return build_recovery_confirmation_result(
+                confirmed=False,
+                policy=policy,
+                samples=samples,
+                gdk_recovery={
+                    "confirmed": False,
+                    "code": GDK_RECOVERY_NOT_CONFIRMED_CODE,
+                    "reason": "snapshot_unavailable",
+                    "failed_sample_index": index,
+                    "snapshot": snapshot,
+                },
+            )
+        if index < policy.sample_count - 1:
+            sleep(policy.sample_interval_seconds)
+
+    confirmation = confirm_gdk_recovery_from_snapshots(samples, policy)
+    confirmed = isinstance(confirmation, Mapping) and confirmation.get("confirmed") is True
+    return build_recovery_confirmation_result(
+        confirmed=confirmed,
+        policy=policy,
+        samples=samples,
+        gdk_recovery=confirmation,
+    )
+
+
+def build_recovery_confirmation_result(
+    *,
+    confirmed: bool,
+    policy: GdkRecoveryStabilityPolicy,
+    samples: Sequence[Mapping[str, Any]],
+    gdk_recovery: Mapping[str, object] | None,
+) -> dict[str, object]:
+    """构建显式恢复确认响应，避免把完整 GDK raw 无限塞进 MQTT。"""
+
+    result: dict[str, object] = {
+        "available": confirmed,
+        "backend": GDK_BACKEND,
+        "action": ACTION_CONFIRM_GDK_RECOVERY,
+        "confirmed": confirmed,
+        "sampleCount": len(samples),
+        "sampleIntervalSeconds": policy.sample_interval_seconds,
+        "policy": policy.to_payload(),
+        "collectedAt": utc_now_iso(),
+        "samples": [compact_recovery_sample(sample) for sample in samples],
+    }
+    if gdk_recovery is not None:
+        result["gdk_recovery"] = dict(gdk_recovery)
+    if not confirmed:
+        result["errorCode"] = GDK_RECOVERY_NOT_CONFIRMED_CODE
+        result["errorMsg"] = "GDK 恢复确认未通过，控制命令仍保持阻断"
+    return result
+
+
+def compact_recovery_sample(sample: Mapping[str, Any]) -> dict[str, object]:
+    """保留多帧确认需要的摘要，避免响应过大。"""
+
+    return {
+        "available": sample.get("available") is True,
+        "busy": sample.get("busy") is True,
+        "collectedAt": sample.get("collectedAt"),
+        "motionStatus": sample.get("motionStatus"),
+        "wholeBodyStatus": sample.get("wholeBodyStatus"),
+        "groups": {
+            group_name: {
+                "positions": group.get("positions"),
+                "velocities": group.get("velocities"),
+            }
+            for group_name, group in iter_group_mappings(sample)
+        },
+    }
 
 
 def build_current_pose_snapshot(
@@ -217,6 +325,7 @@ def build_group_snapshot(
             {
                 "name": joint_name,
                 "position": read_joint_position(state),
+                "velocity": read_joint_velocity(state),
                 "limit": read_limit(limits, joint_name),
                 "errorCode": to_jsonable(state.get("error_code")),
             }
@@ -226,6 +335,7 @@ def build_group_snapshot(
         "bodyPart": body_part,
         "jointNames": list(joint_names),
         "positions": [joint["position"] for joint in joints],
+        "velocities": [joint["velocity"] for joint in joints],
         "joints": joints,
     }
 
@@ -246,6 +356,25 @@ def read_limit(limits: Mapping[str, Any], joint_name: str) -> dict[str, float] |
         "min": float(limit["min"]),
         "max": float(limit["max"]),
     }
+
+
+def read_joint_velocity(state: Mapping[str, Any]) -> float | None:
+    value = state.get("motor_velocity", state.get("velocity"))
+    if value is None:
+        return None
+    return float(value)
+
+
+def iter_group_mappings(sample: Mapping[str, Any]) -> list[tuple[str, Mapping[str, Any]]]:
+    groups = sample.get("groups")
+    if not isinstance(groups, Mapping):
+        return []
+    result: list[tuple[str, Mapping[str, Any]]] = []
+    for group_name in ("left_arm", "right_arm", "waist"):
+        group = groups.get(group_name)
+        if isinstance(group, Mapping):
+            result.append((group_name, group))
+    return result
 
 
 def build_nonzero_error_joints(

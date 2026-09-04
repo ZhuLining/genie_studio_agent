@@ -10,36 +10,40 @@ from gsa_taskflow_executor.taskflow.parser import parse_taskflow_yaml
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
+def read_deployment_profile() -> dict[str, str]:
+    profile_file = PROJECT_ROOT / "deploy" / "deployment.profile.example"
+    profile: dict[str, str] = {}
+    for raw_line in profile_file.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        key, value = line.split("=", 1)
+        profile[key] = value.rstrip("/")
+    return profile
+
+
 def test_systemd_service_uses_gdk_executor_entrypoint() -> None:
+    profile = read_deployment_profile()
+    install_dir = profile["EXECUTOR_INSTALL_DIR"]
+    executor_bin = f"{install_dir}/.venv/bin/gsa-taskflow-executor"
+    config_dir = profile["EXECUTOR_CONFIG_DIR"]
     service = (PROJECT_ROOT / "deploy" / "gsa-taskflow-executor.service").read_text(
         encoding="utf-8"
     )
 
+    assert f"ExecStart={executor_bin} --listen" in service
+    assert f"User={profile['EXECUTOR_USER']}" in service
+    assert f"WorkingDirectory={install_dir}" in service
+    assert f"EnvironmentFile={config_dir}/gsa-taskflow-executor.env" in service
+    assert f"EnvironmentFile=-{config_dir}/gdk.env" in service
+    assert f"ExecStartPre={executor_bin} --deployment-config-check" in service
+    assert f"ExecStartPre={executor_bin} --gdk-env-check" in service
     assert (
-        "ExecStart=/home/u/project/gsa_taskflow_executor/.venv/bin/gsa-taskflow-executor --listen"
+        f"ReadWritePaths={profile['EXECUTOR_LOG_DIR']} {profile['GSA_DATA_ROOT']}"
         in service
     )
-    assert "User=u" in service
-    assert "User=gsa" not in service
-    assert "Group=gsa" not in service
-    assert "WorkingDirectory=/home/u/project/gsa_taskflow_executor" in service
-    assert "EnvironmentFile=/etc/gsa-taskflow-executor/gsa-taskflow-executor.env" in service
-    assert "EnvironmentFile=-/etc/gsa-taskflow-executor/gdk.env" in service
-    assert (
-        "ExecStartPre=/home/u/project/gsa_taskflow_executor/.venv/bin/gsa-taskflow-executor "
-        "--deployment-config-check"
-    ) in service
-    assert (
-        "ExecStartPre=/home/u/project/gsa_taskflow_executor/.venv/bin/gsa-taskflow-executor "
-        "--gdk-env-check"
-    ) in service
-    assert (
-        "ReadWritePaths=/home/u/project/gsa_taskflow_executor/logs /home/u/gsa_data"
-        in service
-    )
-    assert "/data/gsa" not in service
-    assert "ProtectHome=false" in service
-    assert "BindReadOnlyPaths=-/home/u/.cache/agibot/app" in service
+    assert f"ProtectHome={profile['PROTECT_HOME']}" in service
+    assert f"BindReadOnlyPaths=-{profile['GDK_APP_DIR']}" in service
 
 
 def test_runtime_dependencies_do_not_include_unused_pydantic_stack() -> None:
@@ -50,6 +54,9 @@ def test_runtime_dependencies_do_not_include_unused_pydantic_stack() -> None:
 
 
 def test_deploy_env_template_uses_gdk_mode() -> None:
+    profile = read_deployment_profile()
+    install_dir = profile["EXECUTOR_INSTALL_DIR"]
+    config_dir = profile["EXECUTOR_CONFIG_DIR"]
     env_file = (PROJECT_ROOT / "deploy" / "gsa-taskflow-executor.env.example").read_text(
         encoding="utf-8"
     )
@@ -99,7 +106,8 @@ def test_deploy_env_template_uses_gdk_mode() -> None:
         in env_file
     )
     assert (
-        "ROBOT_CAMERA_CALIBRATION_RESPONSE_TOPIC=gsa/self/robot/state/get_camera_calibration/response"
+        "ROBOT_CAMERA_CALIBRATION_RESPONSE_TOPIC="
+        "gsa/self/robot/state/get_camera_calibration/response"
         in env_file
     )
     assert (
@@ -111,31 +119,27 @@ def test_deploy_env_template_uses_gdk_mode() -> None:
         in env_file
     )
     assert (
-        "ROBOT_CAMERA_CAPTURE_FRAME_TOPIC_TEMPLATE=gsa/self/robot/state/camera_capture/{sessionId}/frame"
+        "ROBOT_CAMERA_CAPTURE_FRAME_TOPIC_TEMPLATE="
+        "gsa/self/robot/state/camera_capture/{sessionId}/frame"
         in env_file
     )
-    assert "GSA_DATA_ROOT=/home/u/gsa_data" in env_file
+    assert f"GSA_DATA_ROOT={profile['GSA_DATA_ROOT']}" in env_file
     assert "EXECUTOR_MODE=gdk" in env_file
     assert "EXECUTOR_AID=gsa-dev" not in env_file
     assert "\nEXECUTOR_AID=\n" in env_file
-    assert "# ENABLE_GDK_CONTROL=1" in env_file
-    assert "# CONFIRM_GDK_CONTROL=TASKFLOW_ABS_JOINT" in env_file
-    assert "QR_MAPPING_SDK_PATH=/home/u/project/gsa_taskflow_executor/sdk" in env_file
-    assert (
-        "QR_MAPPING_SDK_PYTHON=/home/u/project/gsa_taskflow_executor/.venv/bin/python"
-        in env_file
-    )
-    assert "QR_LOCALIZE_SDK_PATH=/home/u/project/gsa_taskflow_executor/sdk" in env_file
-    assert (
-        "QR_LOCALIZE_SDK_PYTHON=/home/u/project/gsa_taskflow_executor/.venv/bin/python"
-        in env_file
-    )
-    assert "EXECUTOR_LOG_DIR=/home/u/project/gsa_taskflow_executor/logs" in env_file
-    assert "SKILL_REGISTRY_FILE=/etc/gsa-taskflow-executor/skills.yaml" in env_file
+    assert "ENABLE_GDK_CONTROL=1" in env_file
+    assert "CONFIRM_GDK_CONTROL=TASKFLOW_ABS_JOINT" in env_file
+    assert f"QR_MAPPING_SDK_PATH={profile['QR_SDK_PATH']}" in env_file
+    assert f"QR_MAPPING_SDK_PYTHON={install_dir}/.venv/bin/python" in env_file
+    assert f"QR_LOCALIZE_SDK_PATH={profile['QR_SDK_PATH']}" in env_file
+    assert f"QR_LOCALIZE_SDK_PYTHON={install_dir}/.venv/bin/python" in env_file
+    assert f"EXECUTOR_LOG_DIR={profile['EXECUTOR_LOG_DIR']}" in env_file
+    assert f"SKILL_REGISTRY_FILE={config_dir}/skills.yaml" in env_file
     assert "gsa-taskflow-executor.gdk.env.example" in env_file
 
 
 def test_deploy_gdk_env_template_documents_systemd_startup_env() -> None:
+    profile = read_deployment_profile()
     env_file = (
         PROJECT_ROOT / "deploy" / "gsa-taskflow-executor.gdk.env.example"
     ).read_text(encoding="utf-8")
@@ -145,7 +149,31 @@ def test_deploy_gdk_env_template_documents_systemd_startup_env() -> None:
     assert "LD_LIBRARY_PATH" in env_file
     assert "CYCLONEDDS_URI" in env_file
     assert "FASTRTPS_DEFAULT_PROFILES_FILE" in env_file
-    assert "source /home/u/.cache/agibot/app/env.sh" in env_file
+    assert "AORTA_" in env_file
+    assert f"source {profile['GDK_APP_DIR']}/env.sh" in env_file
+
+
+def test_deploy_templates_are_rendered_from_profile() -> None:
+    script = PROJECT_ROOT / "scripts" / "render_deploy_templates.py"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--profile",
+            str(PROJECT_ROOT / "deploy" / "deployment.profile.example"),
+            "--template-dir",
+            str(PROJECT_ROOT / "deploy"),
+            "--output-dir",
+            str(PROJECT_ROOT / "deploy"),
+            "--check",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
 def test_qr_pose_delivery_smoke_script_accepts_valid_baseline(tmp_path: Path) -> None:

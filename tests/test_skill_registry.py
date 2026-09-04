@@ -13,6 +13,7 @@ from gsa_taskflow_executor.skills.registry import (
     SkillRegistry,
     SkillRegistryError,
 )
+from gsa_taskflow_executor.taskflow.capabilities import EXECUTOR_SKILL_IMPLEMENTATIONS
 from gsa_taskflow_executor.taskflow.parser import parse_taskflow_yaml
 
 
@@ -36,6 +37,14 @@ def test_default_registry_contains_gdk_motion_plan() -> None:
     assert qr_pose_skill.adapter == "gdk"
     assert qr_pose_skill.implementation == "qr_pose"
     assert registry.summary()["skill_count"] == 5
+
+
+def test_default_registry_is_derived_from_executor_capabilities() -> None:
+    registry = SkillRegistry.default()
+
+    assert set(registry.skills) == set(EXECUTOR_SKILL_IMPLEMENTATIONS)
+    for skill_name, implementation in EXECUTOR_SKILL_IMPLEMENTATIONS.items():
+        assert registry.require(skill_name).implementation == implementation
 
 
 def test_registry_loads_from_mapping() -> None:

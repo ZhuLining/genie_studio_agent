@@ -392,6 +392,7 @@ class TaskflowScheduler:
 
         loop_events: list[ScheduledNodeEvent] = []
         iteration_results: list[dict[str, object]] = []
+        iterations: list[dict[str, object]] = []
         completed_iterations = 0
         child_nodes = self.ordered_loop_children(node)
         iteration_max = node.iteration_max or 0
@@ -401,10 +402,13 @@ class TaskflowScheduler:
             cancellation = self.current_cancellation()
             if cancellation is not None:
                 cancelled_loop_outputs = {
+                    "contract_version": 2,
                     "loop_mode": node.loop_mode or "count",
                     "iteration_max": iteration_max,
                     "completed_iterations": completed_iterations,
                     "iteration_results": iteration_results,
+                    "iterations": iterations,
+                    "last_iteration": iterations[-1] if iterations else None,
                 }
                 result = build_cancelled_node_result(
                     cancellation,
@@ -428,11 +432,22 @@ class TaskflowScheduler:
                         "failed_child_node": failed_child_id or "",
                     }
                 )
+                iterations.append(
+                    self.build_loop_iteration_snapshot(
+                        iteration_index=iteration_index,
+                        outcome=child_outcome,
+                        child_nodes=child_nodes,
+                        failed_child_id=failed_child_id,
+                    )
+                )
                 failed_loop_outputs: dict[str, object] = {
+                    "contract_version": 2,
                     "loop_mode": node.loop_mode or "count",
                     "iteration_max": iteration_max,
                     "completed_iterations": completed_iterations,
                     "iteration_results": iteration_results,
+                    "iterations": iterations,
+                    "last_iteration": iterations[-1] if iterations else None,
                 }
                 result = NodeRunResult(
                     outcome=child_outcome,
@@ -452,13 +467,24 @@ class TaskflowScheduler:
                     "outcome": "success",
                 }
             )
+            iterations.append(
+                self.build_loop_iteration_snapshot(
+                    iteration_index=iteration_index,
+                    outcome="success",
+                    child_nodes=child_nodes,
+                    failed_child_id=None,
+                )
+            )
         else:
             # 全部迭代成功完成
             success_loop_outputs = {
+                "contract_version": 2,
                 "loop_mode": node.loop_mode or "count",
                 "iteration_max": iteration_max,
                 "completed_iterations": completed_iterations,
                 "iteration_results": iteration_results,
+                "iterations": iterations,
+                "last_iteration": iterations[-1] if iterations else None,
             }
             result = NodeRunResult(
                 outcome="success",
@@ -516,6 +542,46 @@ class TaskflowScheduler:
                 return last_result, events, child_node.node_id
 
         return last_result, events, None
+
+    def build_loop_iteration_snapshot(
+        self,
+        *,
+        iteration_index: int,
+        outcome: NodeOutcome,
+        child_nodes: Sequence[TaskflowNode],
+        failed_child_id: str | None,
+    ) -> dict[str, object]:
+        """复制当轮子节点 detail，形成 loop v2 变量历史。
+
+        子节点自己的变量仍保留“最新值”语义，避免破坏旧引用；历史值只挂在
+        $.variables.<loop>.detail.outputs.iterations 下，供后续代码节点显式索引。
+        """
+
+        variables = self.variable_store.snapshot()["variables"]
+        nodes: dict[str, object] = {}
+        for child_node in child_nodes:
+            output_var = child_node.output_var or child_node.node_id
+            node_scope = variables.get(output_var)
+            if not isinstance(node_scope, Mapping):
+                continue
+            detail = node_scope.get("detail")
+            if not isinstance(detail, Mapping):
+                continue
+            nodes[child_node.node_id] = {
+                "node_id": child_node.node_id,
+                "output_var": output_var,
+                "detail": dict(detail),
+            }
+
+        snapshot: dict[str, object] = {
+            "index": iteration_index,
+            "iteration": iteration_index + 1,
+            "outcome": outcome,
+            "nodes": nodes,
+        }
+        if failed_child_id:
+            snapshot["failed_child_node"] = failed_child_id
+        return snapshot
 
     # ---- 取消处理 ----
 

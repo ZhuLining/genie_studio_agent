@@ -613,7 +613,7 @@ def mqtt_topic_matches_filter(topic_filter: str, topic: str) -> bool:
 
 def is_terminal_status_payload(payload: Mapping[str, Any]) -> bool:
     task_state = str(payload.get("task_state") or payload.get("status") or "").upper()
-    if task_state in {"OVER", "CANCELED"}:
+    if task_state in {"OVER", "CANCELED", "STOP_UNCONFIRMED"}:
         return True
     if "terminal_node_id" in payload:
         return True

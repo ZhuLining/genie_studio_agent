@@ -24,10 +24,13 @@ from .gdk.camera_calibration import run_gdk_camera_calibration_snapshot
 from .gdk.camera_capture import CameraCaptureService
 from .gdk.camera_frame import run_gdk_camera_frame_snapshot
 from .gdk.control_probe import ALLOWED_ACTIONS, run_gdk_control_probe
-from .gdk.current_pose import run_gdk_current_pose_snapshot
+from .gdk.current_pose import (
+    run_gdk_current_pose_snapshot,
+    run_gdk_recovery_confirmation_snapshot,
+)
 from .gdk.motion_runtime import TASKFLOW_ABS_JOINT_CONFIRMATION
 from .gdk.readonly import run_gdk_env_check, run_gdk_readonly_probe
-from .gdk.recovery import current_gdk_recovery_requirement
+from .gdk.recovery import configure_gdk_recovery_store, current_gdk_recovery_requirement
 from .gdk.session import GdkSessionManager
 from .gdk.worker_runtime import (
     cancel_default_gdk_worker_command,
@@ -182,6 +185,7 @@ def main(argv: list[str] | None = None) -> int:
         settings = ExecutorSettings.from_env(env=runtime_env)
     except ConfigError as error:
         parser.error(str(error))
+    configure_gdk_recovery_store(settings.gdk_recovery_state_path)
 
     try:
         skill_registry = SkillRegistry.from_settings(settings)
@@ -439,45 +443,28 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 reporter.publish_execution_started(taskflow)
 
-                # 自动恢复门清除：新 taskflow 开始前，尝试只读位姿快照确认机器人安全。
-                # 上次 cancel/timeout 会设置进程级恢复门（_RECOVERY_REQUIREMENT），
-                # 如果不清除，后续所有 GDK 控制命令都会被拒绝。
-                # 只读快照成功（机器人 available、无 error joints）→ 自动清除恢复门；
-                # 快照失败 → 保留恢复门，后续控制命令仍会被拒绝（安全保守）。
+                # STOP_UNCONFIRMED 只能通过显式多帧恢复确认清除。
+                # 新 taskflow 开始时只记录诊断，不做自动解锁，避免“获取位姿成功”
+                # 被误当作机器人停稳证明。
                 recovery_req = current_gdk_recovery_requirement()
                 if recovery_req is not None:
                     logger.info(
                         "GDK recovery gate is set (reason=%s, operation=%s); "
-                        "attempting read-only pose snapshot to auto-clear",
+                        "control commands will be refused until explicit recovery confirmation",
                         recovery_req.reason,
                         recovery_req.operation,
                     )
-                    recovery_snapshot = run_gdk_current_pose_snapshot(
-                        session_manager=gdk_session,
-                    )
-                    recovery_info = recovery_snapshot.get("gdk_recovery")
-                    if isinstance(recovery_info, Mapping) and recovery_info.get("confirmed"):
-                        logger.info("GDK recovery gate auto-cleared by pre-execution pose snapshot")
-                    else:
-                        logger.warning(
-                            "GDK recovery gate still active after pose snapshot; "
-                            "control commands will be refused until manual recovery"
-                        )
                     writer.write(
                         RuntimeEvent(
-                            event_type="gdk_recovery_auto_attempt",
-                            message="pre-execution recovery gate auto-clear attempt",
+                            event_type="gdk_recovery_gate_active",
+                            message="pre-execution recovery gate is active",
                             app_execution_id=taskflow.app_execution_id,
                             topic=message.topic,
                             payload={
                                 "had_recovery_gate": True,
                                 "recovery_reason": recovery_req.reason,
                                 "recovery_operation": recovery_req.operation,
-                                "snapshot_available": recovery_snapshot.get("available"),
-                                "recovery_confirmed": (
-                                    isinstance(recovery_info, Mapping)
-                                    and recovery_info.get("confirmed") is True
-                                ),
+                                "recovery_state": "STOP_UNCONFIRMED",
                             },
                         )
                     )
@@ -588,6 +575,19 @@ def main(argv: list[str] | None = None) -> int:
                 event_writer=writer,
                 collect_current_pose=lambda: run_gdk_current_pose_snapshot(
                     session_manager=gdk_session,
+                ),
+                confirm_gdk_recovery=(
+                    lambda sample_count,
+                    sample_interval_seconds,
+                    max_joint_velocity,
+                    max_position_delta:
+                    run_gdk_recovery_confirmation_snapshot(
+                        sample_count=sample_count,
+                        sample_interval_seconds=sample_interval_seconds,
+                        max_joint_velocity=max_joint_velocity,
+                        max_position_delta=max_position_delta,
+                        session_manager=gdk_session,
+                    )
                 ),
                 collect_camera_frame=lambda camera_id, timeout_ms: run_gdk_camera_frame_snapshot(
                     camera_id=camera_id,

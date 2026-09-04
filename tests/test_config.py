@@ -125,6 +125,12 @@ def test_default_status_topic() -> None:
     assert settings.payload_max_collection_items == 20
     assert settings.payload_max_depth == 6
     assert settings.payload_include_full_variables is False
+    assert settings.gdk_recovery_state_file == ""
+    assert str(settings.gdk_recovery_state_path) == "logs/gdk_recovery_state.json"
+    assert settings.gdk_recovery_confirm_sample_count == 3
+    assert settings.gdk_recovery_confirm_sample_interval_seconds == 0.2
+    assert settings.gdk_recovery_confirm_max_joint_velocity == 0.005
+    assert settings.gdk_recovery_confirm_max_position_delta == 0.002
 
 
 def test_env_overrides(monkeypatch) -> None:
@@ -173,7 +179,10 @@ def test_env_overrides(monkeypatch) -> None:
         "point/photo/response",
     )
     monkeypatch.setenv("POINT_RECORDING_DELETE_TARGET_REQUEST_TOPIC", "point/target/delete/request")
-    monkeypatch.setenv("POINT_RECORDING_DELETE_TARGET_RESPONSE_TOPIC", "point/target/delete/response")
+    monkeypatch.setenv(
+        "POINT_RECORDING_DELETE_TARGET_RESPONSE_TOPIC",
+        "point/target/delete/response",
+    )
     monkeypatch.setenv(
         "POINT_RECORDING_DELETE_INITIAL_PHOTO_REQUEST_TOPIC",
         "point/photo/delete/request",
@@ -204,6 +213,11 @@ def test_env_overrides(monkeypatch) -> None:
     monkeypatch.setenv("PAYLOAD_MAX_COLLECTION_ITEMS", "5")
     monkeypatch.setenv("PAYLOAD_MAX_DEPTH", "4")
     monkeypatch.setenv("PAYLOAD_INCLUDE_FULL_VARIABLES", "true")
+    monkeypatch.setenv("GDK_RECOVERY_STATE_FILE", "/tmp/gsa-recovery.json")
+    monkeypatch.setenv("GDK_RECOVERY_CONFIRM_SAMPLE_COUNT", "5")
+    monkeypatch.setenv("GDK_RECOVERY_CONFIRM_SAMPLE_INTERVAL_SECONDS", "0.1")
+    monkeypatch.setenv("GDK_RECOVERY_CONFIRM_MAX_JOINT_VELOCITY", "0.004")
+    monkeypatch.setenv("GDK_RECOVERY_CONFIRM_MAX_POSITION_DELTA", "0.001")
 
     settings = ExecutorSettings.from_env()
 
@@ -244,8 +258,14 @@ def test_env_overrides(monkeypatch) -> None:
     assert settings.point_recording_save_initial_photo_response_topic == "point/photo/response"
     assert settings.point_recording_delete_target_request_topic == "point/target/delete/request"
     assert settings.point_recording_delete_target_response_topic == "point/target/delete/response"
-    assert settings.point_recording_delete_initial_photo_request_topic == "point/photo/delete/request"
-    assert settings.point_recording_delete_initial_photo_response_topic == "point/photo/delete/response"
+    assert (
+        settings.point_recording_delete_initial_photo_request_topic
+        == "point/photo/delete/request"
+    )
+    assert (
+        settings.point_recording_delete_initial_photo_response_topic
+        == "point/photo/delete/response"
+    )
     assert settings.point_recording_submit_request_topic == "point/submit/request"
     assert settings.point_recording_submit_response_topic == "point/submit/response"
     assert settings.qr_mapping_sdk_path == "/opt/qr_mapping_sdk"
@@ -268,6 +288,12 @@ def test_env_overrides(monkeypatch) -> None:
     assert settings.payload_max_collection_items == 5
     assert settings.payload_max_depth == 4
     assert settings.payload_include_full_variables is True
+    assert settings.gdk_recovery_state_file == "/tmp/gsa-recovery.json"
+    assert str(settings.gdk_recovery_state_path) == "/tmp/gsa-recovery.json"
+    assert settings.gdk_recovery_confirm_sample_count == 5
+    assert settings.gdk_recovery_confirm_sample_interval_seconds == 0.1
+    assert settings.gdk_recovery_confirm_max_joint_velocity == 0.004
+    assert settings.gdk_recovery_confirm_max_position_delta == 0.001
 
 
 def test_env_file_loading(tmp_path) -> None:
@@ -365,6 +391,14 @@ def test_invalid_queue_config() -> None:
         ExecutorSettings(payload_max_collection_items=0).validate()
     with pytest.raises(ConfigError):
         ExecutorSettings(payload_max_depth=0).validate()
+    with pytest.raises(ConfigError):
+        ExecutorSettings(gdk_recovery_confirm_sample_count=0).validate()
+    with pytest.raises(ConfigError):
+        ExecutorSettings(gdk_recovery_confirm_sample_interval_seconds=0).validate()
+    with pytest.raises(ConfigError):
+        ExecutorSettings(gdk_recovery_confirm_max_joint_velocity=-0.001).validate()
+    with pytest.raises(ConfigError):
+        ExecutorSettings(gdk_recovery_confirm_max_position_delta=-0.001).validate()
 
 
 def test_read_env_file_rejects_invalid_line(tmp_path) -> None:

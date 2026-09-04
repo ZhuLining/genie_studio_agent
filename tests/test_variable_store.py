@@ -26,6 +26,41 @@ def test_resolve_variable_reference() -> None:
     assert value == [0.1, 0.2, 0.3, 0, 0, 0, 1]
 
 
+def test_resolve_variable_reference_with_array_index() -> None:
+    store = VariableStore(
+        variables={
+            "循环": {
+                "detail": {
+                    "outputs": {
+                        "iterations": [
+                            {
+                                "nodes": {
+                                    "代码1": {
+                                        "detail": {"outputs": {"out_1": "代码1-1"}}
+                                    }
+                                }
+                            },
+                            {
+                                "nodes": {
+                                    "代码1": {
+                                        "detail": {"outputs": {"out_1": "代码1-2"}}
+                                    }
+                                }
+                            },
+                        ]
+                    }
+                }
+            }
+        }
+    )
+
+    value = store.resolve(
+        "$.variables.循环.detail.outputs.iterations.1.nodes.代码1.detail.outputs.out_1"
+    )
+
+    assert value == "代码1-2"
+
+
 def test_resolve_value_recursively() -> None:
     store = VariableStore(variables={"上游": {"detail": {"joints": [1, 2, 3]}}})
 

@@ -37,9 +37,23 @@ class VariableStore:
 
         value: Any = self.variables
         for segment in segments:
-            if not isinstance(value, Mapping) or segment not in value:
+            if isinstance(value, Mapping):
+                if segment not in value:
+                    raise VariableStoreError(f"变量路径不存在: {reference}")
+                value = value[segment]
+                continue
+
+            if is_indexable_sequence(value):
+                index = read_sequence_index(segment, reference)
+                if index < 0 or index >= len(value):
+                    raise VariableStoreError(f"变量路径不存在: {reference}")
+                value = value[index]
+                continue
+
+            # loop v2 的 iterations 是数组；除数组索引外，变量路径仍只允许对象字段，
+            # 避免把字符串等标量误当成可继续展开的路径。
+            if not isinstance(value, Mapping):
                 raise VariableStoreError(f"变量路径不存在: {reference}")
-            value = value[segment]
         return deepcopy(value)
 
     def resolve_value(self, value: Any) -> Any:
@@ -91,6 +105,17 @@ class VariableStore:
 def is_variable_reference(value: str) -> bool:
     """判断字符串是否为 $.variables. 开头的变量引用。"""
     return value.strip().startswith(VARIABLE_PREFIX)
+
+
+def is_indexable_sequence(value: Any) -> bool:
+    return isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray)
+
+
+def read_sequence_index(segment: str, reference: str) -> int:
+    try:
+        return int(segment)
+    except ValueError as error:
+        raise VariableStoreError(f"变量数组索引无效: {reference}") from error
 
 
 def collect_variable_references(value: Any) -> tuple[str, ...]:

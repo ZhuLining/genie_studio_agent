@@ -1,5 +1,6 @@
 import gsa_taskflow_executor.skills.runtime as skill_runtime
 from fixtures import VALID_RIGHT_ARM_YAML
+from gsa_taskflow_executor.gdk.recovery import mark_gdk_recovery_required
 from gsa_taskflow_executor.mqtt.status_reporter import TaskflowStatusReporter
 from gsa_taskflow_executor.runtime.config import ExecutorSettings
 from gsa_taskflow_executor.taskflow.control import TaskflowCancellation
@@ -123,7 +124,8 @@ def test_status_reporter_marks_cancelled_execution_as_canceled_terminal_state() 
 
     assert result.outcome == "cancelled"
     cancel_payload = payloads[1]["sub_task"]
-    assert cancel_payload["state"] == "ERROR"
+    assert payloads[1]["task_state"] == "CANCELED"
+    assert cancel_payload["state"] == "CANCELED"
     assert cancel_payload["cancel_state"] == "CANCELED"
     assert cancel_payload["error_code"] == "TASKFLOW_CANCELLED"
     assert payloads[-1]["task_state"] == "CANCELED"
@@ -131,6 +133,41 @@ def test_status_reporter_marks_cancelled_execution_as_canceled_terminal_state() 
     assert payloads[-1]["cancelled"] is True
     assert payloads[-1]["cancel_state"] == "CANCELED"
     assert payloads[-1]["error_code"] == "TASKFLOW_CANCELLED"
+
+
+def test_status_reporter_marks_cancelled_execution_stop_unconfirmed() -> None:
+    payloads: list[dict[str, object]] = []
+    taskflow = parse_taskflow_yaml(VALID_RIGHT_ARM_YAML)
+    cancellation = TaskflowCancellation(
+        app_execution_id=taskflow.app_execution_id,
+        request_id="cancel-1",
+        reason="operator stop",
+        requested_at="2026-08-11T00:00:00+00:00",
+    )
+    reporter = TaskflowStatusReporter(
+        settings=ExecutorSettings(executor_aid="aid-1"),
+        publish_status=payloads.append,
+    )
+
+    result = TaskflowScheduler(
+        taskflow,
+        node_event_handler=reporter.publish_node_event,
+        cancel_checker=lambda: cancellation,
+    ).run()
+    mark_gdk_recovery_required(
+        operation="taskflow_abs_joint",
+        reason="worker_cancelled",
+        source_result={"error_code": "GDK_OPERATION_CANCELLED"},
+    )
+    reporter.publish_execution_finished(result)
+
+    assert result.outcome == "cancelled"
+    assert payloads[-1]["task_state"] == "STOP_UNCONFIRMED"
+    assert payloads[-1]["status"] == "STOP_UNCONFIRMED"
+    assert payloads[-1]["cancel_state"] == "STOP_UNCONFIRMED"
+    assert payloads[-1]["stop_state"] == "STOP_UNCONFIRMED"
+    assert payloads[-1]["robot_stop_confirmed"] is False
+    assert payloads[-1]["gdk_recovery"]["state"] == "STOP_UNCONFIRMED"
 
 
 def test_status_reporter_publishes_gdk_control_mode_error_code(monkeypatch) -> None:

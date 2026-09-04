@@ -2,8 +2,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from gsa_taskflow_executor.gdk.current_pose import run_gdk_current_pose_snapshot
+from gsa_taskflow_executor.gdk.current_pose import (
+    run_gdk_current_pose_snapshot,
+    run_gdk_recovery_confirmation_snapshot,
+)
 from gsa_taskflow_executor.gdk.recovery import (
+    clear_gdk_recovery_requirement,
+    configure_gdk_recovery_store,
     current_gdk_recovery_requirement,
     mark_gdk_recovery_required,
 )
@@ -81,6 +86,7 @@ class FakeRobot:
             {
                 "name": name,
                 "motor_position": index / 100,
+                "motor_velocity": 0.0,
                 "error_code": 0,
             }
             for index, name in enumerate([*LEFT_ARM, *RIGHT_ARM, *WAIST], start=1)
@@ -118,6 +124,20 @@ class FakeGdk:
     Robot = FakeRobot
 
 
+class MovingRobot(FakeRobot):
+    def get_joint_states(self) -> dict[str, object]:
+        joint_states = super().get_joint_states()
+        states = joint_states["states"]
+        assert isinstance(states, list)
+        for state in states:
+            state["motor_velocity"] = 0.02
+        return joint_states
+
+
+class MovingGdk(FakeGdk):
+    Robot = MovingRobot
+
+
 def test_current_pose_snapshot_matches_desktop_contract() -> None:
     FakeGdk.reset()
     result = run_gdk_current_pose_snapshot(import_module=lambda _name: FakeGdk)
@@ -126,6 +146,8 @@ def test_current_pose_snapshot_matches_desktop_contract() -> None:
     assert result["backend"] == "agibot_gdk.Robot"
     assert result["jointCount"] == 22
     assert result["groups"]["left_arm"]["positions"] == [0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07]
+    assert result["groups"]["left_arm"]["velocities"] == [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    assert result["groups"]["left_arm"]["joints"][0]["velocity"] == 0.0
     assert result["groups"]["right_arm"]["positions"] == [0.08, 0.09, 0.1, 0.11, 0.12, 0.13, 0.14]
     assert result["groups"]["waist"]["positions"] == [0.15, 0.16, 0.17, 0.18, 0.19]
     assert result["groups"]["waist"]["joints"][0]["limit"] == {"min": -3.14, "max": 3.14}
@@ -149,7 +171,7 @@ def test_current_pose_snapshot_matches_desktop_contract() -> None:
     assert result["gdk_session"]["purpose"] == "current_pose"
 
 
-def test_current_pose_snapshot_confirms_gdk_recovery() -> None:
+def test_current_pose_snapshot_reports_gdk_recovery_without_clearing_gate() -> None:
     FakeGdk.reset()
     mark_gdk_recovery_required(
         operation="taskflow_abs_joint",
@@ -160,8 +182,80 @@ def test_current_pose_snapshot_confirms_gdk_recovery() -> None:
     result = run_gdk_current_pose_snapshot(import_module=lambda _name: FakeGdk)
 
     assert result["available"] is True
-    assert result["gdk_recovery"]["confirmed"] is True
+    assert result["gdk_recovery"]["confirmed"] is False
+    assert result["gdk_recovery"]["state"] == "STOP_UNCONFIRMED"
+    assert result["gdk_recovery"]["robot_stop_confirmed"] is False
+    assert current_gdk_recovery_requirement() is not None
+
+
+def test_gdk_recovery_gate_persists_until_explicit_clear(tmp_path) -> None:
+    state_file = tmp_path / "gdk_recovery_state.json"
+    configure_gdk_recovery_store(state_file)
+
+    mark_gdk_recovery_required(
+        operation="taskflow_end_effector",
+        reason="worker_cancelled",
+        source_result={"error_code": "GDK_OPERATION_CANCELLED"},
+    )
+
+    assert state_file.exists()
+    configure_gdk_recovery_store(state_file)
+    requirement = current_gdk_recovery_requirement()
+    assert requirement is not None
+    assert requirement.operation == "taskflow_end_effector"
+    assert requirement.reason == "worker_cancelled"
+
+    clear_result = clear_gdk_recovery_requirement(reason="manual_test_cleanup")
+    assert clear_result["cleared"] is True
+    assert state_file.exists() is False
+
+
+def test_recovery_confirmation_uses_multi_frame_snapshot_and_clears_gate() -> None:
+    FakeGdk.reset()
+    mark_gdk_recovery_required(
+        operation="taskflow_abs_joint",
+        reason="worker_timeout",
+        source_result={"error_code": "GDK_OPERATION_TIMEOUT"},
+    )
+
+    result = run_gdk_recovery_confirmation_snapshot(
+        sample_count=3,
+        sample_interval_seconds=0.01,
+        max_joint_velocity=0.005,
+        max_position_delta=0.002,
+        import_module=lambda _name: FakeGdk,
+        sleep=lambda _seconds: None,
+    )
+
+    assert result["available"] is True
+    assert result["confirmed"] is True
+    assert result["sampleCount"] == 3
+    assert result["gdk_recovery"]["state"] == "CONFIRMED"
+    assert result["gdk_recovery"]["robot_stop_confirmed"] is True
     assert current_gdk_recovery_requirement() is None
+
+
+def test_recovery_confirmation_keeps_gate_when_joint_velocity_is_unstable() -> None:
+    MovingGdk.reset()
+    mark_gdk_recovery_required(
+        operation="taskflow_abs_joint",
+        reason="worker_timeout",
+        source_result={"error_code": "GDK_OPERATION_TIMEOUT"},
+    )
+
+    result = run_gdk_recovery_confirmation_snapshot(
+        sample_count=3,
+        sample_interval_seconds=0.01,
+        max_joint_velocity=0.005,
+        max_position_delta=0.002,
+        import_module=lambda _name: MovingGdk,
+        sleep=lambda _seconds: None,
+    )
+
+    assert result["available"] is False
+    assert result["confirmed"] is False
+    assert result["gdk_recovery"]["state"] == "STOP_UNCONFIRMED"
+    assert current_gdk_recovery_requirement() is not None
 
 
 def test_current_pose_snapshot_reports_import_failure() -> None:

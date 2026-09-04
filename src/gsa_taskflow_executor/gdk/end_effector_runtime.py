@@ -1,6 +1,6 @@
 """GDK 末端执行器控制运行时。
 
-默认通过 agibot_gdk.Robot.move_ee_pos() 控制夹爪开合。
+默认通过 agibot_gdk.Robot.move_ee_pos() 这个阻塞 GDK 控制接口控制夹爪开合。
 若同一条 workflow 前序节点已经进入 end_effector_pose_control 伺服链路，
 则改走伺服夹爪路径，避免混用 GDK 文档明确禁止的末端控制接口。
 支持 omnipicker/dahuan/ctek90d 三种单关节末端（opening 0~1 线性映射）；
@@ -305,8 +305,8 @@ def execute_end_effector_control(
 
     wait_after_command = end_effector_params.post_wait_seconds > 0
     if wait_after_command:
-        # move_ee_pos 的返回值只代表命令被 GDK 接收，不保证末端已经完成动作；
-        # 这里复刻原 GSA 的指令后等待，避免下游位控立即抢占末端开合动作。
+        # move_ee_pos 本身是阻塞控制调用；后置等待用于给末端状态与下游动作
+        # 留出稳定窗口，不能把 worker 可取消等同于 GDK 控制器已确认停稳。
         sleep(end_effector_params.post_wait_seconds)
 
     after_end_state = read_end_state(robot)

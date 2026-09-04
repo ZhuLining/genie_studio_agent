@@ -160,6 +160,36 @@ def test_publish_canceled_status_is_terminal_and_waits_for_qos_ack(tmp_path) -> 
     assert client.publish_results[0].timeout == 1.25
 
 
+def test_publish_stop_unconfirmed_status_is_terminal_and_waits_for_qos_ack(tmp_path) -> None:
+    client = FakeClient()
+    gateway = MqttGateway(
+        settings=ExecutorSettings(
+            executor_aid="aid-1",
+            mqtt_terminal_status_qos=1,
+            mqtt_terminal_status_wait_timeout=1.25,
+        ),
+        on_taskflow_message=lambda _message: None,
+        event_writer=JsonlEventWriter(tmp_path),
+    )
+    gateway._client = client
+
+    gateway.publish_status(
+        {
+            "task_state": "STOP_UNCONFIRMED",
+            "stop_state": "STOP_UNCONFIRMED",
+            "robot_stop_confirmed": False,
+        }
+    )
+
+    [(topic, payload, qos, retain)] = client.published
+    assert topic == "gsa/self/aid-1/status"
+    assert json.loads(payload)["task_state"] == "STOP_UNCONFIRMED"
+    assert qos == 1
+    assert retain is False
+    assert client.publish_results[0].waited is True
+    assert client.publish_results[0].timeout == 1.25
+
+
 def test_publish_status_requires_connection() -> None:
     gateway = MqttGateway(
         settings=ExecutorSettings(),

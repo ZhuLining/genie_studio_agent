@@ -241,7 +241,7 @@ def is_terminal_execution_payload(
     if app_execution_id and app_execution_id != expected_app_execution_id:
         return False
     task_state = (read_string(payload, ("task_state", "status")) or "").upper()
-    return task_state in {"OVER", "ERROR"} and "terminal_node_id" in payload
+    return task_state in {"OVER", "ERROR", "STOP_UNCONFIRMED"} and "terminal_node_id" in payload
 
 
 def as_record(value: Any) -> dict[str, Any] | None:

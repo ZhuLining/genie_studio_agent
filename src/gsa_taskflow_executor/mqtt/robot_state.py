@@ -12,7 +12,10 @@ from typing import Any
 from gsa_taskflow_executor.gdk.camera_calibration import run_gdk_camera_calibration_snapshot
 from gsa_taskflow_executor.gdk.camera_capture import CameraCaptureStartParams
 from gsa_taskflow_executor.gdk.camera_frame import run_gdk_camera_frame_snapshot
-from gsa_taskflow_executor.gdk.current_pose import run_gdk_current_pose_snapshot
+from gsa_taskflow_executor.gdk.current_pose import (
+    run_gdk_current_pose_snapshot,
+    run_gdk_recovery_confirmation_snapshot,
+)
 from gsa_taskflow_executor.gdk.robot_identity import run_gdk_robot_identity_snapshot
 from gsa_taskflow_executor.gdk.session import GdkSessionManager
 from gsa_taskflow_executor.mqtt.gateway import TaskflowMessage
@@ -22,6 +25,7 @@ from gsa_taskflow_executor.mqtt.robot_state_models import (
     CAMERA_CAPTURE_STOP_REQUEST_TYPE,
     CAMERA_FRAME_REQUEST_TYPE,
     CURRENT_POSE_REQUEST_TYPE,
+    GDK_RECOVERY_CONFIRM_REQUEST_TYPE,
     POINT_RECORDING_DELETE_INITIAL_PHOTO_REQUEST_TYPE,
     POINT_RECORDING_DELETE_TARGET_REQUEST_TYPE,
     POINT_RECORDING_SAVE_INITIAL_PHOTO_REQUEST_TYPE,
@@ -41,6 +45,7 @@ from gsa_taskflow_executor.mqtt.robot_state_models import (
     CameraCaptureStopRequest,
     CameraFrameRequest,
     CurrentPoseRequest,
+    GdkRecoveryConfirmRequest,
     PointRecordingDeleteInitialPhotoRequest,
     PointRecordingDeleteTargetRequest,
     PointRecordingSaveInitialPhotoRequest,
@@ -60,6 +65,7 @@ from gsa_taskflow_executor.mqtt.robot_state_models import (
     parse_camera_capture_stop_request,
     parse_camera_frame_request,
     parse_current_pose_request,
+    parse_gdk_recovery_confirm_request,
     parse_json_object,
     parse_point_recording_delete_initial_photo_request,
     parse_point_recording_delete_target_request,
@@ -94,6 +100,7 @@ from gsa_taskflow_executor.mqtt.robot_state_responses import (
     build_camera_capture_stop_response,
     build_camera_frame_response,
     build_current_pose_response,
+    build_gdk_recovery_confirm_response,
     build_point_recording_delete_initial_photo_response,
     build_point_recording_delete_target_response,
     build_point_recording_save_initial_photo_response,
@@ -142,6 +149,7 @@ __all__ = [
     "CAMERA_CAPTURE_STOP_REQUEST_TYPE",
     "CAMERA_FRAME_REQUEST_TYPE",
     "CURRENT_POSE_REQUEST_TYPE",
+    "GDK_RECOVERY_CONFIRM_REQUEST_TYPE",
     "ROBOT_IDENTITY_REQUEST_TYPE",
     "QR_BUILD_MAP_REQUEST_TYPE",
     "QR_CAPTURE_START_REQUEST_TYPE",
@@ -164,6 +172,7 @@ __all__ = [
     "CameraCaptureStopRequest",
     "CameraFrameRequest",
     "CurrentPoseRequest",
+    "GdkRecoveryConfirmRequest",
     "RobotIdentityRequest",
     "QrBuildMapRequest",
     "QrCaptureStartRequest",
@@ -183,6 +192,7 @@ __all__ = [
     "build_camera_capture_stop_response",
     "build_camera_frame_response",
     "build_current_pose_response",
+    "build_gdk_recovery_confirm_response",
     "build_qr_build_map_response",
     "build_qr_capture_start_response",
     "build_qr_capture_stop_response",
@@ -203,6 +213,7 @@ __all__ = [
     "handle_camera_capture_stop_request",
     "handle_camera_frame_request",
     "handle_current_pose_request",
+    "handle_gdk_recovery_confirm_request",
     "handle_qr_build_map_request",
     "handle_qr_capture_start_request",
     "handle_qr_capture_stop_request",
@@ -220,6 +231,7 @@ __all__ = [
     "parse_camera_capture_stop_request",
     "parse_camera_frame_request",
     "parse_current_pose_request",
+    "parse_gdk_recovery_confirm_request",
     "parse_json_object",
     "parse_qr_build_map_request",
     "parse_qr_capture_start_request",
@@ -250,6 +262,10 @@ __all__ = [
 # 回调类型别名
 RobotStatePublisher = Callable[[str, Mapping[str, Any]], None]
 CurrentPoseCollector = Callable[[], Mapping[str, object]]
+GdkRecoveryConfirmCollector = Callable[
+    [int, float, float, float],
+    Mapping[str, object],
+]
 RobotIdentityCollector = Callable[[int], Mapping[str, object]]
 CameraFrameCollector = Callable[[str, int], Mapping[str, object]]
 CameraCalibrationCollector = Callable[[tuple[str, ...], int, bool], Mapping[str, object]]
@@ -285,6 +301,7 @@ def handle_robot_state_request(
     publish_response: RobotStatePublisher,
     event_writer: JsonlEventWriter | None = None,
     collect_current_pose: CurrentPoseCollector = run_gdk_current_pose_snapshot,
+    confirm_gdk_recovery: GdkRecoveryConfirmCollector = run_gdk_recovery_confirmation_snapshot,
     collect_robot_identity: RobotIdentityCollector = run_gdk_robot_identity_snapshot,
     collect_camera_frame: CameraFrameCollector = run_gdk_camera_frame_snapshot,
     collect_camera_calibration: CameraCalibrationCollector = run_gdk_camera_calibration_snapshot,
@@ -307,6 +324,16 @@ def handle_robot_state_request(
     """按请求类型分发到对应 handler。通过 payload type 字段和 MQTT topic 双重匹配。"""
 
     request_type = read_request_type(message.payload)
+    if request_type == GDK_RECOVERY_CONFIRM_REQUEST_TYPE:
+        handle_gdk_recovery_confirm_request(
+            message,
+            settings=settings,
+            publish_response=publish_response,
+            event_writer=event_writer,
+            confirm_recovery=confirm_gdk_recovery,
+        )
+        return
+
     if (
         request_type == POINT_RECORDING_SAVE_TARGET_REQUEST_TYPE
         or message.topic == settings.point_recording_save_target_request_topic
@@ -1396,6 +1423,66 @@ def handle_current_pose_request(
         event_writer,
         event_type="robot_current_pose_response_published",
         message="current pose response published",
+        topic=request.reply_topic,
+        response=response,
+    )
+
+
+def handle_gdk_recovery_confirm_request(
+    message: TaskflowMessage,
+    *,
+    settings: ExecutorSettings,
+    publish_response: RobotStatePublisher,
+    event_writer: JsonlEventWriter | None = None,
+    confirm_recovery: GdkRecoveryConfirmCollector = run_gdk_recovery_confirmation_snapshot,
+) -> None:
+    """处理显式 GDK 恢复确认。普通 get_current_pose 不会走到这里。"""
+
+    try:
+        request = parse_gdk_recovery_confirm_request(
+            message.payload,
+            default_reply_topic=settings.robot_current_pose_response_topic,
+            default_sample_count=settings.gdk_recovery_confirm_sample_count,
+            default_sample_interval_seconds=(
+                settings.gdk_recovery_confirm_sample_interval_seconds
+            ),
+            default_max_joint_velocity=settings.gdk_recovery_confirm_max_joint_velocity,
+            default_max_position_delta=settings.gdk_recovery_confirm_max_position_delta,
+        )
+    except Exception as error:
+        response = error_response(
+            response_type=GDK_RECOVERY_CONFIRM_REQUEST_TYPE,
+            request_id="",
+            executor_aid=settings.executor_aid,
+            code="INVALID_REQUEST",
+            message=str(error),
+        )
+        publish_response(settings.robot_current_pose_response_topic, response)
+        write_robot_state_event(
+            event_writer,
+            event_type="gdk_recovery_confirm_request_error",
+            message=str(error),
+            topic=message.topic,
+            response=response,
+        )
+        return
+
+    result = confirm_recovery(
+        sample_count=request.sample_count,
+        sample_interval_seconds=request.sample_interval_seconds,
+        max_joint_velocity=request.max_joint_velocity,
+        max_position_delta=request.max_position_delta,
+    )
+    response = build_gdk_recovery_confirm_response(
+        request_id=request.request_id,
+        executor_aid=settings.executor_aid,
+        result=result,
+    )
+    publish_response(request.reply_topic, response)
+    write_robot_state_event(
+        event_writer,
+        event_type="gdk_recovery_confirm_response_published",
+        message="GDK recovery confirmation response published",
         topic=request.reply_topic,
         response=response,
     )

@@ -170,6 +170,11 @@ class ExecutorSettings:
     executor_aid: str = "gsa-dev"
     executor_mode: str = "gdk"
     executor_log_dir: str = "logs"
+    gdk_recovery_state_file: str = ""
+    gdk_recovery_confirm_sample_count: int = 3
+    gdk_recovery_confirm_sample_interval_seconds: float = 0.2
+    gdk_recovery_confirm_max_joint_velocity: float = 0.005
+    gdk_recovery_confirm_max_position_delta: float = 0.002
     skill_registry_file: str = ""
 
     @classmethod
@@ -445,6 +450,30 @@ class ExecutorSettings:
             executor_aid=source.get("EXECUTOR_AID", cls.executor_aid).strip(),
             executor_mode=source.get("EXECUTOR_MODE", cls.executor_mode).strip(),
             executor_log_dir=source.get("EXECUTOR_LOG_DIR", cls.executor_log_dir).strip(),
+            gdk_recovery_state_file=source.get(
+                "GDK_RECOVERY_STATE_FILE",
+                cls.gdk_recovery_state_file,
+            ).strip(),
+            gdk_recovery_confirm_sample_count=read_int(
+                source,
+                "GDK_RECOVERY_CONFIRM_SAMPLE_COUNT",
+                cls.gdk_recovery_confirm_sample_count,
+            ),
+            gdk_recovery_confirm_sample_interval_seconds=read_float(
+                source,
+                "GDK_RECOVERY_CONFIRM_SAMPLE_INTERVAL_SECONDS",
+                cls.gdk_recovery_confirm_sample_interval_seconds,
+            ),
+            gdk_recovery_confirm_max_joint_velocity=read_float(
+                source,
+                "GDK_RECOVERY_CONFIRM_MAX_JOINT_VELOCITY",
+                cls.gdk_recovery_confirm_max_joint_velocity,
+            ),
+            gdk_recovery_confirm_max_position_delta=read_float(
+                source,
+                "GDK_RECOVERY_CONFIRM_MAX_POSITION_DELTA",
+                cls.gdk_recovery_confirm_max_position_delta,
+            ),
             skill_registry_file=source.get(
                 "SKILL_REGISTRY_FILE",
                 cls.skill_registry_file,
@@ -496,6 +525,13 @@ class ExecutorSettings:
     def execution_log_dir(self) -> Path:
         """JSONL 事件日志目录。"""
         return self.log_dir_path / "executions"
+
+    @property
+    def gdk_recovery_state_path(self) -> Path:
+        """STOP_UNCONFIRMED 持久化文件路径。"""
+        if self.gdk_recovery_state_file:
+            return Path(self.gdk_recovery_state_file).expanduser()
+        return self.log_dir_path / "gdk_recovery_state.json"
 
     def validate(self) -> None:
         """校验所有必填字段、MQTT scheme、QoS 范围等。"""
@@ -670,6 +706,14 @@ class ExecutorSettings:
         require_non_empty("EXECUTOR_AID", self.executor_aid)
         require_non_empty("EXECUTOR_MODE", self.executor_mode)
         require_non_empty("EXECUTOR_LOG_DIR", self.executor_log_dir)
+        if self.gdk_recovery_confirm_sample_count <= 0:
+            raise ConfigError("GDK_RECOVERY_CONFIRM_SAMPLE_COUNT 必须大于 0")
+        if self.gdk_recovery_confirm_sample_interval_seconds <= 0:
+            raise ConfigError("GDK_RECOVERY_CONFIRM_SAMPLE_INTERVAL_SECONDS 必须大于 0")
+        if self.gdk_recovery_confirm_max_joint_velocity < 0:
+            raise ConfigError("GDK_RECOVERY_CONFIRM_MAX_JOINT_VELOCITY 不能小于 0")
+        if self.gdk_recovery_confirm_max_position_delta < 0:
+            raise ConfigError("GDK_RECOVERY_CONFIRM_MAX_POSITION_DELTA 不能小于 0")
 
         broker = urlparse(self.mqtt_broker_url)
         if broker.scheme not in {"mqtt", "mqtts", "ws", "wss"}:

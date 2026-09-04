@@ -113,6 +113,15 @@ def build_runtime_diagnostics_payload(
             "aid": settings.executor_aid,
             "mode": settings.executor_mode,
             "log_dir": settings.executor_log_dir,
+            "gdk_recovery_state_file": str(settings.gdk_recovery_state_path),
+            "gdk_recovery_confirm": {
+                "sample_count": settings.gdk_recovery_confirm_sample_count,
+                "sample_interval_seconds": (
+                    settings.gdk_recovery_confirm_sample_interval_seconds
+                ),
+                "max_joint_velocity": settings.gdk_recovery_confirm_max_joint_velocity,
+                "max_position_delta": settings.gdk_recovery_confirm_max_position_delta,
+            },
         },
         "mqtt": {
             "broker_url": settings.mqtt_broker_url,
