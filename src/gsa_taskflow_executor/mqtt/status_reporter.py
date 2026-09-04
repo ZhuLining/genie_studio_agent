@@ -13,6 +13,7 @@ from threading import Lock
 from typing import Any, Literal
 
 from gsa_taskflow_executor.gdk.recovery import (
+    GDK_RECOVERY_REQUIRED_CODE,
     STOP_UNCONFIRMED_STATE,
     current_gdk_recovery_requirement,
 )
@@ -72,8 +73,9 @@ class TaskflowStatusReporter:
         )
 
     def publish_node_event(self, event: NodeExecutionEvent) -> None:
-        sub_task_state = map_node_status_to_sub_task_state(event.status)
-        task_state = map_node_status_to_execution_state(event.status)
+        detail = event.result.detail if event.result else None
+        sub_task_state = map_node_status_to_sub_task_state(event.status, detail)
+        task_state = map_node_status_to_execution_state(event.status, detail)
         payload = self.build_base_payload(
             app_execution_id=event.app_execution_id,
             task_state=task_state,
@@ -83,14 +85,13 @@ class TaskflowStatusReporter:
         self.publish_status(payload)
 
     def publish_execution_finished(self, result: ScheduleResult) -> None:
+        recovery_requirement = current_gdk_recovery_requirement()
         if result.outcome == "success":
             task_state: TaskflowRuntimeState = "OVER"
+        elif recovery_requirement is not None:
+            task_state = STOP_UNCONFIRMED_STATE
         elif result.outcome == "cancelled":
-            task_state = (
-                STOP_UNCONFIRMED_STATE
-                if current_gdk_recovery_requirement() is not None
-                else "CANCELED"
-            )
+            task_state = "CANCELED"
         else:
             task_state = "ERROR"
         extra: dict[str, Any] = {
@@ -100,7 +101,6 @@ class TaskflowStatusReporter:
             "variables": deepcopy(result.variables),
         }
         if result.outcome == "cancelled":
-            recovery_requirement = current_gdk_recovery_requirement()
             extra.update(
                 {
                     "cancelled": True,
@@ -118,6 +118,21 @@ class TaskflowStatusReporter:
                         "gdk_recovery": recovery_requirement.to_payload(),
                     }
                 )
+        elif result.outcome == "error" and recovery_requirement is not None:
+            extra.update(
+                {
+                    "stop_state": STOP_UNCONFIRMED_STATE,
+                    "robot_stop_confirmed": False,
+                    "gdk_recovery": recovery_requirement.to_payload(),
+                    "error_code": GDK_RECOVERY_REQUIRED_CODE,
+                    "error_msg": (
+                        "GDK recovery confirmation is required before the next control command"
+                    ),
+                    "error": (
+                        "GDK recovery confirmation is required before the next control command"
+                    ),
+                }
+            )
         self.publish_status(
             self.build_base_payload(
                 app_execution_id=result.app_execution_id,
@@ -146,6 +161,9 @@ class TaskflowStatusReporter:
             if gdk_cancel_result_requires_stop_confirmation(gdk_cancel_result):
                 extra["stop_state"] = STOP_UNCONFIRMED_STATE
                 extra["robot_stop_confirmed"] = False
+                recovery_requirement = current_gdk_recovery_requirement()
+                if recovery_requirement is not None:
+                    extra["gdk_recovery"] = recovery_requirement.to_payload()
         self.publish_status(
             self.build_base_payload(
                 app_execution_id=app_execution_id,
@@ -231,17 +249,29 @@ def build_sub_task_payload(
                 "cancel_reason",
                 "cancel_request_id",
                 "cancel_requested_at",
+                "stop_state",
+                "robot_stop_confirmed",
+                "gdk_recovery",
             ):
                 if key in event.result.detail:
                     payload[key] = deepcopy(event.result.detail[key])
+                elif isinstance(event.result.detail.get("gdk_result"), Mapping):
+                    nested_result = event.result.detail["gdk_result"]
+                    if key in nested_result:
+                        payload[key] = deepcopy(nested_result[key])
     if event.variables is not None:
         payload["variables"] = deepcopy(event.variables)
     return payload
 
 
-def map_node_status_to_execution_state(status: str) -> TaskflowRuntimeState:
+def map_node_status_to_execution_state(
+    status: str,
+    detail: Mapping[str, object] | None = None,
+) -> TaskflowRuntimeState:
     # 顶层 task_state 表示整条 Taskflow 生命周期；单个节点成功不能发 OVER，
     # 否则客户端会提前把本次执行标记完成并停止跟踪后续节点。
+    if status in {"error", "cancelled"} and detail_requires_stop_unconfirmed(detail):
+        return STOP_UNCONFIRMED_STATE
     if status == "cancelled":
         return "CANCELED"
     if status == "error":
@@ -249,14 +279,60 @@ def map_node_status_to_execution_state(status: str) -> TaskflowRuntimeState:
     return "RUNNING"
 
 
-def map_node_status_to_sub_task_state(status: str) -> TaskflowRuntimeState:
+def map_node_status_to_sub_task_state(
+    status: str,
+    detail: Mapping[str, object] | None = None,
+) -> TaskflowRuntimeState:
     if status == "running":
         return "RUNNING"
     if status == "success":
         return "OVER"
+    if status in {"error", "cancelled"} and detail_requires_stop_unconfirmed(detail):
+        return STOP_UNCONFIRMED_STATE
     if status == "cancelled":
         return "CANCELED"
     return "ERROR"
+
+
+def detail_requires_stop_unconfirmed(detail: Mapping[str, object] | None) -> bool:
+    """从节点 detail / gdk_result 判断是否应传播 STOP_UNCONFIRMED。"""
+
+    if detail is None:
+        return False
+    if detail.get("error_code") == GDK_RECOVERY_REQUIRED_CODE:
+        return True
+    if normalize_state(detail.get("stop_state")) == "stop_unconfirmed":
+        return True
+    if detail.get("robot_stop_confirmed") is False:
+        return True
+    recovery = detail.get("gdk_recovery")
+    if mapping_requires_stop_unconfirmed(recovery):
+        return True
+    nested_result = detail.get("gdk_result")
+    if isinstance(nested_result, Mapping):
+        return detail_requires_stop_unconfirmed(nested_result)
+    return False
+
+
+def mapping_requires_stop_unconfirmed(value: object) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    if value.get("required") is True:
+        return True
+    if value.get("confirmed") is False:
+        return True
+    if value.get("robot_stop_confirmed") is False:
+        return True
+    if normalize_state(value.get("state")) == "stop_unconfirmed":
+        return True
+    return mapping_requires_stop_unconfirmed(value.get("requirement"))
+
+
+def normalize_state(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    return normalized or None
 
 
 def read_error_message(detail: Mapping[str, object] | None) -> str | None:

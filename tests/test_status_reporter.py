@@ -170,6 +170,63 @@ def test_status_reporter_marks_cancelled_execution_stop_unconfirmed() -> None:
     assert payloads[-1]["gdk_recovery"]["state"] == "STOP_UNCONFIRMED"
 
 
+def test_status_reporter_propagates_stop_unconfirmed_for_recovery_refused_error() -> None:
+    payloads: list[dict[str, object]] = []
+    taskflow = parse_taskflow_yaml(VALID_RIGHT_ARM_YAML)
+    reporter = TaskflowStatusReporter(
+        settings=ExecutorSettings(executor_aid="aid-1"),
+        publish_status=payloads.append,
+    )
+    mark_gdk_recovery_required(
+        operation="taskflow_abs_joint",
+        reason="worker_cancelled",
+        source_result={"error_code": "GDK_OPERATION_CANCELLED"},
+    )
+
+    def runner(node, _variable_store):
+        if node.node_id == "位姿调整-位控":
+            return NodeRunResult(
+                outcome="error",
+                detail={
+                    "error": "GDK recovery confirmation is required",
+                    "error_code": "GDK_RECOVERY_REQUIRED",
+                    "error_stage": "gdk_recovery_required",
+                    "gdk_result": {
+                        "stop_state": "STOP_UNCONFIRMED",
+                        "robot_stop_confirmed": False,
+                        "gdk_recovery": {
+                            "state": "STOP_UNCONFIRMED",
+                            "required": True,
+                            "confirmed": False,
+                        },
+                    },
+                },
+            )
+        return NodeRunResult(outcome="success")
+
+    result = TaskflowScheduler(
+        taskflow,
+        node_runner=runner,
+        node_event_handler=reporter.publish_node_event,
+    ).run()
+    reporter.publish_execution_finished(result)
+
+    error_payload = payloads[3]["sub_task"]
+    assert result.outcome == "error"
+    assert payloads[3]["task_state"] == "STOP_UNCONFIRMED"
+    assert payloads[3]["status"] == "STOP_UNCONFIRMED"
+    assert error_payload["state"] == "STOP_UNCONFIRMED"
+    assert error_payload["status"] == "STOP_UNCONFIRMED"
+    assert error_payload["stop_state"] == "STOP_UNCONFIRMED"
+    assert error_payload["robot_stop_confirmed"] is False
+    assert error_payload["gdk_recovery"]["state"] == "STOP_UNCONFIRMED"
+    assert payloads[-1]["task_state"] == "STOP_UNCONFIRMED"
+    assert payloads[-1]["status"] == "STOP_UNCONFIRMED"
+    assert payloads[-1]["stop_state"] == "STOP_UNCONFIRMED"
+    assert payloads[-1]["robot_stop_confirmed"] is False
+    assert payloads[-1]["error_code"] == "GDK_RECOVERY_REQUIRED"
+
+
 def test_status_reporter_publishes_gdk_control_mode_error_code(monkeypatch) -> None:
     error_message = "当前为笛卡尔阻抗模式，请切换到关节位置/规划控制模式后重试"
     monkeypatch.setattr(
