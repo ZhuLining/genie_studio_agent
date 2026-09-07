@@ -33,6 +33,21 @@ class FakeBytesGridMap(FakeGridMap):
     data = bytes(range(12))
 
 
+class FakeIndexedData:
+    def __init__(self, values: list[int]) -> None:
+        self.values = values
+
+    def __len__(self) -> int:
+        return len(self.values)
+
+    def __getitem__(self, index: int) -> int:
+        return self.values[index]
+
+
+class FakeIndexedGridMap(FakeGridMap):
+    data = FakeIndexedData(list(range(12)))
+
+
 class FakeMapName:
     def __init__(self, map_id: int, name: str, is_curr_map: bool) -> None:
         self.id = map_id
@@ -54,6 +69,10 @@ class FakeBytesMapInfo(FakeMapInfo):
     grid_map = FakeBytesGridMap()
 
 
+class FakeIndexedMapInfo(FakeMapInfo):
+    grid_map = FakeIndexedGridMap()
+
+
 class FakeMapManager:
     def __init__(self) -> None:
         self.get_map_calls: list[int] = []
@@ -73,6 +92,12 @@ class FakeBytesMapManager(FakeMapManager):
     def get_map(self, map_id: int) -> FakeBytesMapInfo:
         self.get_map_calls.append(map_id)
         return FakeBytesMapInfo()
+
+
+class FakeIndexedMapManager(FakeMapManager):
+    def get_map(self, map_id: int) -> FakeIndexedMapInfo:
+        self.get_map_calls.append(map_id)
+        return FakeIndexedMapInfo()
 
 
 class FakeAgibotGdk:
@@ -139,6 +164,21 @@ def test_gdk_map_probe_summarizes_bytes_grid_data() -> None:
     assert result["available"] is True
     assert result["mapDetail"]["gridMap"]["dataLength"] == 12
     assert result["mapDetail"]["gridMap"]["dataSample"] == list(range(12))
+
+
+def test_gdk_map_probe_summarizes_indexed_grid_data() -> None:
+    FakeAgibotGdk.manager = FakeIndexedMapManager()
+
+    result = run_gdk_map_probe(
+        import_module=lambda _name: FakeAgibotGdk,
+        timeout_ms=5000,
+    )
+
+    assert result["available"] is True
+    assert result["mapDetail"]["gridMap"]["expectedDataLength"] == 12
+    assert result["mapDetail"]["gridMap"]["dataLength"] == 12
+    assert result["mapDetail"]["gridMap"]["dataSample"] == list(range(12))
+    assert result["mapDetail"]["gridMap"]["dataType"].endswith("FakeIndexedData")
 
 
 def test_gdk_map_probe_rejects_invalid_map_id_before_importing() -> None:

@@ -7,7 +7,8 @@
 from __future__ import annotations
 
 import importlib
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from itertools import islice
 from typing import Any
 
 from .camera_frame import should_use_in_process_runtime
@@ -275,11 +276,15 @@ def summarize_grid_map(grid_map: Any) -> dict[str, object] | None:
     if grid_map is None:
         return None
     data = read_first_existing_attr(grid_map, ("data", "cells"))
+    width = read_int_attr(grid_map, "width")
+    height = read_int_attr(grid_map, "height")
     return {
-        "width": read_int_attr(grid_map, "width"),
-        "height": read_int_attr(grid_map, "height"),
+        "width": width,
+        "height": height,
         "resolution": read_float_attr(grid_map, "resolution"),
         "origin": summarize_pose(getattr(grid_map, "origin", None)),
+        "expectedDataLength": expected_grid_data_length(width, height),
+        "dataType": type_name(data),
         "dataLength": read_sequence_length(data),
         "dataSample": sample_sequence(data, GRID_DATA_SAMPLE_SIZE),
         "rawKeys": list_public_attrs(grid_map),
@@ -288,6 +293,7 @@ def summarize_grid_map(grid_map: Any) -> dict[str, object] | None:
 
 def summarize_sequence(value: Any) -> dict[str, object]:
     return {
+        "type": type_name(value),
         "count": read_sequence_length(value),
         "sample": sample_sequence(value, POINT_SAMPLE_SIZE),
     }
@@ -324,11 +330,31 @@ def summarize_quaternion(value: Any) -> dict[str, float | None] | None:
 
 
 def sample_sequence(value: Any, limit: int) -> list[object]:
+    if limit <= 0 or value is None or isinstance(value, str) or isinstance(value, Mapping):
+        return []
     if isinstance(value, bytes | bytearray):
         return list(value[:limit])
-    if not isinstance(value, Sequence) or isinstance(value, str | bytes | bytearray):
+    if isinstance(value, memoryview):
+        return sample_memoryview(value, limit)
+
+    iterable = read_iterable(value)
+    if iterable is not None:
+        try:
+            return [compact_object(item) for item in islice(iterable, limit)]
+        except Exception:
+            pass
+
+    count = read_sequence_length(value)
+    if count <= 0 or not hasattr(value, "__getitem__"):
         return []
-    return [compact_object(item) for item in list(value)[:limit]]
+
+    sample: list[object] = []
+    for index in range(min(count, limit)):
+        try:
+            sample.append(compact_object(value[index]))
+        except Exception:
+            break
+    return sample
 
 
 def read_sequence_attr(value: Any, name: str) -> Any:
@@ -343,11 +369,20 @@ def read_first_existing_attr(value: Any, names: Sequence[str]) -> Any:
 
 
 def read_sequence_length(value: Any) -> int:
+    if value is None or isinstance(value, str) or isinstance(value, Mapping):
+        return 0
     if isinstance(value, bytes | bytearray):
         return len(value)
-    if not isinstance(value, Sequence) or isinstance(value, str | bytes | bytearray):
+    if isinstance(value, memoryview):
+        return value.nbytes
+    size = read_size_attr(value)
+    if size is not None:
+        return size
+    try:
+        length = len(value)
+    except Exception:
         return 0
-    return len(value)
+    return length if isinstance(length, int) and length >= 0 else 0
 
 
 def read_int_attr(value: Any, name: str) -> int | None:
@@ -394,14 +429,13 @@ def read_string_attr(value: Any, name: str) -> str | None:
 def compact_object(value: Any) -> object:
     if value is None or isinstance(value, str | int | float | bool):
         return value
-    if isinstance(value, bytes | bytearray):
-        return {"count": len(value), "sample": list(value[:5])}
     if isinstance(value, Mapping):
         return {str(key): compact_object(item) for key, item in value.items()}
-    if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
+    if is_sequence_like(value):
         return {
-            "count": len(value),
-            "sample": [compact_object(item) for item in list(value)[:5]],
+            "type": type_name(value),
+            "count": read_sequence_length(value),
+            "sample": sample_sequence(value, 5),
         }
     attrs = list_public_attrs(value)
     if not attrs:
@@ -418,6 +452,68 @@ def list_public_attrs(value: Any) -> list[str]:
         ]
     except Exception:
         return []
+
+
+def expected_grid_data_length(width: int | None, height: int | None) -> int | None:
+    if width is None or height is None or width < 0 or height < 0:
+        return None
+    return width * height
+
+
+def type_name(value: Any) -> str | None:
+    if value is None:
+        return None
+    value_type = type(value)
+    if value_type.__module__ == "builtins":
+        return value_type.__qualname__
+    return f"{value_type.__module__}.{value_type.__qualname__}"
+
+
+def read_size_attr(value: Any) -> int | None:
+    raw = getattr(value, "size", None)
+    if isinstance(raw, bool) or callable(raw):
+        return None
+    try:
+        size = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return size if size >= 0 else None
+
+
+def read_iterable(value: Any) -> Iterable[Any] | None:
+    try:
+        flat = getattr(value, "flat", None)
+    except Exception:
+        flat = None
+    if flat is not None:
+        try:
+            return iter(flat)
+        except Exception:
+            pass
+    try:
+        return iter(value)
+    except Exception:
+        return None
+
+
+def sample_memoryview(value: memoryview, limit: int) -> list[object]:
+    try:
+        return list(value[:limit])
+    except Exception:
+        try:
+            return list(value.cast("B")[:limit])
+        except Exception:
+            return []
+
+
+def is_sequence_like(value: Any) -> bool:
+    if value is None or isinstance(value, str) or isinstance(value, Mapping):
+        return False
+    if isinstance(value, bytes | bytearray | memoryview):
+        return True
+    return hasattr(value, "__len__") and (
+        hasattr(value, "__iter__") or hasattr(value, "__getitem__")
+    )
 
 
 def validate_map_id(map_id: int | None) -> dict[str, object] | None:
