@@ -135,6 +135,8 @@ def test_gdk_map_probe_reads_all_maps_then_current_map_detail() -> None:
     assert result["maps"][1]["name"] == "factory-floor"
     assert result["mapDetail"]["gridMap"]["width"] == 4
     assert result["mapDetail"]["gridMap"]["dataLength"] == 12
+    assert result["mapDetail"]["gridMap"]["preview"]["dataLength"] == 12
+    assert result["mapDetail"]["gridMap"]["preview"]["data"] == list(range(12))
     assert result["mapDetail"]["guidePoints"]["count"] == 1
 
 
@@ -178,6 +180,7 @@ def test_gdk_map_probe_summarizes_indexed_grid_data() -> None:
     assert result["mapDetail"]["gridMap"]["expectedDataLength"] == 12
     assert result["mapDetail"]["gridMap"]["dataLength"] == 12
     assert result["mapDetail"]["gridMap"]["dataSample"] == list(range(12))
+    assert result["mapDetail"]["gridMap"]["preview"]["scale"] == 1
     assert result["mapDetail"]["gridMap"]["dataType"].endswith("FakeIndexedData")
 
 

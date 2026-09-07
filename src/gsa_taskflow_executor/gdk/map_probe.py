@@ -23,6 +23,7 @@ DEFAULT_MAP_TIMEOUT_MS = 5000
 SUBPROCESS_TIMEOUT_MARGIN_SECONDS = 3.0
 GRID_DATA_SAMPLE_SIZE = 64
 POINT_SAMPLE_SIZE = 50
+GRID_PREVIEW_MAX_SIDE = 256
 
 
 def run_gdk_map_probe(
@@ -287,6 +288,7 @@ def summarize_grid_map(grid_map: Any) -> dict[str, object] | None:
         "dataType": type_name(data),
         "dataLength": read_sequence_length(data),
         "dataSample": sample_sequence(data, GRID_DATA_SAMPLE_SIZE),
+        "preview": build_grid_preview(data, width, height),
         "rawKeys": list_public_attrs(grid_map),
     }
 
@@ -458,6 +460,54 @@ def expected_grid_data_length(width: int | None, height: int | None) -> int | No
     if width is None or height is None or width < 0 or height < 0:
         return None
     return width * height
+
+
+def build_grid_preview(data: Any, width: int | None, height: int | None) -> dict[str, object] | None:
+    expected_length = expected_grid_data_length(width, height)
+    if (
+        width is None
+        or height is None
+        or width <= 0
+        or height <= 0
+        or expected_length is None
+        or read_sequence_length(data) < expected_length
+    ):
+        return None
+
+    scale = max(1, (max(width, height) + GRID_PREVIEW_MAX_SIDE - 1) // GRID_PREVIEW_MAX_SIDE)
+    preview_width = (width + scale - 1) // scale
+    preview_height = (height + scale - 1) // scale
+    preview_data: list[int] = []
+    for row in range(preview_height):
+        source_y = min(row * scale, height - 1)
+        for column in range(preview_width):
+            source_x = min(column * scale, width - 1)
+            preview_data.append(read_int_item(data, source_y * width + source_x, fallback=-1))
+
+    return {
+        "encoding": "occupancy_int8_downsample_nearest",
+        "width": preview_width,
+        "height": preview_height,
+        "sourceWidth": width,
+        "sourceHeight": height,
+        "scale": scale,
+        "dataLength": len(preview_data),
+        "data": preview_data,
+        "maxSide": GRID_PREVIEW_MAX_SIDE,
+    }
+
+
+def read_int_item(value: Any, index: int, *, fallback: int) -> int:
+    try:
+        raw = value[index]
+    except Exception:
+        return fallback
+    if isinstance(raw, bool):
+        return fallback
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return fallback
 
 
 def type_name(value: Any) -> str | None:
