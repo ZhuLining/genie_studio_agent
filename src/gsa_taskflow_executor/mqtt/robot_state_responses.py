@@ -16,6 +16,7 @@ from gsa_taskflow_executor.mqtt.robot_state_models import (
     CAMERA_FRAME_REQUEST_TYPE,
     CURRENT_POSE_REQUEST_TYPE,
     GDK_RECOVERY_CONFIRM_REQUEST_TYPE,
+    HIGH_PRECISION_MAPS_REQUEST_TYPE,
     POINT_RECORDING_DELETE_INITIAL_PHOTO_REQUEST_TYPE,
     POINT_RECORDING_DELETE_TARGET_REQUEST_TYPE,
     POINT_RECORDING_SAVE_INITIAL_PHOTO_REQUEST_TYPE,
@@ -38,6 +39,7 @@ ROBOT_BUSY_ERROR_MESSAGE = "GDK 正在执行控制动作，当前位姿读取已
 ROBOT_IDENTITY_BUSY_ERROR_MESSAGE = "GDK 正在执行控制动作，机器人身份读取已拒绝"
 CAMERA_BUSY_ERROR_MESSAGE = "GDK 正在执行控制动作，相机图像读取已拒绝"
 CAMERA_CALIBRATION_BUSY_ERROR_MESSAGE = "GDK 正在执行控制动作，相机标定读取已拒绝"
+HIGH_PRECISION_MAPS_BUSY_ERROR_MESSAGE = "GDK 正在执行控制动作，高精度地图读取已拒绝"
 
 
 def build_current_pose_response(
@@ -211,6 +213,43 @@ def build_camera_calibration_response(
         executor_aid=executor_aid,
         code=read_error_code(snapshot, "GDK_CAMERA_CALIBRATION_UNAVAILABLE"),
         message=read_error_message(snapshot, fallback="GDK 相机标定读取失败"),
+        details=dict(snapshot),
+    )
+
+
+def build_high_precision_maps_response(
+    *,
+    request_id: str,
+    executor_aid: str,
+    snapshot: Mapping[str, object],
+) -> dict[str, object]:
+    """构建高精度地图只读查询响应。"""
+
+    if snapshot.get("available") is True:
+        return {
+            "type": HIGH_PRECISION_MAPS_REQUEST_TYPE,
+            "requestId": request_id,
+            "ok": True,
+            "executorAid": executor_aid,
+            "data": dict(snapshot),
+        }
+
+    if snapshot.get("busy") is True:
+        return error_response(
+            response_type=HIGH_PRECISION_MAPS_REQUEST_TYPE,
+            request_id=request_id,
+            executor_aid=executor_aid,
+            code=ROBOT_BUSY_ERROR_CODE,
+            message=HIGH_PRECISION_MAPS_BUSY_ERROR_MESSAGE,
+            details=dict(snapshot),
+        )
+
+    return error_response(
+        response_type=HIGH_PRECISION_MAPS_REQUEST_TYPE,
+        request_id=request_id,
+        executor_aid=executor_aid,
+        code=read_error_code(snapshot, "GDK_HIGH_PRECISION_MAPS_UNAVAILABLE"),
+        message=read_error_message(snapshot, fallback="GDK 高精度地图读取失败"),
         details=dict(snapshot),
     )
 

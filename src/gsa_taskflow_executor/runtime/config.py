@@ -77,6 +77,13 @@ class ExecutorSettings:
     robot_camera_capture_frame_topic_template: str = (
         "gsa/self/robot/state/camera_capture/{sessionId}/frame"
     )
+    # 高精度导航地图只读查询；客户端用于配置页下拉/预览，不进入 Taskflow DAG。
+    robot_high_precision_maps_request_topic: str = (
+        "gsa/self/robot/state/get_high_precision_maps/request"
+    )
+    robot_high_precision_maps_response_topic: str = (
+        "gsa/self/robot/state/get_high_precision_maps/response"
+    )
     # 二维码建图远端资源服务。客户端只传 robotSerial/projectName，路径由 executor 侧生成。
     gsa_data_root: str = "/data/gsa"
     qr_mapping_project_path_request_topic: str = (
@@ -312,6 +319,14 @@ class ExecutorSettings:
                 "ROBOT_CAMERA_CAPTURE_FRAME_TOPIC_TEMPLATE",
                 cls.robot_camera_capture_frame_topic_template,
             ).strip(),
+            robot_high_precision_maps_request_topic=source.get(
+                "ROBOT_HIGH_PRECISION_MAPS_REQUEST_TOPIC",
+                cls.robot_high_precision_maps_request_topic,
+            ).strip(),
+            robot_high_precision_maps_response_topic=source.get(
+                "ROBOT_HIGH_PRECISION_MAPS_RESPONSE_TOPIC",
+                cls.robot_high_precision_maps_response_topic,
+            ).strip(),
             gsa_data_root=source.get("GSA_DATA_ROOT", cls.gsa_data_root).strip(),
             qr_mapping_project_path_request_topic=source.get(
                 "QR_MAPPING_PROJECT_PATH_REQUEST_TOPIC",
@@ -502,6 +517,7 @@ class ExecutorSettings:
             self.robot_camera_calibration_request_topic,
             self.robot_camera_capture_start_request_topic,
             self.robot_camera_capture_stop_request_topic,
+            self.robot_high_precision_maps_request_topic,
             self.qr_mapping_project_path_request_topic,
             self.qr_mapping_project_snapshot_request_topic,
             self.qr_mapping_project_list_request_topic,
@@ -591,6 +607,14 @@ class ExecutorSettings:
         require_non_empty(
             "ROBOT_CAMERA_CAPTURE_FRAME_TOPIC_TEMPLATE",
             self.robot_camera_capture_frame_topic_template,
+        )
+        require_non_empty(
+            "ROBOT_HIGH_PRECISION_MAPS_REQUEST_TOPIC",
+            self.robot_high_precision_maps_request_topic,
+        )
+        require_non_empty(
+            "ROBOT_HIGH_PRECISION_MAPS_RESPONSE_TOPIC",
+            self.robot_high_precision_maps_response_topic,
         )
         require_non_empty("GSA_DATA_ROOT", self.gsa_data_root)
         require_non_empty(

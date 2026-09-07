@@ -8,6 +8,7 @@ from gsa_taskflow_executor.mqtt.robot_state import (
     build_camera_frame_response,
     build_current_pose_response,
     build_gdk_recovery_confirm_response,
+    build_high_precision_maps_response,
     build_robot_identity_response,
     handle_camera_calibration_request,
     handle_camera_capture_start_request,
@@ -15,6 +16,7 @@ from gsa_taskflow_executor.mqtt.robot_state import (
     handle_camera_frame_request,
     handle_current_pose_request,
     handle_gdk_recovery_confirm_request,
+    handle_high_precision_maps_request,
     handle_robot_identity_request,
     handle_robot_state_request,
     parse_camera_calibration_request,
@@ -23,6 +25,7 @@ from gsa_taskflow_executor.mqtt.robot_state import (
     parse_camera_frame_request,
     parse_current_pose_request,
     parse_gdk_recovery_confirm_request,
+    parse_high_precision_maps_request,
     parse_point_recording_delete_initial_photo_request,
     parse_point_recording_delete_target_request,
     parse_point_recording_save_initial_photo_request,
@@ -76,6 +79,26 @@ def test_parse_robot_identity_request_defaults_timeout() -> None:
     assert request.request_id == "req-identity"
     assert request.reply_topic == "robot/identity/response"
     assert request.timeout_ms == 3000
+
+
+def test_parse_high_precision_maps_request_reads_map_id_and_timeout() -> None:
+    request = parse_high_precision_maps_request(
+        json.dumps(
+            {
+                "type": "get_high_precision_maps",
+                "requestId": "req-map",
+                "replyTopic": "robot/maps/response",
+                "mapId": 3,
+                "timeoutMs": 8000,
+            }
+        ),
+        default_reply_topic="gsa/self/robot/state/get_high_precision_maps/response",
+    )
+
+    assert request.request_id == "req-map"
+    assert request.reply_topic == "robot/maps/response"
+    assert request.map_id == 3
+    assert request.timeout_ms == 8000
 
 
 def test_parse_gdk_recovery_confirm_request_reads_stability_policy() -> None:
@@ -295,6 +318,23 @@ def test_build_robot_identity_response_maps_busy_snapshot_to_robot_busy() -> Non
     assert response["type"] == "get_robot_identity"
     assert response["error"]["code"] == "ROBOT_BUSY"
     assert response["error"]["message"] == "GDK 正在执行控制动作，机器人身份读取已拒绝"
+
+
+def test_build_high_precision_maps_response_maps_busy_snapshot_to_robot_busy() -> None:
+    response = build_high_precision_maps_response(
+        request_id="req-map",
+        executor_aid="aid-1",
+        snapshot={
+            "available": False,
+            "busy": True,
+            "errorStage": "gdk_session_busy",
+        },
+    )
+
+    assert response["ok"] is False
+    assert response["type"] == "get_high_precision_maps"
+    assert response["error"]["code"] == "ROBOT_BUSY"
+    assert response["error"]["message"] == "GDK 正在执行控制动作，高精度地图读取已拒绝"
 
 
 def test_parse_camera_frame_request_defaults_camera_and_timeout() -> None:
@@ -837,6 +877,67 @@ def test_handle_robot_state_request_dispatches_camera_frame_by_topic() -> None:
     assert topic == "gsa/self/robot/state/get_camera_frame/response"
     assert payload["type"] == "get_camera_frame"
     assert payload["data"]["cameraId"] == "head_color"
+
+
+def test_handle_high_precision_maps_request_publishes_success_response() -> None:
+    published: list[tuple[str, dict[str, object]]] = []
+
+    handle_high_precision_maps_request(
+        TaskflowMessage(
+            topic="gsa/self/robot/state/get_high_precision_maps/request",
+            payload=json.dumps({"requestId": "req-map", "mapId": 2, "timeoutMs": 7000}),
+            received_at="2026-07-27T00:00:00+00:00",
+        ),
+        settings=ExecutorSettings(executor_aid="aid-1"),
+        publish_response=lambda topic, payload: published.append((topic, dict(payload))),
+        collect_snapshot=lambda map_id, timeout_ms: {
+            "available": True,
+            "backend": "agibot_gdk.Map",
+            "action": "get_high_precision_maps",
+            "requestedMapId": map_id,
+            "selectedMapId": map_id,
+            "timeoutMs": timeout_ms,
+            "mapCount": 1,
+            "maps": [{"id": 2, "name": "factory", "isCurrMap": True}],
+            "mapDetail": {"id": 2, "name": "factory"},
+        },
+    )
+
+    [(topic, payload)] = published
+    assert topic == "gsa/self/robot/state/get_high_precision_maps/response"
+    assert payload["type"] == "get_high_precision_maps"
+    assert payload["ok"] is True
+    assert payload["data"]["selectedMapId"] == 2
+    assert payload["data"]["timeoutMs"] == 7000
+
+
+def test_handle_robot_state_request_dispatches_high_precision_maps_by_topic() -> None:
+    published: list[tuple[str, dict[str, object]]] = []
+
+    handle_robot_state_request(
+        TaskflowMessage(
+            topic="gsa/self/robot/state/get_high_precision_maps/request",
+            payload=json.dumps({"requestId": "req-map", "mapId": 5}),
+            received_at="2026-07-27T00:00:00+00:00",
+        ),
+        settings=ExecutorSettings(executor_aid="aid-1"),
+        publish_response=lambda topic, payload: published.append((topic, dict(payload))),
+        collect_high_precision_maps=lambda map_id, _timeout_ms: {
+            "available": True,
+            "backend": "agibot_gdk.Map",
+            "action": "get_high_precision_maps",
+            "requestedMapId": map_id,
+            "selectedMapId": map_id,
+            "mapCount": 1,
+            "maps": [{"id": 5, "name": "warehouse", "isCurrMap": False}],
+            "mapDetail": {"id": 5, "name": "warehouse"},
+        },
+    )
+
+    [(topic, payload)] = published
+    assert topic == "gsa/self/robot/state/get_high_precision_maps/response"
+    assert payload["type"] == "get_high_precision_maps"
+    assert payload["data"]["maps"][0]["name"] == "warehouse"
 
 
 def test_handle_robot_state_request_dispatches_qr_project_snapshot_by_topic() -> None:

@@ -28,6 +28,7 @@ from .gdk.current_pose import (
     run_gdk_current_pose_snapshot,
     run_gdk_recovery_confirmation_snapshot,
 )
+from .gdk.map_probe import DEFAULT_MAP_TIMEOUT_MS, run_gdk_map_probe
 from .gdk.motion_runtime import TASKFLOW_ABS_JOINT_CONFIRMATION
 from .gdk.readonly import run_gdk_env_check, run_gdk_readonly_probe
 from .gdk.recovery import configure_gdk_recovery_store, current_gdk_recovery_requirement
@@ -49,6 +50,7 @@ from .mqtt.robot_state import (
     POINT_RECORDING_SAVE_INITIAL_PHOTO_REQUEST_TYPE,
     POINT_RECORDING_SAVE_TARGET_REQUEST_TYPE,
     POINT_RECORDING_SUBMIT_REQUEST_TYPE,
+    HIGH_PRECISION_MAPS_REQUEST_TYPE,
     QR_BUILD_MAP_REQUEST_TYPE,
     QR_CAPTURE_START_REQUEST_TYPE,
     QR_CAPTURE_STOP_REQUEST_TYPE,
@@ -144,6 +146,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--gdk-readonly-probe",
         action="store_true",
         help="Run a one-shot read-only agibot_gdk probe and exit without robot control.",
+    )
+    parser.add_argument(
+        "--gdk-map-probe",
+        action="store_true",
+        help=(
+            "Run a one-shot read-only agibot_gdk Map probe. It calls "
+            "get_all_map() and then get_map(map_id/current/first)."
+        ),
+    )
+    parser.add_argument(
+        "--gdk-map-id",
+        type=int,
+        help="Optional map ID for --gdk-map-probe. Must be 0-255.",
     )
     parser.add_argument(
         "--gdk-env-check",
@@ -242,6 +257,23 @@ def main(argv: list[str] | None = None) -> int:
                 event_type="gdk_readonly_probe",
                 level="info" if result.get("available") is True else "warning",
                 message="GDK read-only probe completed",
+                payload={"probe": result},
+            )
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.gdk_map_probe:
+        writer = JsonlEventWriter.from_settings(settings)
+        result = run_gdk_map_probe(
+            map_id=args.gdk_map_id,
+            timeout_ms=DEFAULT_MAP_TIMEOUT_MS,
+        )
+        writer.write(
+            RuntimeEvent(
+                event_type="gdk_map_probe",
+                level="info" if result.get("available") is True else "warning",
+                message="GDK high-precision map probe completed",
                 payload={"probe": result},
             )
         )
@@ -603,6 +635,11 @@ def main(argv: list[str] | None = None) -> int:
                         session_manager=gdk_session,
                     )
                 ),
+                collect_high_precision_maps=lambda map_id, timeout_ms: run_gdk_map_probe(
+                    map_id=map_id,
+                    timeout_ms=timeout_ms,
+                    session_manager=gdk_session,
+                ),
                 start_camera_capture=camera_capture_service.start,
                 stop_camera_capture=camera_capture_service.stop,
                 start_qr_capture=qr_capture_service.start,
@@ -902,6 +939,9 @@ def publish_robot_state_queue_error(
     elif message.topic == settings.robot_camera_capture_stop_request_topic:
         response_topic = settings.robot_camera_capture_stop_response_topic
         response_type = CAMERA_CAPTURE_STOP_REQUEST_TYPE
+    elif message.topic == settings.robot_high_precision_maps_request_topic:
+        response_topic = settings.robot_high_precision_maps_response_topic
+        response_type = HIGH_PRECISION_MAPS_REQUEST_TYPE
     elif message.topic == settings.qr_mapping_project_path_request_topic:
         response_topic = settings.qr_mapping_project_path_response_topic
         response_type = "get_qr_project_path"

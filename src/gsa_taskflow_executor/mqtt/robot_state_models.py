@@ -22,6 +22,10 @@ from gsa_taskflow_executor.gdk.camera_capture import (
     CameraCaptureStartParams,
 )
 from gsa_taskflow_executor.gdk.camera_frame import DEFAULT_CAMERA_TIMEOUT_MS
+from gsa_taskflow_executor.gdk.map_probe import (
+    ACTION_GET_HIGH_PRECISION_MAPS,
+    DEFAULT_MAP_TIMEOUT_MS,
+)
 from gsa_taskflow_executor.gdk.recovery import (
     DEFAULT_RECOVERY_CONFIRM_SAMPLE_COUNT,
     DEFAULT_RECOVERY_CONFIRM_SAMPLE_INTERVAL_SECONDS,
@@ -75,6 +79,7 @@ CAMERA_FRAME_REQUEST_TYPE = "get_camera_frame"
 CAMERA_CALIBRATION_REQUEST_TYPE = ACTION_GET_CAMERA_CALIBRATION
 CAMERA_CAPTURE_START_REQUEST_TYPE = ACTION_START_CAMERA_CAPTURE
 CAMERA_CAPTURE_STOP_REQUEST_TYPE = ACTION_STOP_CAMERA_CAPTURE
+HIGH_PRECISION_MAPS_REQUEST_TYPE = ACTION_GET_HIGH_PRECISION_MAPS
 QR_PROJECT_PATH_REQUEST_TYPE = ACTION_GET_QR_PROJECT_PATH
 QR_PROJECT_SNAPSHOT_REQUEST_TYPE = ACTION_GET_QR_PROJECT_SNAPSHOT
 QR_PROJECT_LIST_REQUEST_TYPE = ACTION_LIST_QR_PROJECTS
@@ -156,6 +161,16 @@ class CameraCaptureStopRequest:
     request_id: str
     reply_topic: str
     session_id: str
+
+
+@dataclass(frozen=True)
+class HighPrecisionMapsRequest:
+    """高精度地图只读查询请求。"""
+
+    request_id: str
+    reply_topic: str
+    map_id: int | None
+    timeout_ms: int
 
 
 @dataclass(frozen=True)
@@ -549,6 +564,30 @@ def parse_camera_capture_stop_request(
         request_id=request_id,
         reply_topic=read_reply_topic(decoded, default_reply_topic),
         session_id=session_id,
+    )
+
+
+def parse_high_precision_maps_request(
+    payload: str,
+    *,
+    default_reply_topic: str,
+) -> HighPrecisionMapsRequest:
+    """解析高精度地图只读查询请求。"""
+
+    decoded = parse_json_object(payload, "高精度地图请求")
+    request_type = read_optional_string(decoded, "type")
+    if request_type is not None and request_type != HIGH_PRECISION_MAPS_REQUEST_TYPE:
+        raise ValueError(f"不支持的机器人状态请求类型: {request_type}")
+
+    request_id = read_request_id_from_object(decoded)
+    if not request_id:
+        raise ValueError("高精度地图请求缺少 requestId")
+
+    return HighPrecisionMapsRequest(
+        request_id=request_id,
+        reply_topic=read_reply_topic(decoded, default_reply_topic),
+        map_id=read_optional_map_id(decoded),
+        timeout_ms=read_positive_int(decoded.get("timeoutMs"), DEFAULT_MAP_TIMEOUT_MS),
     )
 
 
@@ -1089,6 +1128,21 @@ def read_optional_string(value: Mapping[str, Any], key: str) -> str | None:
         return None
     stripped = raw.strip()
     return stripped or None
+
+
+def read_optional_map_id(value: Mapping[str, Any]) -> int | None:
+    raw = read_first_present(value.get("mapId"), value.get("map_id"))
+    if raw is None or raw == "":
+        return None
+    if isinstance(raw, bool):
+        raise ValueError("高精度地图 mapId 必须是 0-255 的整数")
+    try:
+        map_id = int(raw)
+    except (TypeError, ValueError) as error:
+        raise ValueError("高精度地图 mapId 必须是 0-255 的整数") from error
+    if not 0 <= map_id <= 255:
+        raise ValueError("高精度地图 mapId 必须是 0-255 的整数")
+    return map_id
 
 
 def parse_json_object(payload: str, label: str) -> Mapping[str, Any]:
