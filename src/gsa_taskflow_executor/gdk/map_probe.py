@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import importlib
+import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from itertools import islice
 from typing import Any
@@ -24,11 +25,14 @@ SUBPROCESS_TIMEOUT_MARGIN_SECONDS = 5.0
 GRID_DATA_SAMPLE_SIZE = 64
 POINT_SAMPLE_SIZE = 50
 GRID_PREVIEW_MAX_SIDE = 160
+GRID_PREVIEW_MAX_SIDE_LIMIT = 256
 
 
 def run_gdk_map_probe(
     map_id: int | None = None,
     timeout_ms: int = DEFAULT_MAP_TIMEOUT_MS,
+    include_preview: bool = False,
+    preview_max_side: int = GRID_PREVIEW_MAX_SIDE,
     *,
     import_module: Callable[[str], Any] = importlib.import_module,
     session_manager: GdkSessionManager | None = None,
@@ -43,6 +47,7 @@ def run_gdk_map_probe(
     if timeout_result is not None:
         return timeout_result
 
+    preview_max_side = normalize_preview_max_side(preview_max_side)
     map_id_result = validate_map_id(map_id)
     if map_id_result is not None:
         return map_id_result
@@ -51,6 +56,8 @@ def run_gdk_map_probe(
         return run_gdk_map_probe_in_process(
             map_id=map_id,
             timeout_ms=timeout_ms,
+            include_preview=include_preview,
+            preview_max_side=preview_max_side,
             import_module=import_module,
             session_manager=session_manager,
         )
@@ -75,7 +82,7 @@ def run_gdk_map_probe(
             backend=GDK_MAP_BACKEND,
             timeout_seconds=build_subprocess_timeout_seconds(timeout_ms),
             child_target=map_probe_child,
-            child_args=(map_id, timeout_ms),
+            child_args=(map_id, timeout_ms, include_preview, preview_max_side),
             safety_gate={
                 "enabled": False,
                 "confirmed": True,
@@ -90,6 +97,8 @@ def run_gdk_map_probe_in_process(
     *,
     map_id: int | None,
     timeout_ms: int,
+    include_preview: bool,
+    preview_max_side: int,
     import_module: Callable[[str], Any] = importlib.import_module,
     session_manager: GdkSessionManager | None = None,
 ) -> dict[str, object]:
@@ -126,13 +135,21 @@ def run_gdk_map_probe_in_process(
             agibot_gdk=lease.agibot_gdk,
             requested_map_id=map_id,
             timeout_ms=timeout_ms,
+            include_preview=include_preview,
+            preview_max_side=preview_max_side,
         )
         result["gdk_init"] = lease.init_result
         result["gdk_session"] = lease.to_payload()
         return result
 
 
-def map_probe_child(result_queue: Any, map_id: int | None, timeout_ms: int) -> None:
+def map_probe_child(
+    result_queue: Any,
+    map_id: int | None,
+    timeout_ms: int,
+    include_preview: bool,
+    preview_max_side: int,
+) -> None:
     agibot_gdk = None
     gdk_initialized = False
     init_result: dict[str, object] = {"called": False, "success": True, "return": None}
@@ -153,6 +170,8 @@ def map_probe_child(result_queue: Any, map_id: int | None, timeout_ms: int) -> N
                 agibot_gdk=agibot_gdk,
                 requested_map_id=map_id,
                 timeout_ms=timeout_ms,
+                include_preview=include_preview,
+                preview_max_side=preview_max_side,
             )
     except Exception as error:
         result = unavailable_result("import_or_initialize_gdk", error, map_id=map_id)
@@ -169,29 +188,64 @@ def collect_high_precision_maps(
     agibot_gdk: Any,
     requested_map_id: int | None,
     timeout_ms: int,
+    include_preview: bool,
+    preview_max_side: int,
 ) -> dict[str, object]:
+    timings: dict[str, float] = {}
+    stage_started = time.perf_counter()
     try:
         map_factory = agibot_gdk.Map
     except AttributeError as error:
-        return unavailable_result("get_map_factory", error, map_id=requested_map_id)
+        return unavailable_result(
+            "get_map_factory",
+            error,
+            map_id=requested_map_id,
+            extra={"timings": timings},
+        )
+    timings["getMapFactoryMs"] = elapsed_ms(stage_started)
 
+    stage_started = time.perf_counter()
     try:
         map_manager = map_factory()
     except Exception as error:
-        return unavailable_result("create_map_manager", error, map_id=requested_map_id)
+        return unavailable_result(
+            "create_map_manager",
+            error,
+            map_id=requested_map_id,
+            extra={"timings": timings},
+        )
+    timings["createMapManagerMs"] = elapsed_ms(stage_started)
 
+    stage_started = time.perf_counter()
     try:
         all_maps_raw = map_manager.get_all_map()
     except Exception as error:
-        return unavailable_result("get_all_map", error, map_id=requested_map_id)
+        return unavailable_result(
+            "get_all_map",
+            error,
+            map_id=requested_map_id,
+            extra={"timings": timings},
+        )
+    timings["getAllMapMs"] = elapsed_ms(stage_started)
 
+    stage_started = time.perf_counter()
     maps = normalize_map_list(all_maps_raw)
     selected_map_id = choose_map_id(requested_map_id, maps)
+    timings["summarizeAllMapMs"] = elapsed_ms(stage_started)
     selected_map_detail: dict[str, object] | None = None
     detail_error: dict[str, object] | None = None
     if selected_map_id is not None:
         try:
-            selected_map_detail = summarize_map_info(map_manager.get_map(selected_map_id))
+            stage_started = time.perf_counter()
+            map_info = map_manager.get_map(selected_map_id)
+            timings["getMapMs"] = elapsed_ms(stage_started)
+            stage_started = time.perf_counter()
+            selected_map_detail = summarize_map_info(
+                map_info,
+                include_preview=include_preview,
+                preview_max_side=preview_max_side,
+            )
+            timings["summarizeMapMs"] = elapsed_ms(stage_started)
         except Exception as error:
             detail_error = {
                 "stage": "get_map",
@@ -205,11 +259,14 @@ def collect_high_precision_maps(
         "backend": GDK_MAP_BACKEND,
         "action": ACTION_GET_HIGH_PRECISION_MAPS,
         "timeoutMs": timeout_ms,
+        "includePreview": include_preview,
+        "previewMaxSide": preview_max_side,
         "requestedMapId": requested_map_id,
         "selectedMapId": selected_map_id,
         "mapCount": len(maps),
         "maps": maps,
         "mapDetail": selected_map_detail,
+        "timings": timings,
         "collectedAt": utc_now_iso(),
     }
     if detail_error is not None:
@@ -254,7 +311,12 @@ def choose_map_id(requested_map_id: int | None, maps: Sequence[Mapping[str, obje
     return None
 
 
-def summarize_map_info(value: Any) -> dict[str, object]:
+def summarize_map_info(
+    value: Any,
+    *,
+    include_preview: bool,
+    preview_max_side: int,
+) -> dict[str, object]:
     grid_map = getattr(value, "grid_map", None)
     walls = read_sequence_attr(value, "walls")
     infeasible_areas = read_sequence_attr(value, "infeasible_areas")
@@ -264,7 +326,11 @@ def summarize_map_info(value: Any) -> dict[str, object]:
         "id": read_int_attr(value, "id"),
         "name": read_string_attr(value, "name") or "",
         "gravity": summarize_vector3(getattr(value, "gravity", None)),
-        "gridMap": summarize_grid_map(grid_map),
+        "gridMap": summarize_grid_map(
+            grid_map,
+            include_preview=include_preview,
+            preview_max_side=preview_max_side,
+        ),
         "walls": summarize_sequence(walls),
         "infeasibleAreas": summarize_sequence(infeasible_areas),
         "guidePoints": summarize_sequence(guide_pts),
@@ -273,7 +339,12 @@ def summarize_map_info(value: Any) -> dict[str, object]:
     }
 
 
-def summarize_grid_map(grid_map: Any) -> dict[str, object] | None:
+def summarize_grid_map(
+    grid_map: Any,
+    *,
+    include_preview: bool,
+    preview_max_side: int,
+) -> dict[str, object] | None:
     if grid_map is None:
         return None
     data = read_first_existing_attr(grid_map, ("data", "cells"))
@@ -288,7 +359,11 @@ def summarize_grid_map(grid_map: Any) -> dict[str, object] | None:
         "dataType": type_name(data),
         "dataLength": read_sequence_length(data),
         "dataSample": sample_sequence(data, GRID_DATA_SAMPLE_SIZE),
-        "preview": build_grid_preview(data, width, height),
+        "preview": (
+            build_grid_preview(data, width, height, max_side=preview_max_side)
+            if include_preview
+            else None
+        ),
         "rawKeys": list_public_attrs(grid_map),
     }
 
@@ -456,13 +531,29 @@ def list_public_attrs(value: Any) -> list[str]:
         return []
 
 
+def elapsed_ms(started_at: float) -> float:
+    return round((time.perf_counter() - started_at) * 1000, 3)
+
+
 def expected_grid_data_length(width: int | None, height: int | None) -> int | None:
     if width is None or height is None or width < 0 or height < 0:
         return None
     return width * height
 
 
-def build_grid_preview(data: Any, width: int | None, height: int | None) -> dict[str, object] | None:
+def normalize_preview_max_side(value: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return GRID_PREVIEW_MAX_SIDE
+    return min(value, GRID_PREVIEW_MAX_SIDE_LIMIT)
+
+
+def build_grid_preview(
+    data: Any,
+    width: int | None,
+    height: int | None,
+    *,
+    max_side: int,
+) -> dict[str, object] | None:
     expected_length = expected_grid_data_length(width, height)
     if (
         width is None
@@ -474,7 +565,7 @@ def build_grid_preview(data: Any, width: int | None, height: int | None) -> dict
     ):
         return None
 
-    scale = max(1, (max(width, height) + GRID_PREVIEW_MAX_SIDE - 1) // GRID_PREVIEW_MAX_SIDE)
+    scale = max(1, (max(width, height) + max_side - 1) // max_side)
     preview_width = (width + scale - 1) // scale
     preview_height = (height + scale - 1) // scale
     preview_data: list[int] = []
@@ -493,7 +584,7 @@ def build_grid_preview(data: Any, width: int | None, height: int | None) -> dict
         "scale": scale,
         "dataLength": len(preview_data),
         "data": preview_data,
-        "maxSide": GRID_PREVIEW_MAX_SIDE,
+        "maxSide": max_side,
     }
 
 

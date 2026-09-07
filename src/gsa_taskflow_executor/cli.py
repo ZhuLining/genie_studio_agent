@@ -28,7 +28,7 @@ from .gdk.current_pose import (
     run_gdk_current_pose_snapshot,
     run_gdk_recovery_confirmation_snapshot,
 )
-from .gdk.map_probe import DEFAULT_MAP_TIMEOUT_MS, run_gdk_map_probe
+from .gdk.map_probe import DEFAULT_MAP_TIMEOUT_MS, GRID_PREVIEW_MAX_SIDE, run_gdk_map_probe
 from .gdk.motion_runtime import TASKFLOW_ABS_JOINT_CONFIRMATION
 from .gdk.readonly import run_gdk_env_check, run_gdk_readonly_probe
 from .gdk.recovery import configure_gdk_recovery_store, current_gdk_recovery_requirement
@@ -161,6 +161,26 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional map ID for --gdk-map-probe. Must be 0-255.",
     )
     parser.add_argument(
+        "--gdk-map-timeout-ms",
+        type=int,
+        default=DEFAULT_MAP_TIMEOUT_MS,
+        help="GDK read timeout for --gdk-map-probe.",
+    )
+    parser.add_argument(
+        "--gdk-map-include-preview",
+        action="store_true",
+        help=(
+            "Also build a downsampled occupancy-grid preview for --gdk-map-probe. "
+            "This may be slow on pybind VectorInt8 containers."
+        ),
+    )
+    parser.add_argument(
+        "--gdk-map-preview-max-side",
+        type=int,
+        default=GRID_PREVIEW_MAX_SIDE,
+        help="Max side length for --gdk-map-include-preview.",
+    )
+    parser.add_argument(
         "--gdk-env-check",
         action="store_true",
         help=(
@@ -267,7 +287,9 @@ def main(argv: list[str] | None = None) -> int:
         writer = JsonlEventWriter.from_settings(settings)
         result = run_gdk_map_probe(
             map_id=args.gdk_map_id,
-            timeout_ms=DEFAULT_MAP_TIMEOUT_MS,
+            timeout_ms=args.gdk_map_timeout_ms,
+            include_preview=args.gdk_map_include_preview,
+            preview_max_side=args.gdk_map_preview_max_side,
         )
         writer.write(
             RuntimeEvent(
@@ -635,9 +657,14 @@ def main(argv: list[str] | None = None) -> int:
                         session_manager=gdk_session,
                     )
                 ),
-                collect_high_precision_maps=lambda map_id, timeout_ms: run_gdk_map_probe(
+                collect_high_precision_maps=lambda map_id,
+                timeout_ms,
+                include_preview,
+                preview_max_side: run_gdk_map_probe(
                     map_id=map_id,
                     timeout_ms=timeout_ms,
+                    include_preview=include_preview,
+                    preview_max_side=preview_max_side,
                     session_manager=gdk_session,
                 ),
                 start_camera_capture=camera_capture_service.start,

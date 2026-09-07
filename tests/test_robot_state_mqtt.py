@@ -90,6 +90,8 @@ def test_parse_high_precision_maps_request_reads_map_id_and_timeout() -> None:
                 "replyTopic": "robot/maps/response",
                 "mapId": 3,
                 "timeoutMs": 8000,
+                "includePreview": True,
+                "previewMaxSide": 96,
             }
         ),
         default_reply_topic="gsa/self/robot/state/get_high_precision_maps/response",
@@ -99,6 +101,8 @@ def test_parse_high_precision_maps_request_reads_map_id_and_timeout() -> None:
     assert request.reply_topic == "robot/maps/response"
     assert request.map_id == 3
     assert request.timeout_ms == 8000
+    assert request.include_preview is True
+    assert request.preview_max_side == 96
 
 
 def test_parse_gdk_recovery_confirm_request_reads_stability_policy() -> None:
@@ -890,13 +894,15 @@ def test_handle_high_precision_maps_request_publishes_success_response() -> None
         ),
         settings=ExecutorSettings(executor_aid="aid-1"),
         publish_response=lambda topic, payload: published.append((topic, dict(payload))),
-        collect_snapshot=lambda map_id, timeout_ms: {
+        collect_snapshot=lambda map_id, timeout_ms, include_preview, preview_max_side: {
             "available": True,
             "backend": "agibot_gdk.Map",
             "action": "get_high_precision_maps",
             "requestedMapId": map_id,
             "selectedMapId": map_id,
             "timeoutMs": timeout_ms,
+            "includePreview": include_preview,
+            "previewMaxSide": preview_max_side,
             "mapCount": 1,
             "maps": [{"id": 2, "name": "factory", "isCurrMap": True}],
             "mapDetail": {"id": 2, "name": "factory"},
@@ -909,6 +915,7 @@ def test_handle_high_precision_maps_request_publishes_success_response() -> None
     assert payload["ok"] is True
     assert payload["data"]["selectedMapId"] == 2
     assert payload["data"]["timeoutMs"] == 7000
+    assert payload["data"]["includePreview"] is False
 
 
 def test_handle_robot_state_request_dispatches_high_precision_maps_by_topic() -> None:
@@ -922,12 +929,17 @@ def test_handle_robot_state_request_dispatches_high_precision_maps_by_topic() ->
         ),
         settings=ExecutorSettings(executor_aid="aid-1"),
         publish_response=lambda topic, payload: published.append((topic, dict(payload))),
-        collect_high_precision_maps=lambda map_id, _timeout_ms: {
+        collect_high_precision_maps=lambda map_id,
+        _timeout_ms,
+        include_preview,
+        preview_max_side: {
             "available": True,
             "backend": "agibot_gdk.Map",
             "action": "get_high_precision_maps",
             "requestedMapId": map_id,
             "selectedMapId": map_id,
+            "includePreview": include_preview,
+            "previewMaxSide": preview_max_side,
             "mapCount": 1,
             "maps": [{"id": 5, "name": "warehouse", "isCurrMap": False}],
             "mapDetail": {"id": 5, "name": "warehouse"},
