@@ -281,7 +281,7 @@ CameraFrameCollector = Callable[[str, int], Mapping[str, object]]
 CameraCalibrationCollector = Callable[[tuple[str, ...], int, bool], Mapping[str, object]]
 CameraCaptureStartCollector = Callable[[CameraCaptureStartParams], Mapping[str, object]]
 CameraCaptureStopCollector = Callable[[str], Mapping[str, object]]
-HighPrecisionMapsCollector = Callable[[int | None, int, bool, int], Mapping[str, object]]
+HighPrecisionMapsCollector = Callable[[int | None, int, bool, int, int], Mapping[str, object]]
 QrProjectPathCollector = Callable[[str, str], Mapping[str, object]]
 QrProjectSnapshotCollector = Callable[[str, str, int], Mapping[str, object]]
 QrProjectListCollector = Callable[[str], Mapping[str, object]]
@@ -1443,6 +1443,7 @@ def handle_high_precision_maps_request(
         request.timeout_ms,
         request.include_preview,
         request.preview_max_side,
+        request.preview_timeout_ms,
     )
     response = build_high_precision_maps_response(
         request_id=request.request_id,

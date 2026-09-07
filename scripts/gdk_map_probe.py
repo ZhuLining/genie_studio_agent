@@ -25,6 +25,7 @@ def main() -> int:
     from gsa_taskflow_executor.gdk.map_probe import (  # noqa: PLC0415
         DEFAULT_MAP_TIMEOUT_MS,
         GRID_PREVIEW_MAX_SIDE,
+        GRID_PREVIEW_TIMEOUT_MS,
         run_gdk_map_probe,
     )
 
@@ -47,6 +48,12 @@ def main() -> int:
         default=GRID_PREVIEW_MAX_SIDE,
         help=f"栅格预览最大边长，默认 {GRID_PREVIEW_MAX_SIDE}",
     )
+    parser.add_argument(
+        "--preview-timeout-ms",
+        type=int,
+        default=GRID_PREVIEW_TIMEOUT_MS,
+        help=f"栅格预览内部预算，默认 {GRID_PREVIEW_TIMEOUT_MS}ms",
+    )
     args = parser.parse_args()
 
     result = run_gdk_map_probe(
@@ -54,6 +61,7 @@ def main() -> int:
         timeout_ms=args.timeout_ms,
         include_preview=args.include_preview,
         preview_max_side=args.preview_max_side,
+        preview_timeout_ms=args.preview_timeout_ms,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0 if result.get("available") is True else 1

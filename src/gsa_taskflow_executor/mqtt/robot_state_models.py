@@ -27,6 +27,8 @@ from gsa_taskflow_executor.gdk.map_probe import (
     DEFAULT_MAP_TIMEOUT_MS,
     GRID_PREVIEW_MAX_SIDE,
     GRID_PREVIEW_MAX_SIDE_LIMIT,
+    GRID_PREVIEW_TIMEOUT_MS,
+    GRID_PREVIEW_TIMEOUT_MS_LIMIT,
 )
 from gsa_taskflow_executor.gdk.recovery import (
     DEFAULT_RECOVERY_CONFIRM_SAMPLE_COUNT,
@@ -175,6 +177,7 @@ class HighPrecisionMapsRequest:
     timeout_ms: int
     include_preview: bool
     preview_max_side: int
+    preview_timeout_ms: int
 
 
 @dataclass(frozen=True)
@@ -600,6 +603,11 @@ def parse_high_precision_maps_request(
             read_first_present(decoded.get("previewMaxSide"), decoded.get("preview_max_side")),
             fallback=GRID_PREVIEW_MAX_SIDE,
             max_value=GRID_PREVIEW_MAX_SIDE_LIMIT,
+        ),
+        preview_timeout_ms=read_bounded_positive_int(
+            read_first_present(decoded.get("previewTimeoutMs"), decoded.get("preview_timeout_ms")),
+            fallback=GRID_PREVIEW_TIMEOUT_MS,
+            max_value=GRID_PREVIEW_TIMEOUT_MS_LIMIT,
         ),
     )
 

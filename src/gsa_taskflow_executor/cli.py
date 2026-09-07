@@ -28,7 +28,12 @@ from .gdk.current_pose import (
     run_gdk_current_pose_snapshot,
     run_gdk_recovery_confirmation_snapshot,
 )
-from .gdk.map_probe import DEFAULT_MAP_TIMEOUT_MS, GRID_PREVIEW_MAX_SIDE, run_gdk_map_probe
+from .gdk.map_probe import (
+    DEFAULT_MAP_TIMEOUT_MS,
+    GRID_PREVIEW_MAX_SIDE,
+    GRID_PREVIEW_TIMEOUT_MS,
+    run_gdk_map_probe,
+)
 from .gdk.motion_runtime import TASKFLOW_ABS_JOINT_CONFIRMATION
 from .gdk.readonly import run_gdk_env_check, run_gdk_readonly_probe
 from .gdk.recovery import configure_gdk_recovery_store, current_gdk_recovery_requirement
@@ -181,6 +186,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Max side length for --gdk-map-include-preview.",
     )
     parser.add_argument(
+        "--gdk-map-preview-timeout-ms",
+        type=int,
+        default=GRID_PREVIEW_TIMEOUT_MS,
+        help="Internal budget for building --gdk-map-include-preview.",
+    )
+    parser.add_argument(
         "--gdk-env-check",
         action="store_true",
         help=(
@@ -290,6 +301,7 @@ def main(argv: list[str] | None = None) -> int:
             timeout_ms=args.gdk_map_timeout_ms,
             include_preview=args.gdk_map_include_preview,
             preview_max_side=args.gdk_map_preview_max_side,
+            preview_timeout_ms=args.gdk_map_preview_timeout_ms,
         )
         writer.write(
             RuntimeEvent(
@@ -660,11 +672,13 @@ def main(argv: list[str] | None = None) -> int:
                 collect_high_precision_maps=lambda map_id,
                 timeout_ms,
                 include_preview,
-                preview_max_side: run_gdk_map_probe(
+                preview_max_side,
+                preview_timeout_ms: run_gdk_map_probe(
                     map_id=map_id,
                     timeout_ms=timeout_ms,
                     include_preview=include_preview,
                     preview_max_side=preview_max_side,
+                    preview_timeout_ms=preview_timeout_ms,
                     session_manager=gdk_session,
                 ),
                 start_camera_capture=camera_capture_service.start,

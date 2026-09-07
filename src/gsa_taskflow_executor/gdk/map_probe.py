@@ -26,6 +26,12 @@ GRID_DATA_SAMPLE_SIZE = 64
 POINT_SAMPLE_SIZE = 50
 GRID_PREVIEW_MAX_SIDE = 160
 GRID_PREVIEW_MAX_SIDE_LIMIT = 256
+GRID_PREVIEW_TIMEOUT_MS = 3000
+GRID_PREVIEW_TIMEOUT_MS_LIMIT = 10000
+
+
+class GridPreviewTimeout(TimeoutError):
+    """栅格预览生成超时；地图元信息仍可作为成功结果返回。"""
 
 
 def run_gdk_map_probe(
@@ -33,6 +39,7 @@ def run_gdk_map_probe(
     timeout_ms: int = DEFAULT_MAP_TIMEOUT_MS,
     include_preview: bool = False,
     preview_max_side: int = GRID_PREVIEW_MAX_SIDE,
+    preview_timeout_ms: int = GRID_PREVIEW_TIMEOUT_MS,
     *,
     import_module: Callable[[str], Any] = importlib.import_module,
     session_manager: GdkSessionManager | None = None,
@@ -48,6 +55,7 @@ def run_gdk_map_probe(
         return timeout_result
 
     preview_max_side = normalize_preview_max_side(preview_max_side)
+    preview_timeout_ms = normalize_preview_timeout_ms(preview_timeout_ms)
     map_id_result = validate_map_id(map_id)
     if map_id_result is not None:
         return map_id_result
@@ -58,6 +66,7 @@ def run_gdk_map_probe(
             timeout_ms=timeout_ms,
             include_preview=include_preview,
             preview_max_side=preview_max_side,
+            preview_timeout_ms=preview_timeout_ms,
             import_module=import_module,
             session_manager=session_manager,
         )
@@ -82,7 +91,7 @@ def run_gdk_map_probe(
             backend=GDK_MAP_BACKEND,
             timeout_seconds=build_subprocess_timeout_seconds(timeout_ms),
             child_target=map_probe_child,
-            child_args=(map_id, timeout_ms, include_preview, preview_max_side),
+            child_args=(map_id, timeout_ms, include_preview, preview_max_side, preview_timeout_ms),
             safety_gate={
                 "enabled": False,
                 "confirmed": True,
@@ -99,6 +108,7 @@ def run_gdk_map_probe_in_process(
     timeout_ms: int,
     include_preview: bool,
     preview_max_side: int,
+    preview_timeout_ms: int,
     import_module: Callable[[str], Any] = importlib.import_module,
     session_manager: GdkSessionManager | None = None,
 ) -> dict[str, object]:
@@ -137,6 +147,7 @@ def run_gdk_map_probe_in_process(
             timeout_ms=timeout_ms,
             include_preview=include_preview,
             preview_max_side=preview_max_side,
+            preview_timeout_ms=preview_timeout_ms,
         )
         result["gdk_init"] = lease.init_result
         result["gdk_session"] = lease.to_payload()
@@ -149,6 +160,7 @@ def map_probe_child(
     timeout_ms: int,
     include_preview: bool,
     preview_max_side: int,
+    preview_timeout_ms: int,
 ) -> None:
     agibot_gdk = None
     gdk_initialized = False
@@ -172,6 +184,7 @@ def map_probe_child(
                 timeout_ms=timeout_ms,
                 include_preview=include_preview,
                 preview_max_side=preview_max_side,
+                preview_timeout_ms=preview_timeout_ms,
             )
     except Exception as error:
         result = unavailable_result("import_or_initialize_gdk", error, map_id=map_id)
@@ -190,6 +203,7 @@ def collect_high_precision_maps(
     timeout_ms: int,
     include_preview: bool,
     preview_max_side: int,
+    preview_timeout_ms: int,
 ) -> dict[str, object]:
     timings: dict[str, float] = {}
     stage_started = time.perf_counter()
@@ -244,6 +258,7 @@ def collect_high_precision_maps(
                 map_info,
                 include_preview=include_preview,
                 preview_max_side=preview_max_side,
+                preview_timeout_ms=preview_timeout_ms,
             )
             timings["summarizeMapMs"] = elapsed_ms(stage_started)
         except Exception as error:
@@ -261,6 +276,7 @@ def collect_high_precision_maps(
         "timeoutMs": timeout_ms,
         "includePreview": include_preview,
         "previewMaxSide": preview_max_side,
+        "previewTimeoutMs": preview_timeout_ms,
         "requestedMapId": requested_map_id,
         "selectedMapId": selected_map_id,
         "mapCount": len(maps),
@@ -316,6 +332,7 @@ def summarize_map_info(
     *,
     include_preview: bool,
     preview_max_side: int,
+    preview_timeout_ms: int,
 ) -> dict[str, object]:
     grid_map = getattr(value, "grid_map", None)
     walls = read_sequence_attr(value, "walls")
@@ -330,6 +347,7 @@ def summarize_map_info(
             grid_map,
             include_preview=include_preview,
             preview_max_side=preview_max_side,
+            preview_timeout_ms=preview_timeout_ms,
         ),
         "walls": summarize_sequence(walls),
         "infeasibleAreas": summarize_sequence(infeasible_areas),
@@ -344,12 +362,41 @@ def summarize_grid_map(
     *,
     include_preview: bool,
     preview_max_side: int,
+    preview_timeout_ms: int,
 ) -> dict[str, object] | None:
     if grid_map is None:
         return None
     data = read_first_existing_attr(grid_map, ("data", "cells"))
     width = read_int_attr(grid_map, "width")
     height = read_int_attr(grid_map, "height")
+    preview: dict[str, object] | None = None
+    preview_error: dict[str, object] | None = None
+    if include_preview:
+        try:
+            preview = build_grid_preview(
+                data,
+                width,
+                height,
+                max_side=preview_max_side,
+                timeout_ms=preview_timeout_ms,
+            )
+            if preview is None:
+                preview_error = {
+                    "stage": "grid_preview",
+                    "errorMsg": "Grid data is unavailable or shorter than width * height",
+                }
+        except GridPreviewTimeout as error:
+            preview_error = {
+                "stage": "grid_preview",
+                "errorType": type(error).__name__,
+                "errorMsg": str(error),
+            }
+        except Exception as error:
+            preview_error = {
+                "stage": "grid_preview",
+                "errorType": type(error).__name__,
+                "errorMsg": str(error),
+            }
     return {
         "width": width,
         "height": height,
@@ -359,11 +406,11 @@ def summarize_grid_map(
         "dataType": type_name(data),
         "dataLength": read_sequence_length(data),
         "dataSample": sample_sequence(data, GRID_DATA_SAMPLE_SIZE),
-        "preview": (
-            build_grid_preview(data, width, height, max_side=preview_max_side)
-            if include_preview
-            else None
-        ),
+        "previewRequested": include_preview,
+        "previewMaxSide": preview_max_side,
+        "previewTimeoutMs": preview_timeout_ms,
+        "preview": preview,
+        "previewError": preview_error,
         "rawKeys": list_public_attrs(grid_map),
     }
 
@@ -547,12 +594,19 @@ def normalize_preview_max_side(value: int) -> int:
     return min(value, GRID_PREVIEW_MAX_SIDE_LIMIT)
 
 
+def normalize_preview_timeout_ms(value: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return GRID_PREVIEW_TIMEOUT_MS
+    return min(value, GRID_PREVIEW_TIMEOUT_MS_LIMIT)
+
+
 def build_grid_preview(
     data: Any,
     width: int | None,
     height: int | None,
     *,
     max_side: int,
+    timeout_ms: int,
 ) -> dict[str, object] | None:
     expected_length = expected_grid_data_length(width, height)
     if (
@@ -565,15 +619,32 @@ def build_grid_preview(
     ):
         return None
 
+    started_at = time.perf_counter()
+    deadline = started_at + timeout_ms / 1000.0
     scale = max(1, (max(width, height) + max_side - 1) // max_side)
     preview_width = (width + scale - 1) // scale
     preview_height = (height + scale - 1) // scale
+    expected_preview_length = preview_width * preview_height
     preview_data: list[int] = []
-    for row in range(preview_height):
-        source_y = min(row * scale, height - 1)
-        for column in range(preview_width):
-            source_x = min(column * scale, width - 1)
-            preview_data.append(read_int_item(data, source_y * width + source_x, fallback=-1))
+
+    iterable = read_iterable(data)
+    if iterable is None:
+        return None
+
+    # 真机 VectorInt8 随机索引可能非常慢；顺序扫描一次，只保留下采样网格点。
+    for index, raw in enumerate(iterable):
+        if index >= expected_length:
+            break
+        if index % 1024 == 0 and time.perf_counter() > deadline:
+            raise GridPreviewTimeout(
+                f"grid preview exceeded {timeout_ms}ms after reading {index} cells"
+            )
+        row, column = divmod(index, width)
+        if row % scale == 0 and column % scale == 0:
+            preview_data.append(read_int_value(raw, fallback=-1))
+
+    if len(preview_data) != expected_preview_length:
+        return None
 
     return {
         "encoding": "occupancy_int8_downsample_nearest",
@@ -585,14 +656,11 @@ def build_grid_preview(
         "dataLength": len(preview_data),
         "data": preview_data,
         "maxSide": max_side,
+        "buildMs": elapsed_ms(started_at),
     }
 
 
-def read_int_item(value: Any, index: int, *, fallback: int) -> int:
-    try:
-        raw = value[index]
-    except Exception:
-        return fallback
+def read_int_value(raw: Any, *, fallback: int) -> int:
     if isinstance(raw, bool):
         return fallback
     try:

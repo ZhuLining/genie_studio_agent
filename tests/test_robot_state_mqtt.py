@@ -92,6 +92,7 @@ def test_parse_high_precision_maps_request_reads_map_id_and_timeout() -> None:
                 "timeoutMs": 8000,
                 "includePreview": True,
                 "previewMaxSide": 96,
+                "previewTimeoutMs": 2500,
             }
         ),
         default_reply_topic="gsa/self/robot/state/get_high_precision_maps/response",
@@ -103,6 +104,7 @@ def test_parse_high_precision_maps_request_reads_map_id_and_timeout() -> None:
     assert request.timeout_ms == 8000
     assert request.include_preview is True
     assert request.preview_max_side == 96
+    assert request.preview_timeout_ms == 2500
 
 
 def test_parse_gdk_recovery_confirm_request_reads_stability_policy() -> None:
@@ -894,7 +896,11 @@ def test_handle_high_precision_maps_request_publishes_success_response() -> None
         ),
         settings=ExecutorSettings(executor_aid="aid-1"),
         publish_response=lambda topic, payload: published.append((topic, dict(payload))),
-        collect_snapshot=lambda map_id, timeout_ms, include_preview, preview_max_side: {
+        collect_snapshot=lambda map_id,
+        timeout_ms,
+        include_preview,
+        preview_max_side,
+        preview_timeout_ms: {
             "available": True,
             "backend": "agibot_gdk.Map",
             "action": "get_high_precision_maps",
@@ -903,6 +909,7 @@ def test_handle_high_precision_maps_request_publishes_success_response() -> None
             "timeoutMs": timeout_ms,
             "includePreview": include_preview,
             "previewMaxSide": preview_max_side,
+            "previewTimeoutMs": preview_timeout_ms,
             "mapCount": 1,
             "maps": [{"id": 2, "name": "factory", "isCurrMap": True}],
             "mapDetail": {"id": 2, "name": "factory"},
@@ -932,7 +939,8 @@ def test_handle_robot_state_request_dispatches_high_precision_maps_by_topic() ->
         collect_high_precision_maps=lambda map_id,
         _timeout_ms,
         include_preview,
-        preview_max_side: {
+        preview_max_side,
+        preview_timeout_ms: {
             "available": True,
             "backend": "agibot_gdk.Map",
             "action": "get_high_precision_maps",
@@ -940,6 +948,7 @@ def test_handle_robot_state_request_dispatches_high_precision_maps_by_topic() ->
             "selectedMapId": map_id,
             "includePreview": include_preview,
             "previewMaxSide": preview_max_side,
+            "previewTimeoutMs": preview_timeout_ms,
             "mapCount": 1,
             "maps": [{"id": 5, "name": "warehouse", "isCurrMap": False}],
             "mapDetail": {"id": 5, "name": "warehouse"},
