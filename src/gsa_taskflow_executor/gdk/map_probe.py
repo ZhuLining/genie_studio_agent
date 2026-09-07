@@ -28,6 +28,7 @@ GRID_PREVIEW_MAX_SIDE = 160
 GRID_PREVIEW_MAX_SIDE_LIMIT = 256
 GRID_PREVIEW_TIMEOUT_MS = 3000
 GRID_PREVIEW_TIMEOUT_MS_LIMIT = 10000
+GRID_PREVIEW_OUTPUT_SAMPLE_SIZE = 64
 
 
 class GridPreviewTimeout(TimeoutError):
@@ -658,6 +659,43 @@ def build_grid_preview(
         "maxSide": max_side,
         "buildMs": elapsed_ms(started_at),
     }
+
+
+def compact_map_probe_output(
+    result: Mapping[str, object],
+    *,
+    preview_sample_size: int = GRID_PREVIEW_OUTPUT_SAMPLE_SIZE,
+) -> dict[str, object]:
+    """压缩面向终端/日志的探针输出，避免完整栅格预览数组淹没 systemd 日志。"""
+
+    compacted = to_jsonable(result)
+    if not isinstance(compacted, dict):
+        return {"result": compacted}
+
+    map_detail = compacted.get("mapDetail")
+    if not isinstance(map_detail, dict):
+        return compacted
+    grid_map = map_detail.get("gridMap")
+    if not isinstance(grid_map, dict):
+        return compacted
+    preview = grid_map.get("preview")
+    if not isinstance(preview, dict):
+        return compacted
+    preview_data = preview.get("data")
+    if not isinstance(preview_data, list):
+        return compacted
+
+    sample_size = normalize_output_sample_size(preview_sample_size)
+    preview["dataSample"] = preview_data[:sample_size]
+    preview["dataOmitted"] = max(0, len(preview_data) - sample_size)
+    preview.pop("data", None)
+    return compacted
+
+
+def normalize_output_sample_size(value: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return GRID_PREVIEW_OUTPUT_SAMPLE_SIZE
+    return min(value, GRID_PREVIEW_OUTPUT_SAMPLE_SIZE)
 
 
 def read_int_value(raw: Any, *, fallback: int) -> int:

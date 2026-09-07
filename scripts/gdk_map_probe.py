@@ -26,6 +26,7 @@ def main() -> int:
         DEFAULT_MAP_TIMEOUT_MS,
         GRID_PREVIEW_MAX_SIDE,
         GRID_PREVIEW_TIMEOUT_MS,
+        compact_map_probe_output,
         run_gdk_map_probe,
     )
 
@@ -54,6 +55,16 @@ def main() -> int:
         default=GRID_PREVIEW_TIMEOUT_MS,
         help=f"栅格预览内部预算，默认 {GRID_PREVIEW_TIMEOUT_MS}ms",
     )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        help="把完整 JSON 结果写入文件；终端默认仍只打印紧凑摘要",
+    )
+    parser.add_argument(
+        "--full-output",
+        action="store_true",
+        help="终端打印完整 JSON，包括 preview.data 数组",
+    )
     args = parser.parse_args()
 
     result = run_gdk_map_probe(
@@ -63,7 +74,17 @@ def main() -> int:
         preview_max_side=args.preview_max_side,
         preview_timeout_ms=args.preview_timeout_ms,
     )
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    if args.output is not None:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(
+            json.dumps(result, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+    output = result if args.full_output else compact_map_probe_output(result)
+    if args.output is not None:
+        output["fullOutputPath"] = str(args.output)
+    print(json.dumps(output, ensure_ascii=False, indent=2))
     return 0 if result.get("available") is True else 1
 
 

@@ -86,6 +86,82 @@ def test_gdk_readonly_probe_cli_prints_json_and_writes_event(
     assert event["payload"]["probe"]["raw"]["omitted"] is True
 
 
+def test_gdk_map_probe_cli_compacts_preview_and_writes_full_output(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+) -> None:
+    log_dir = tmp_path / "logs"
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "MQTT_BROKER_URL=mqtt://127.0.0.1:1883",
+                "EXECUTOR_LOG_DIR=" + str(log_dir),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    probe_payload = {
+        "available": True,
+        "backend": "agibot_gdk.Map",
+        "action": "get_high_precision_maps",
+        "mapDetail": {
+            "gridMap": {
+                "preview": {
+                    "width": 4,
+                    "height": 3,
+                    "dataLength": 12,
+                    "data": list(range(12)),
+                }
+            }
+        },
+    }
+    output_file = tmp_path / "map-probe.json"
+    monkeypatch.setattr(cli, "run_gdk_map_probe", lambda **_kwargs: probe_payload)
+
+    exit_code = cli.main(
+        [
+            "--env-file",
+            str(env_file),
+            "--gdk-map-probe",
+            "--gdk-map-include-preview",
+            "--gdk-map-output",
+            str(output_file),
+        ]
+    )
+
+    assert exit_code == 0
+    printed = json.loads(capsys.readouterr().out)
+    preview = printed["mapDetail"]["gridMap"]["preview"]
+    assert "data" not in preview
+    assert preview["dataSample"] == list(range(12))
+    assert preview["dataOmitted"] == 0
+    assert printed["fullOutputPath"] == str(output_file)
+    assert json.loads(output_file.read_text(encoding="utf-8")) == probe_payload
+
+
+def test_gdk_map_probe_cli_returns_nonzero_when_unavailable(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("MQTT_BROKER_URL=mqtt://127.0.0.1:1883\n", encoding="utf-8")
+    probe_payload = {
+        "available": False,
+        "backend": "agibot_gdk.Map",
+        "action": "get_high_precision_maps",
+        "errorStage": "gdk_operation_timeout",
+    }
+    monkeypatch.setattr(cli, "run_gdk_map_probe", lambda **_kwargs: probe_payload)
+
+    exit_code = cli.main(["--env-file", str(env_file), "--gdk-map-probe"])
+
+    assert exit_code == 1
+    assert json.loads(capsys.readouterr().out) == probe_payload
+
+
 def test_gdk_control_probe_cli_prints_json_and_writes_event(
     tmp_path: Path,
     capsys,

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from gsa_taskflow_executor.gdk.map_probe import run_gdk_map_probe
+from gsa_taskflow_executor.gdk.map_probe import compact_map_probe_output, run_gdk_map_probe
 
 
 class FakePosition:
@@ -184,6 +184,31 @@ def test_gdk_map_probe_summarizes_indexed_grid_data() -> None:
     assert result["mapDetail"]["gridMap"]["preview"]["scale"] == 1
     assert result["mapDetail"]["gridMap"]["preview"]["data"] == list(range(12))
     assert result["mapDetail"]["gridMap"]["dataType"].endswith("FakeIndexedData")
+
+
+def test_compact_map_probe_output_omits_preview_data() -> None:
+    result = {
+        "available": True,
+        "mapDetail": {
+            "gridMap": {
+                "preview": {
+                    "width": 4,
+                    "height": 3,
+                    "dataLength": 12,
+                    "data": list(range(12)),
+                }
+            }
+        },
+    }
+
+    compacted = compact_map_probe_output(result, preview_sample_size=5)
+
+    preview = compacted["mapDetail"]["gridMap"]["preview"]
+    assert "data" not in preview
+    assert preview["dataLength"] == 12
+    assert preview["dataSample"] == [0, 1, 2, 3, 4]
+    assert preview["dataOmitted"] == 7
+    assert result["mapDetail"]["gridMap"]["preview"]["data"] == list(range(12))
 
 
 def test_gdk_map_probe_rejects_invalid_map_id_before_importing() -> None:

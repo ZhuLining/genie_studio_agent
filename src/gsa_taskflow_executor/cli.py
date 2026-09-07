@@ -32,6 +32,7 @@ from .gdk.map_probe import (
     DEFAULT_MAP_TIMEOUT_MS,
     GRID_PREVIEW_MAX_SIDE,
     GRID_PREVIEW_TIMEOUT_MS,
+    compact_map_probe_output,
     run_gdk_map_probe,
 )
 from .gdk.motion_runtime import TASKFLOW_ABS_JOINT_CONFIRMATION
@@ -50,12 +51,12 @@ from .mqtt.robot_state import (
     CAMERA_CAPTURE_START_REQUEST_TYPE,
     CAMERA_CAPTURE_STOP_REQUEST_TYPE,
     CAMERA_FRAME_REQUEST_TYPE,
+    HIGH_PRECISION_MAPS_REQUEST_TYPE,
     POINT_RECORDING_DELETE_INITIAL_PHOTO_REQUEST_TYPE,
     POINT_RECORDING_DELETE_TARGET_REQUEST_TYPE,
     POINT_RECORDING_SAVE_INITIAL_PHOTO_REQUEST_TYPE,
     POINT_RECORDING_SAVE_TARGET_REQUEST_TYPE,
     POINT_RECORDING_SUBMIT_REQUEST_TYPE,
-    HIGH_PRECISION_MAPS_REQUEST_TYPE,
     QR_BUILD_MAP_REQUEST_TYPE,
     QR_CAPTURE_START_REQUEST_TYPE,
     QR_CAPTURE_STOP_REQUEST_TYPE,
@@ -192,6 +193,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Internal budget for building --gdk-map-include-preview.",
     )
     parser.add_argument(
+        "--gdk-map-output",
+        type=Path,
+        help=(
+            "Write the full --gdk-map-probe JSON result to this file. "
+            "Terminal output remains compact unless --gdk-map-full-output is set."
+        ),
+    )
+    parser.add_argument(
+        "--gdk-map-full-output",
+        action="store_true",
+        help="Print the full --gdk-map-probe JSON, including preview.data arrays.",
+    )
+    parser.add_argument(
         "--gdk-env-check",
         action="store_true",
         help=(
@@ -311,8 +325,21 @@ def main(argv: list[str] | None = None) -> int:
                 payload={"probe": result},
             )
         )
-        print(json.dumps(result, ensure_ascii=False, indent=2))
-        return 0
+        if args.gdk_map_output is not None:
+            try:
+                args.gdk_map_output.parent.mkdir(parents=True, exist_ok=True)
+                args.gdk_map_output.write_text(
+                    json.dumps(result, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+            except OSError as error:
+                parser.error(f"failed to write --gdk-map-output: {error}")
+
+        output = result if args.gdk_map_full_output else compact_map_probe_output(result)
+        if args.gdk_map_output is not None:
+            output["fullOutputPath"] = str(args.gdk_map_output)
+        print(json.dumps(output, ensure_ascii=False, indent=2))
+        return 0 if result.get("available") is True else 1
 
     if args.gdk_control_probe:
         writer = JsonlEventWriter.from_settings(settings)
